@@ -60,11 +60,14 @@
 <header class="topbar">
   <div class="topbar-inner">
     <a class="brand" href="#" data-goto="overview" title="回到概览">
-      <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-        <rect x="2.2" y="2.2" width="27.6" height="27.6" rx="9" stroke="currentColor" stroke-width="2.1"/>
-        <path d="M10 22V10.6h7.1a4.1 4.1 0 0 1 0 8.2H13" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle cx="21.4" cy="22.2" r="1.6" fill="currentColor"/>
-      </svg>
+      <span class="brand-mark" id="brandMark">
+        <svg id="brandSvg" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="2.2" y="2.2" width="27.6" height="27.6" rx="9" stroke="currentColor" stroke-width="2.1"/>
+          <path d="M10 22V10.6h7.1a4.1 4.1 0 0 1 0 8.2H13" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="21.4" cy="22.2" r="1.6" fill="currentColor"/>
+        </svg>
+        <img id="brandImg" alt="" hidden>
+      </span>
       <span class="brand-name" id="brandName">Run</span>
     </a>
 
@@ -439,6 +442,18 @@
             <span class="card-note">品牌名 + HTTP Basic Auth</span>
           </div>
           <div class="card-body form-grid">
+            <div class="brand-icon-row">
+              <span class="brand-icon-preview" id="iconPreview"></span>
+              <div class="brand-icon-copy">
+                <span class="brand-icon-title">站点图标</span>
+                <span class="hint">PNG / JPEG / WebP / SVG，≤ 256 KB，建议正方形；上传后立即生效</span>
+              </div>
+              <div class="row" style="gap:6px">
+                <button type="button" class="btn btn-ghost btn-sm" id="iconPick">上传</button>
+                <button type="button" class="btn btn-quiet btn-sm" id="iconReset">恢复默认</button>
+              </div>
+              <input type="file" id="iconFile" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden>
+            </div>
             <div class="form-grid cols-3">
               <div class="field">
                 <label for="siteName">站点名称 <span class="hint">最多 24 字符</span></label>

@@ -1,8 +1,10 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -124,6 +126,7 @@ func (s *Server) ListenAndServe(addr string) error {
 	// 系统
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/config", s.handleConfig)
+	mux.HandleFunc("/api/brand/icon", s.handleBrandIcon)
 	mux.HandleFunc("/api/system/info", s.handleSystemInfo)
 	mux.HandleFunc("/api/connection", s.handleConnection)
 	mux.HandleFunc("/api/version", s.handleVersion)
@@ -260,6 +263,146 @@ func normalizeSiteName(name string) string {
 		name = string(r[:24])
 	}
 	return name
+}
+
+// ─── 品牌图标 ──────────────────────────────────────────────────────────────────
+
+const maxBrandIconSize = 256 << 10 // 256 KB
+
+// 固定文件名：换图标时删掉旧的，避免同扩展名残留两份。
+var brandIconNames = []string{"brand-icon.png", "brand-icon.jpg", "brand-icon.webp", "brand-icon.svg"}
+
+// brandIconFile 返回当前自定义图标的路径与其修改时间（无图标返回空串、0）。
+// 修改时间用作前端缓存键，换图标后 URL 自动变化。
+func (s *Server) brandIconFile() (string, int64) {
+	dir := s.cfg.Dir()
+	if dir == "" {
+		return "", 0
+	}
+	for _, name := range brandIconNames {
+		p := filepath.Join(dir, name)
+		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
+			return p, st.ModTime().Unix()
+		}
+	}
+	return "", 0
+}
+
+func brandIconContentType(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".png":
+		return "image/png"
+	case ".jpg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
+	case ".svg":
+		return "image/svg+xml"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// sniffBrandIcon 用文件头判断类型，不信任客户端声明的 MIME。
+func sniffBrandIcon(b []byte) (string, bool) {
+	switch {
+	case len(b) > 8 && bytes.HasPrefix(b, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}):
+		return ".png", true
+	case len(b) > 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff:
+		return ".jpg", true
+	case len(b) > 12 && bytes.HasPrefix(b, []byte("RIFF")) && string(b[8:12]) == "WEBP":
+		return ".webp", true
+	}
+	head := strings.ToLower(string(bytes.TrimLeft(bytes.TrimPrefix(b, []byte{0xef, 0xbb, 0xbf}), " \t\r\n")))
+	if strings.HasPrefix(head, "<svg") || (strings.HasPrefix(head, "<?xml") && strings.Contains(head, "<svg")) {
+		return ".svg", true
+	}
+	return "", false
+}
+
+// handleBrandIcon 负责自定义站点图标的读取、上传与重置。
+func (s *Server) handleBrandIcon(w http.ResponseWriter, r *http.Request) {
+	dir := s.cfg.Dir()
+	if dir == "" {
+		jsonErr(w, fmt.Errorf("配置目录不可用"), 500)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		path, mtime := s.brandIconFile()
+		if path == "" {
+			http.NotFound(w, r)
+			return
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		etag := fmt.Sprintf(`"%x-%x"`, mtime, len(data))
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", brandIconContentType(path))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// 图标被单独打开时（SVG 可带脚本），用 CSP 掐断一切外部与脚本能力。
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("ETag", etag)
+		_, _ = w.Write(data)
+
+	case http.MethodPost:
+		var req struct {
+			Data string `json:"data"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBrandIconSize*2)).Decode(&req); err != nil {
+			jsonErr(w, fmt.Errorf("请求体无法解析: %v", err), 400)
+			return
+		}
+		raw := req.Data
+		if i := strings.Index(raw, "base64,"); i >= 0 {
+			raw = raw[i+len("base64,"):]
+		}
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			jsonErr(w, fmt.Errorf("图标数据为空"), 400)
+			return
+		}
+		data, err := base64.StdEncoding.DecodeString(raw)
+		if err != nil {
+			jsonErr(w, fmt.Errorf("图标数据不是合法 base64"), 400)
+			return
+		}
+		if len(data) == 0 || len(data) > maxBrandIconSize {
+			jsonErr(w, fmt.Errorf("图标需小于 256 KB"), 400)
+			return
+		}
+		ext, ok := sniffBrandIcon(data)
+		if !ok {
+			jsonErr(w, fmt.Errorf("只支持 PNG / JPEG / WebP / SVG"), 400)
+			return
+		}
+		for _, name := range brandIconNames {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+		path := filepath.Join(dir, "brand-icon"+ext)
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			jsonErr(w, fmt.Errorf("写入图标失败: %v", err), 500)
+			return
+		}
+		jsonOK(w, map[string]any{"ok": true, "site_icon": time.Now().Unix()})
+
+	case http.MethodDelete:
+		for _, name := range brandIconNames {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+		jsonOK(w, map[string]any{"ok": true, "site_icon": 0})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func jsonOK(w http.ResponseWriter, v any) {
@@ -467,6 +610,7 @@ type configResponse struct {
 	MonitorDisk     string `json:"monitor_disk"`
 	WebUser         string `json:"web_user"`
 	SiteName        string `json:"site_name"`
+	SiteIcon        int64  `json:"site_icon"` // 自定义图标的修改时间，0 表示用内置图标
 	VirtType        string `json:"virt_type"`
 	Host            string `json:"host"`
 	MaxPortForward  int32  `json:"max_port_forward"`
@@ -547,12 +691,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conf := s.cfg.Get()
+	_, iconMtime := s.brandIconFile()
 	jsonOK(w, configResponse{
 		Token:            conf.Token,
 		MonitorNIC:       conf.MonitorNIC,
 		MonitorDisk:      conf.MonitorDisk,
 		WebUser:          conf.WebUser,
 		SiteName:         conf.SiteName,
+		SiteIcon:         iconMtime,
 		VirtType:         conf.VirtType,
 		Host:             conf.Host,
 		MaxPortForward:   conf.MaxPortForward,

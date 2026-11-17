@@ -103,6 +103,7 @@ const state = {
   imagesActive: [],
   customImages: [],
   dirty: false,
+  siteIcon: 0,
   lastStatus: null,
 };
 
@@ -1067,11 +1068,69 @@ $('btnReloadConf').addEventListener('click', async (e) => withBusy(e.currentTarg
   } catch (err) { toastErr(err); }
 }));
 
-function applyBrand(name) {
+function applyBrand(name, iconVersion) {
   const n = (name || 'Run').slice(0, 24);
   $('brandName').textContent = n;
   document.title = n;
+  if (iconVersion !== undefined) renderBrandIcon(iconVersion);
 }
+
+// 自定义图标按修改时间做缓存键：换图后 URL 变化，浏览器不会拿旧图。
+function renderBrandIcon(version) {
+  state.siteIcon = Number(version) || 0;
+  const img = $('brandImg');
+  const svg = $('brandSvg');
+  if (!img || !svg) return;
+  if (state.siteIcon > 0) {
+    img.src = `/api/brand/icon?v=${state.siteIcon}`;
+    img.hidden = false;
+    svg.hidden = true;
+  } else {
+    img.hidden = true;
+    img.removeAttribute('src');
+    svg.hidden = false;
+  }
+  renderIconPreview();
+}
+
+function renderIconPreview() {
+  const slot = $('iconPreview');
+  if (!slot) return;
+  const fallback = $('brandSvg').outerHTML.replace(/\sid="brandSvg"/, '');
+  slot.innerHTML = state.siteIcon > 0
+    ? `<img src="/api/brand/icon?v=${state.siteIcon}" alt="">`
+    : fallback;
+}
+
+$('iconPick').addEventListener('click', () => $('iconFile').click());
+$('iconFile').addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  if (file.size > 256 * 1024) return toast('图标需小于 256 KB', 'bad');
+  const data = await new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.onerror = rej;
+    fr.readAsDataURL(file);
+  });
+  try {
+    const r = await api('POST', '/api/brand/icon', { data });
+    renderBrandIcon(r?.site_icon || Math.floor(Date.now() / 1000));
+    toast('图标已更新');
+  } catch (err) { toastErr(err); }
+});
+$('iconReset').addEventListener('click', async () => {
+  try {
+    await api('DELETE', '/api/brand/icon');
+    renderBrandIcon(0);
+    toast('已恢复默认图标');
+  } catch (err) { toastErr(err); }
+});
+$('brandImg').addEventListener('error', () => {
+  $('brandImg').hidden = true;
+  $('brandSvg').hidden = false;
+});
 
 /* ── 版本 ─────────────────────────────────────────────────────────────────── */
 $('versionPill').addEventListener('click', openVersion);
@@ -1361,7 +1420,7 @@ async function init() {
 
     state.config = conf || {};
     state.images = (imgs || []).filter(Boolean);
-    applyBrand(state.config.site_name);
+    applyBrand(state.config.site_name, state.config.site_icon);
     $('virtPill').textContent = `VIRT ${(state.config.virt_type || '?').toUpperCase()}`;
     $('versionPill').textContent = version?.current || 'v—';
     $('aboutVersion').textContent = version?.current || '—';

@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -164,6 +165,11 @@ func (m *Manager) Get() Config {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.cfg
+}
+
+// Dir 返回配置文件所在目录，面板用它存放自定义品牌图标等运行期文件。
+func (m *Manager) Dir() string {
+	return filepath.Dir(m.path)
 }
 
 // Update 原子更新配置内存值并持久化到文件。
