@@ -348,6 +348,28 @@
                         Save Configuration
                     </button>
                 </div>
+                <div class="md:col-span-2 xl:col-span-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 pt-4 border-t border-slate-200">
+                    <div>
+                        <label class="label">Platform Address (gRPC)</label>
+                        <input type="text" id="platformAddr" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="hosting.fuckip.me:443">
+                        <label class="mt-2 flex items-center gap-2 text-xs text-slate-500 cursor-pointer">
+                            <input type="checkbox" id="platformInsecure" class="rounded border-slate-300">
+                            Skip TLS verification
+                        </label>
+                    </div>
+                    <div>
+                        <label class="label">Update Repo (owner/repo)</label>
+                        <input type="text" id="updateRepo" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="narwhal-cloud/runman-agent">
+                    </div>
+                    <div>
+                        <label class="label">Update Download Base</label>
+                        <input type="text" id="updateBase" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="empty = GitHub releases">
+                    </div>
+                    <div>
+                        <label class="label">Update API Base</label>
+                        <input type="text" id="updateApi" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="empty = api.github.com">
+                    </div>
+                </div>
             </form>
         </div>
     </div>
@@ -1782,6 +1804,11 @@ $('configForm').onsubmit = async (e) => {
             host:             $('entryHost').value,
             web_user:         $('webUser').value,
             web_pass:         $('webPass').value,
+            platform_addr:    $('platformAddr').value.trim(),
+            update_repo:      $('updateRepo').value.trim(),
+            update_base_url:  $('updateBase').value.trim(),
+            update_api_url:   $('updateApi').value.trim(),
+            platform_insecure: $('platformInsecure').checked,
         };
         await api('POST', '/api/config', newConf);
         currentConf = newConf;
@@ -2119,6 +2146,11 @@ async function init() {
     $('trafficResetDay').value = conf.traffic_reset_day || 1;
     $('entryHost').value      = conf.host             || '';
     $('webUser').value        = conf.web_user        || '';
+    $('platformAddr').value   = conf.platform_addr   || '';
+    $('updateRepo').value     = conf.update_repo     || '';
+    $('updateBase').value     = conf.update_base_url || '';
+    $('updateApi').value      = conf.update_api_url  || '';
+    $('platformInsecure').checked = !!conf.platform_insecure;
     $('virt-badge').textContent = 'VIRT: '+(conf.virt_type||'?').toUpperCase();
     $('disk-label').textContent = 'Disk: '+(conf.monitor_disk||'/');
 

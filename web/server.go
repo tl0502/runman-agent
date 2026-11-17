@@ -408,6 +408,15 @@ type configRequest struct {
 	MaxPortForward  int32  `json:"max_port_forward"`
 	MaxForwardIPs   *int32 `json:"max_forward_ips"` // 指针以区分"未提交"与"设为 0（不限制）"
 	TrafficResetDay int    `json:"traffic_reset_day"`
+
+	// 接入点配置。指针用于区分"未提交"（保持原值）与"提交空串"（回落到内置默认），
+	// 保证不认识这些字段的旧客户端调用 POST /api/config 时行为完全不变。
+	PlatformAddr  *string `json:"platform_addr"`
+	UpdateRepo    *string `json:"update_repo"`
+	UpdateBaseURL *string `json:"update_base_url"`
+	UpdateAPIURL  *string `json:"update_api_url"`
+	// nil = 未提交；false = 显式关闭，因此用指针。
+	PlatformInsecure *bool `json:"platform_insecure"`
 }
 
 type configResponse struct {
@@ -420,6 +429,12 @@ type configResponse struct {
 	MaxPortForward  int32  `json:"max_port_forward"`
 	MaxForwardIPs   int32  `json:"max_forward_ips"`
 	TrafficResetDay int    `json:"traffic_reset_day"`
+	// 空串表示走内置默认，面板据此显示 placeholder。
+	PlatformAddr     string `json:"platform_addr"`
+	UpdateRepo       string `json:"update_repo"`
+	UpdateBaseURL    string `json:"update_base_url"`
+	UpdateAPIURL     string `json:"update_api_url"`
+	PlatformInsecure bool   `json:"platform_insecure"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -458,6 +473,21 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if req.TrafficResetDay > 0 && req.TrafficResetDay <= 28 {
 				cfg.TrafficResetDay = req.TrafficResetDay
 			}
+			if req.PlatformAddr != nil {
+				cfg.PlatformAddr = strings.TrimSpace(*req.PlatformAddr)
+			}
+			if req.UpdateRepo != nil {
+				cfg.UpdateRepo = strings.TrimSpace(*req.UpdateRepo)
+			}
+			if req.UpdateBaseURL != nil {
+				cfg.UpdateBaseURL = strings.TrimSpace(*req.UpdateBaseURL)
+			}
+			if req.UpdateAPIURL != nil {
+				cfg.UpdateAPIURL = strings.TrimSpace(*req.UpdateAPIURL)
+			}
+			if req.PlatformInsecure != nil {
+				cfg.PlatformInsecure = *req.PlatformInsecure
+			}
 		})
 		if err != nil {
 			http.Error(w, "failed to save config: "+err.Error(), 500)
@@ -468,15 +498,20 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	conf := s.cfg.Get()
 	jsonOK(w, configResponse{
-		Token:           conf.Token,
-		MonitorNIC:      conf.MonitorNIC,
-		MonitorDisk:     conf.MonitorDisk,
-		WebUser:         conf.WebUser,
-		VirtType:        conf.VirtType,
-		Host:            conf.Host,
-		MaxPortForward:  conf.MaxPortForward,
-		MaxForwardIPs:   conf.MaxForwardIPs,
-		TrafficResetDay: conf.TrafficResetDay,
+		Token:            conf.Token,
+		MonitorNIC:       conf.MonitorNIC,
+		MonitorDisk:      conf.MonitorDisk,
+		WebUser:          conf.WebUser,
+		VirtType:         conf.VirtType,
+		Host:             conf.Host,
+		MaxPortForward:   conf.MaxPortForward,
+		MaxForwardIPs:    conf.MaxForwardIPs,
+		TrafficResetDay:  conf.TrafficResetDay,
+		PlatformAddr:     conf.PlatformAddr,
+		UpdateRepo:       conf.UpdateRepo,
+		UpdateBaseURL:    conf.UpdateBaseURL,
+		UpdateAPIURL:     conf.UpdateAPIURL,
+		PlatformInsecure: conf.PlatformInsecure,
 	})
 }
 

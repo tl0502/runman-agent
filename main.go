@@ -42,8 +42,6 @@ import (
 
 var version = "dev"
 
-const serverAddr = "hosting.fuckip.me:443"
-
 // agentConsoleSession 保存一个活跃的控制台 TTY 会话的状态，
 // 用于将平台下发的 stdin / resize 消息路由到正确的 AttachTTY 调用。
 // stdin 经由 stdinCh 交给会话内的单一写入协程串行写 pipe，
@@ -192,7 +190,7 @@ func main() {
 	}
 
 	// 启动自动更新服务（如果检测到新版本，将在 24-72 小时内强制更新）
-	upd := updater.NewService(database, version)
+	upd := updater.NewService(database, cfg, version)
 	go upd.Start(context.Background())
 
 	// 启动本地 Web 状态页，供运维人员直接查看节点信息
@@ -480,11 +478,40 @@ func (a *Agent) GetConnStatus() (bool, string) {
 	return a.connected, a.lastError
 }
 
+// watchPlatformAddr 在连接存活期间轮询配置；平台地址被改动时主动断开当前流，
+// 交给 run() 的重连循环用新地址重新建连。
+func (a *Agent) watchPlatformAddr(ctx context.Context, cancel context.CancelFunc, current string) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			latest := a.cfg.Get().PlatformAddress()
+			if latest != current {
+				log.Printf("[Agent] platform address changed: %s -> %s, reconnecting", current, latest)
+				cancel()
+				return
+			}
+		}
+	}
+}
+
 // connectAndLoop 建立 gRPC 双向流，启动心跳/端口转发上报协程，
 // 然后阻塞读取平台下发的命令直到连接断开。
 func (a *Agent) connectAndLoop() error {
-	conn, err := grpc.NewClient(serverAddr,
-		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{})),
+	// 平台地址来自配置，面板修改后由 watchPlatformAddr 触发重连，无需重启进程。
+	conf := a.cfg.Get()
+	addr := conf.PlatformAddress()
+	tlsCfg := &tls.Config{}
+	if conf.PlatformInsecure {
+		// 仅用于接入使用 IP 地址或自签证书的第三方平台。
+		tlsCfg.InsecureSkipVerify = true
+		log.Printf("[Agent] platform TLS verification disabled (platform_insecure=true)")
+	}
+	conn, err := grpc.NewClient(addr,
+		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
 	)
 	if err != nil {
 		return err
@@ -494,13 +521,14 @@ func (a *Agent) connectAndLoop() error {
 	client := agent.NewAgentGatewayClient(conn)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go a.watchPlatformAddr(ctx, cancel, addr)
 	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+a.config.Token)
 	stream, err := client.Connect(ctx)
 	if err != nil {
 		return err
 	}
 
-	log.Printf("Connected to platform: %s", serverAddr)
+	log.Printf("Connected to platform: %s", addr)
 	a.setConnected(true, "")
 
 	// 初始化 ping 监测

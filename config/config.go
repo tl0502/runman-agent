@@ -14,6 +14,11 @@ const (
 	DefaultWeb            = ":8792"
 	DefaultMaxPortForward = 20
 	DefaultWebUser        = "admin"
+
+	// DefaultPlatformAddr 是官方平台的 gRPC 接入地址；配置为空时使用。
+	DefaultPlatformAddr = "hosting.fuckip.me:443"
+	// DefaultUpdateRepo 是官方自更新仓库；配置为空时使用。
+	DefaultUpdateRepo = "narwhal-cloud/runman-agent"
 )
 
 // Config 是 agent 的全局配置，从 JSON 配置文件读取，通过 Web API 可修改。
@@ -26,6 +31,22 @@ type Config struct {
 
 	// 平台认证
 	Token string `json:"token"`
+
+	// 平台接入地址（gRPC host:port）。为空时回落到 DefaultPlatformAddr。
+	// 改动后 Agent 会自动断开并按新地址重连，无需重启进程。
+	PlatformAddr string `json:"platform_addr"`
+
+	// 自更新来源。UpdateRepo 形如 "owner/repo"，为空时回落到 DefaultUpdateRepo；
+	// UpdateBaseURL 可指向镜像/反向代理的 releases 下载基址（含 tag），
+	// UpdateAPIURL 可指向同结构的版本查询接口（JSON: tag_name / target_commitish）。
+	// 后两者为空时按 GitHub 官方地址派生。
+	UpdateRepo    string `json:"update_repo"`
+	UpdateBaseURL string `json:"update_base_url"`
+	UpdateAPIURL  string `json:"update_api_url"`
+
+	// PlatformInsecure 为 true 时跳过平台 gRPC 的证书校验，
+	// 仅用于接入使用 IP 地址或自签证书的第三方平台。
+	PlatformInsecure bool `json:"platform_insecure"`
 
 	// 监控配置
 	MonitorNIC  string `json:"monitor_nic"`
@@ -182,4 +203,31 @@ func applyDefaults(cfg *Config) {
 	if cfg.IPv6BackupDir == "" {
 		cfg.IPv6BackupDir = "/var/lib/narwhal-agent/backups"
 	}
+}
+
+// PlatformAddress 返回实际生效的平台接入地址（host:port）。
+func (c Config) PlatformAddress() string {
+	if v := strings.TrimSpace(c.PlatformAddr); v != "" {
+		return v
+	}
+	return DefaultPlatformAddr
+}
+
+// UpdateRepository 返回实际生效的自更新仓库（owner/repo）。
+func (c Config) UpdateRepository() string {
+	v := strings.TrimSpace(c.UpdateRepo)
+	if v == "" {
+		return DefaultUpdateRepo
+	}
+	return strings.TrimPrefix(strings.TrimSuffix(v, "/"), "https://github.com/")
+}
+
+// UpdateDownloadBase 返回自更新下载基址的覆盖值；空表示由仓库地址派生。
+func (c Config) UpdateDownloadBase() string {
+	return strings.TrimRight(strings.TrimSpace(c.UpdateBaseURL), "/")
+}
+
+// UpdateAPIBase 返回版本查询接口的覆盖值；空表示由仓库地址派生。
+func (c Config) UpdateAPIBase() string {
+	return strings.TrimRight(strings.TrimSpace(c.UpdateAPIURL), "/")
 }

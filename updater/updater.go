@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runman-agent/config"
 	"runman-agent/db"
 	"strings"
 	"sync"
@@ -19,8 +20,7 @@ import (
 )
 
 const (
-	releaseRepository = "narwhal-cloud/runman-agent"
-	installScript     = "/opt/narwhal-agent/install.sh"
+	installScript = "/opt/narwhal-agent/install.sh"
 )
 
 type githubRelease struct {
@@ -30,6 +30,7 @@ type githubRelease struct {
 
 type Service struct {
 	database    *db.DB
+	cfg         *config.Manager
 	currentVer  string
 	lastChecked time.Time
 	updateMu    sync.Mutex
@@ -44,17 +45,30 @@ func releaseChannel(version string) string {
 	return "continuous"
 }
 
-func releaseAPIURL(version string) string {
-	base := "https://api.github.com/repos/" + releaseRepository + "/releases/"
-	if releaseChannel(version) == "latest" {
+// releaseAPIURL 返回版本查询接口。配置了 update_api_url 时直接使用，
+// 否则按 update_repo 派生 GitHub API 地址。
+func (s *Service) releaseAPIURL() string {
+	if base := s.cfg.Get().UpdateAPIBase(); base != "" {
+		if releaseChannel(s.currentVer) == "latest" {
+			return base + "/latest"
+		}
+		return base + "/tags/continuous"
+	}
+	base := "https://api.github.com/repos/" + s.cfg.Get().UpdateRepository() + "/releases/"
+	if releaseChannel(s.currentVer) == "latest" {
 		return base + "latest"
 	}
 	return base + "tags/continuous"
 }
 
-func releaseDownloadBase(version string) string {
-	base := "https://github.com/" + releaseRepository + "/releases/"
-	if releaseChannel(version) == "latest" {
+// releaseDownloadBase 返回 releases 下载基址。配置了 update_base_url 时直接使用，
+// 否则按 update_repo 派生 GitHub 下载地址。
+func (s *Service) releaseDownloadBase() string {
+	if base := s.cfg.Get().UpdateDownloadBase(); base != "" {
+		return base
+	}
+	base := "https://github.com/" + s.cfg.Get().UpdateRepository() + "/releases/"
+	if releaseChannel(s.currentVer) == "latest" {
 		return base + "latest/download"
 	}
 	return base + "download/continuous"
@@ -76,9 +90,10 @@ func releaseVersion(rel githubRelease, channel string) (string, error) {
 	return rel.TagName, nil
 }
 
-func NewService(database *db.DB, currentVer string) *Service {
+func NewService(database *db.DB, cfg *config.Manager, currentVer string) *Service {
 	return &Service{
 		database:   database,
+		cfg:        cfg,
 		currentVer: currentVer,
 	}
 }
@@ -178,7 +193,7 @@ func (s *Service) fetchLatestVersion() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", releaseAPIURL(s.currentVer), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", s.releaseAPIURL(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -221,7 +236,7 @@ func (s *Service) executeUpdate() error {
 	// A separate systemd unit survives stopping/restarting the Agent, including
 	// upstream installations with KillMode=control-group. A fixed unit name also
 	// rejects concurrent manual/automatic update jobs.
-	cmd := exec.Command("systemd-run", updateCommandArgs(s.currentVer)...)
+	cmd := exec.Command("systemd-run", s.updateCommandArgs()...)
 
 	// 我们不等待脚本完成，因为脚本会重启服务导致我们被 kill
 	output, err := cmd.CombinedOutput()
@@ -235,17 +250,17 @@ func (s *Service) executeUpdate() error {
 	return nil
 }
 
-func updateCommandArgs(version string) []string {
+func (s *Service) updateCommandArgs() []string {
 	return []string{"--unit=narwhal-agent-update", "--collect", "--property=Type=exec",
-		"--property=WorkingDirectory=/", "--setenv=AGENT_RELEASE_TAG=" + releaseChannel(version),
-		"--setenv=RUNMAN_AGENT_DOWNLOAD_BASE=" + releaseDownloadBase(version),
+		"--property=WorkingDirectory=/", "--setenv=AGENT_RELEASE_TAG=" + releaseChannel(s.currentVer),
+		"--setenv=RUNMAN_AGENT_DOWNLOAD_BASE=" + s.releaseDownloadBase(),
 		"bash", installScript, "en", "--update-only", "--non-interactive"}
 }
 
 func (s *Service) downloadInstallScript() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	return downloadScript(ctx, http.DefaultClient, releaseDownloadBase(s.currentVer)+"/install.sh", installScript)
+	return downloadScript(ctx, http.DefaultClient, s.releaseDownloadBase()+"/install.sh", installScript)
 }
 
 func downloadScript(ctx context.Context, client *http.Client, scriptURL, destination string) error {

@@ -8,12 +8,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"runman-agent/config"
 )
 
 func TestReleaseChannels(t *testing.T) {
 	for _, version := range []string{"main", "continuous", "continuous-" + strings.Repeat("a", 40), "v1.2.3"} {
 		t.Run(version, func(t *testing.T) {
-			api, base := releaseAPIURL(version), releaseDownloadBase(version)
+			h := newTestService(t, version, "{}")
+			api, base := h.releaseAPIURL(), h.releaseDownloadBase()
 			if !strings.Contains(api, "repos/narwhal-cloud/runman-agent/") || !strings.Contains(base, "/narwhal-cloud/runman-agent/") {
 				t.Fatalf("wrong repository: %s %s", api, base)
 			}
@@ -24,7 +27,7 @@ func TestReleaseChannels(t *testing.T) {
 			} else if !strings.HasSuffix(api, "/tags/continuous") || !strings.HasSuffix(base, "/download/continuous") {
 				t.Fatal("rolling channel changed")
 			}
-			args := strings.Join(updateCommandArgs(version), " ")
+			args := strings.Join(h.updateCommandArgs(), " ")
 			for _, required := range []string{"--unit=narwhal-agent-update", "--update-only", "--non-interactive", "--setenv=RUNMAN_AGENT_DOWNLOAD_BASE=" + base} {
 				if !strings.Contains(args, required) {
 					t.Fatalf("missing %s: %s", required, args)
@@ -35,6 +38,21 @@ func TestReleaseChannels(t *testing.T) {
 			}
 		})
 	}
+}
+
+// newTestService 构造一个使用空配置（即全部走内置默认）的 Service 用于测试地址派生。
+func newTestService(t *testing.T, version, body string) *Service {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	return &Service{cfg: cfg, currentVer: version}
 }
 
 func TestRollingVersionIdentity(t *testing.T) {
@@ -103,5 +121,32 @@ func TestDownloadScriptIsAtomic(t *testing.T) {
 				t.Fatalf("temporary files leaked: %v", files)
 			}
 		})
+	}
+}
+
+// TestEndpointOverrides 验证接入点配置能覆盖内置默认，且空值回落到默认。
+func TestEndpointOverrides(t *testing.T) {
+	body := `{"platform_addr":"agent.example.com:8443","update_repo":"tl0502/runman-agent",` +
+		`"update_base_url":"https://mirror.example.com/rel/continuous/",` +
+		`"update_api_url":"https://mirror.example.com/api/releases"}`
+	s := newTestService(t, "continuous", body)
+
+	if got, want := s.cfg.Get().PlatformAddress(), "agent.example.com:8443"; got != want {
+		t.Fatalf("platform addr = %q, want %q", got, want)
+	}
+	if got, want := s.releaseDownloadBase(), "https://mirror.example.com/rel/continuous"; got != want {
+		t.Fatalf("download base = %q, want %q", got, want)
+	}
+	if got, want := s.releaseAPIURL(), "https://mirror.example.com/api/releases/tags/continuous"; got != want {
+		t.Fatalf("api url = %q, want %q", got, want)
+	}
+
+	// 仅改仓库、不改基址时，应从新仓库派生 GitHub 地址。
+	repoOnly := newTestService(t, "v1.2.3", `{"update_repo":"https://github.com/acme/agent/"}`)
+	if got, want := repoOnly.releaseDownloadBase(), "https://github.com/acme/agent/releases/latest/download"; got != want {
+		t.Fatalf("repo-only download base = %q, want %q", got, want)
+	}
+	if got, want := repoOnly.cfg.Get().PlatformAddress(), config.DefaultPlatformAddr; got != want {
+		t.Fatalf("default platform addr = %q, want %q", got, want)
 	}
 }
