@@ -1073,15 +1073,17 @@ function renderBrandIcon(version) {
   const img = $('brandImg');
   const svg = $('brandSvg');
   if (!img || !svg) return;
-  if (state.siteIcon > 0) {
+  // SVG 元素没有 hidden 这个 IDL 属性（那是 HTMLElement 上的），
+  // 直接赋值 svg.hidden = true 只会在 DOM 对象上挂一个无用字段，
+  // 元素依然占位、把 img 顶到顶栏之外。必须走 attribute。
+  const show = state.siteIcon > 0;
+  if (show) {
     img.src = `/api/brand/icon?v=${state.siteIcon}`;
-    img.hidden = false;
-    svg.hidden = true;
   } else {
-    img.hidden = true;
     img.removeAttribute('src');
-    svg.hidden = false;
   }
+  img.toggleAttribute('hidden', !show);
+  svg.toggleAttribute('hidden', show);
   applyFavicon(state.siteIcon);
   renderIconPreview();
 }
@@ -1097,7 +1099,10 @@ function applyFavicon(version) {
 function renderIconPreview() {
   const slot = $('iconPreview');
   if (!slot) return;
-  const fallback = $('brandSvg').outerHTML.replace(/\sid="brandSvg"/, '');
+  // 克隆内置标记当预览：去掉 id 与 hidden，避免预览框跟着一起被隐藏。
+  const fallback = $('brandSvg').outerHTML
+    .replace(/\sid="brandSvg"/, '')
+    .replace(/\shidden(="")?/, '');
   slot.innerHTML = state.siteIcon > 0
     ? `<img src="/api/brand/icon?v=${state.siteIcon}" alt="">`
     : fallback;
@@ -1128,9 +1133,10 @@ $('iconReset').addEventListener('click', async () => {
     toast('已恢复默认图标');
   } catch (err) { toastErr(err); }
 });
+// 图片加载失败（图标文件被删/损坏）时回落内置 SVG —— 同样必须走 attribute。
 $('brandImg').addEventListener('error', () => {
   $('brandImg').hidden = true;
-  $('brandSvg').hidden = false;
+  $('brandSvg').removeAttribute('hidden');
 });
 
 /* ── 版本 ─────────────────────────────────────────────────────────────────── */
