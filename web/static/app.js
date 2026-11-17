@@ -248,7 +248,7 @@ function renderVmSummary() {
 
   const pct = (n) => (vms.length ? (n / vms.length) * 100 : 0);
   $('vmStack').innerHTML = vms.length
-    ? `<i class="run" style="width:${pct(run)}%"></i><i class="stop" style="width:${pct(stop)}%"></i><i class="err" style="width:${pct(err)}%"></i>`
+    ? `<i class="tone-run" style="width:${pct(run)}%"></i><i class="tone-stop" style="width:${pct(stop)}%"></i><i class="tone-err" style="width:${pct(err)}%"></i>`
     : '';
 
   const top = [...vms].sort((a, b) => (b.monthly_traffic_in + b.monthly_traffic_out) - (a.monthly_traffic_in + a.monthly_traffic_out)).slice(0, 3);

@@ -503,16 +503,17 @@ main {
   margin-top: 16px;
 }
 .stack-bar > i { display: block; height: 100%; transition: width .5s var(--ease); }
-.stack-bar > i.run { background: var(--green); }
-.stack-bar > i.stop { background: var(--ink-3); }
-.stack-bar > i.err { background: var(--red); }
+/* 段修饰类统一带 tone- 前缀：裸 .err/.run 会撞上通用工具类（.err 是错误提示条，带 padding） */
+.stack-bar > i.tone-run { background: var(--green); }
+.stack-bar > i.tone-stop { background: var(--ink-3); }
+.stack-bar > i.tone-err { background: var(--red); }
 
 .legend { display: flex; gap: 14px; margin-top: 12px; flex-wrap: wrap; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-2); }
-.legend i { width: 6px; height: 6px; border-radius: 50%; display: block; }
-.legend i.run { background: var(--green); }
-.legend i.stop { background: var(--ink-3); }
-.legend i.err { background: var(--red); }
+.legend i { width: 6px; height: 6px; border-radius: 50%; display: block; flex: none; }
+.legend i.tone-run { background: var(--green); }
+.legend i.tone-stop { background: var(--ink-3); }
+.legend i.tone-err { background: var(--red); }
 
 .mini-list { margin-top: 14px; display: grid; gap: 1px; }
 .mini-row {
