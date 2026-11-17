@@ -88,48 +88,27 @@ jobs:
           path: runman-agent-linux-${{ matrix.goarch }}
           retention-days: 1
 
-  build-rfw:
+  fetch-rfw:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - target: x86_64-unknown-linux-musl
-            arch: amd64
-          - target: aarch64-unknown-linux-musl
-            arch: arm64
+          - arch: amd64
+          - arch: arm64
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: narwhal-cloud/rfw
-          ref: dev
-
-      - name: Install dependencies
+      # rfw 不再从上游源码构建：本 fork 不维护 rfw，直接取上游 continuous
+      # 发布里那份二进制，保证与官方构建字节一致。
+      - name: Download prebuilt rfw
         run: |
-          sudo apt-get update
-          sudo apt-get install -y zstd python3-pip
-          pip3 install --break-system-packages ziglang cargo-zigbuild 2>/dev/null || pip3 install ziglang cargo-zigbuild
+          curl -fsSL --retry 3 --retry-delay 5 -o "rfw-${{ matrix.arch }}" \
+            "https://github.com/narwhal-cloud/runman-agent/releases/download/continuous/rfw-${{ matrix.arch }}"
+          test -s "rfw-${{ matrix.arch }}"
 
-      - name: Setup Rust toolchain
+      - name: Verify it is an ELF64 binary
         run: |
-          rustup toolchain install stable
-          rustup toolchain install nightly --component rust-src
-          rustup target add --toolchain stable ${{ matrix.target }}
-
-      - name: Install bpf-linker
-        run: |
-          mkdir -p ~/.cargo/bin
-          curl -fsSL https://github.com/aya-rs/bpf-linker/releases/download/v0.11.0/bpf-linker-x86_64-unknown-linux-musl.tar.zst | zstd -d | tar -x -C ~/.cargo/bin
-          if [ -d ~/.cargo/bin/bpf-linker-* ]; then
-            cp -f ~/.cargo/bin/bpf-linker-*/bpf-linker ~/.cargo/bin/ 2>/dev/null || true
-          fi
-          chmod +x ~/.cargo/bin/bpf-linker
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Build rfw
-        run: |
-          cargo zigbuild --package rfw --release --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/rfw rfw-${{ matrix.arch }}
+          file "rfw-${{ matrix.arch }}" | grep -q 'ELF 64-bit'
+          chmod +x "rfw-${{ matrix.arch }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -139,7 +118,7 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [test, build-agent, build-rfw]
+    needs: [test, build-agent, fetch-rfw]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -175,6 +154,5 @@ jobs:
             rfw-amd64 \
             rfw-arm64 \
             --target "${GITHUB_SHA}" \
-            --prerelease \
             --title "Continuous (main)" \
             --notes "Rolling release from the latest main branch commit (${GITHUB_SHA})."

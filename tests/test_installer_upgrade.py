@@ -31,10 +31,9 @@ class UpgradeTests(unittest.TestCase):
         self.db.execute("INSERT INTO preserved VALUES ('container-and-ssh-rule')")
         self.db.commit()  # Keep connection open so committed data remains in WAL.
         self.config = {
-            "virt_type": "incus", "db": str(self.db_path), "token": "keep-token",
+            "virt_type": "podman", "db": str(self.db_path), "token": "keep-token",
             "web_pass_hash": "keep-password-hash", "ipv6_mode": "subnet",
-            "ipv6_subnet": "2001:db8::/64", "incus_ipv6_only": True,
-            "incus_image_mirror": "https://private.example.test",
+            "ipv6_subnet": "2001:db8::/64",
             "custom_unknown_field": "keep-me",
         }
         self.write_config()
@@ -99,11 +98,13 @@ cp "$TEST_ROOT/new-agent" "$3"
     def test_preserves_config_and_live_wal_database(self):
         _, calls = self.run_installer()
         self.assertIn("systemctl restart narwhal-agent", calls)
-        self.assertIn("narwhal-cloud/runman-agent/releases/download/continuous", calls)
+        self.assertIn("tl0502/runman-agent/releases/download/continuous", calls)
         self.assertEqual((self.agent / "narwhal-agent").read_bytes(), self.new_binary)
         config = json.loads((self.agent / "config.json").read_text())
         for key, value in self.config.items():
             self.assertEqual(config[key], value, key)
+        # 迁移会把空的 update_repo 补成本仓库，已有值不覆盖。
+        self.assertEqual(config["update_repo"], "tl0502/runman-agent")
         backup, = (self.data / "backups").glob("upgrade-*")
         self.assertEqual(backup.stat().st_mode & 0o777, 0o700)
         self.assertEqual((backup / "narwhal-agent").read_text(), "old-agent")
@@ -118,7 +119,7 @@ cp "$TEST_ROOT/new-agent" "$3"
 
     def test_menu_agent_only_upgrade(self):
         result = subprocess.run(["bash", str(self.script), "en", "--menu"],
-                                cwd=self.root, env=self.env, input="14\n",
+                                cwd=self.root, env=self.env, input="13\n",
                                 text=True, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Agent-only update complete", result.stdout)
@@ -156,9 +157,17 @@ cp "$TEST_ROOT/new-agent" "$3"
         _, calls = self.run_installer(success=False)
         self.assertNotIn("curl", calls)
 
-    def test_rejects_backend_switch(self):
-        output, _ = self.run_installer("--virt", "podman", success=False)
-        self.assertIn("cannot switch", output)
+    def test_rejects_non_podman_backend_argument(self):
+        output, calls = self.run_installer("--virt", "incus", success=False)
+        self.assertIn("only supports the Podman backend", output)
+        self.assertEqual(calls, "")
+
+    def test_refuses_to_update_an_existing_non_podman_backend(self):
+        self.config["virt_type"] = "incus"
+        self.write_config()
+        output, calls = self.run_installer(success=False)
+        self.assertIn("only maintains Podman", output)
+        self.assertNotIn("curl", calls)
 
     def test_invalid_json_fails_before_download(self):
         (self.agent / "config.json").write_text("{broken")
@@ -185,7 +194,7 @@ cp "$TEST_ROOT/new-agent" "$3"
         self.assertEqual((self.agent / "narwhal-agent").read_bytes(), self.new_binary)
 
     def test_rejects_network_change(self):
-        output, _ = self.run_installer("--nat4", success=False)
+        output, _ = self.run_installer("--ipv6-mode", "none", success=False)
         self.assertIn("preserves existing networking", output)
 
     def test_rejects_token_change(self):
@@ -210,13 +219,12 @@ cp "$TEST_ROOT/new-agent" "$3"
         output, _ = self.run_installer(success=False)
         self.assertIn("will not perform a fresh installation", output)
 
-    def test_mirror_images_are_selected_by_host_architecture(self):
+    def test_installer_has_no_kvm_or_incus_install_paths(self):
         source = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
-        self.assertIn('--arg arch "$ARCH"', source)
-        self.assertIn('(.value.architecture? // .value.arch? // "") == $arch', source)
-        self.assertIn('MIRROR_IMPORT_REASON="no_matching_arch"', source)
-        self.assertNotIn('[ "$ARCH" = "amd64" ]', source)
-        self.assertIn('curl 退出码 $curl_status', source)
+        for forbidden in ("cloud-hypervisor", "incus network", "incus image",
+                          "VM_IMAGES_BASE", "fetch_vm_images", "import_incus_images"):
+            self.assertNotIn(forbidden, source)
+        self.assertIn("curl 退出码 $curl_status", source)
 
     def test_rfw_retries_xdp_attach_failures_in_skb_mode(self):
         source = (Path(__file__).resolve().parents[1] / "install.sh").read_text()

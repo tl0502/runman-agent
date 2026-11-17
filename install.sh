@@ -1785,7 +1785,7 @@ configure_host_ipv6_routing() {
 # IPV6_CONFIG: 检测原始结果，"none" 或 "iface|addr|prefix"
 # IPV6_MODE:   最终运行模式，"none" / "snat" / "subnet"（写入 config.json）
 # 三种后端的交互安装统一进入网络场景菜单；命令行已给 --ipv6-mode 时不再询问。
-# Podman/cloud-hypervisor 固定保留 NAT4，因此不会显示 Incus 专属的纯 IPv6 选项。
+# Podman 固定保留 NAT4，因此不提供纯 IPv6 选项。
 if [ "$NON_INTERACTIVE" != "1" ] && [ -z "${IPV6_MODE:-}" ]; then
     prompt_ipv6_strategy
 fi
