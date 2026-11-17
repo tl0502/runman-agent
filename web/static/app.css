@@ -674,7 +674,23 @@ select.input {
   background-repeat: no-repeat;
   background-position: right 10px center;
   padding-right: 30px;
+  /* select 不会像 input 那样自动垂直居中，显式给行高 */
+  line-height: 32px;
+  cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
 }
+[data-theme="dark"] select.input {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23bfc5cd' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+}
+/* 展开后的选项由系统绘制，显式给背景色避免深色主题下白底 */
+select.input option {
+  background: var(--card-solid);
+  color: var(--ink-0);
+  line-height: 1.6;
+}
+select.input:disabled { cursor: not-allowed; }
 
 .check { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-1); cursor: pointer; }
 .check input {

@@ -1026,11 +1026,11 @@ async function loadNetworkAddresses(selected) {
     primary = (data && data.primary) || '';
   } catch (e) { /* 拉不到就只留空选项 */ }
 
-  sel.innerHTML = '<option value="">未指定（所有 IP 均可访问）</option>';
+  sel.innerHTML = '<option value="">未指定（默认）</option>';
   addrs.forEach((ip) => {
     const opt = document.createElement('option');
     opt.value = ip;
-    opt.textContent = ip === primary ? `${ip}（主 IP）` : ip;
+    opt.textContent = ip === primary ? `${ip}（主）` : ip;
     sel.appendChild(opt);
   });
   if (selected && !addrs.includes(selected)) {
@@ -1202,11 +1202,24 @@ $('verCheck').addEventListener('click', (e) => withBusy(e.currentTarget, async (
 }));
 
 $('verUpgrade').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
-  if (!confirm('升级后服务会自动重启，确认继续？')) return;
+  // 先比对版本：版本号相同也会重新下载安装（可用来拉取 CI 重新构建的产物），
+  // 但必须说清楚，否则用户会以为"点了没反应"。
+  let head = '升级后服务会自动重启，面板会短暂失联。\n\n';
+  try {
+    const d = await api('GET', '/api/update-check');
+    if (d && !d.error) {
+      head = d.has_update
+        ? `发现新版本 ${d.latest}（当前 ${d.current}）。\n升级后服务会自动重启，面板会短暂失联。\n\n`
+        : `当前已是最新版本 ${d.current}。\n继续会重新下载并安装同一版本的发布包（版本号不变），`
+          + '适用于拉取 CI 重新构建的产物。\n\n';
+    }
+  } catch (err) { /* 检查失败不阻塞升级 */ }
+
+  if (!confirm(head + '确认继续？')) return;
   try {
     await api('POST', '/api/upgrade');
     $('verUpgradeNote').hidden = false;
-    $('verUpgradeNote').textContent = '升级已开始，面板会短暂失联。';
+    $('verUpgradeNote').textContent = '升级已开始，面板会短暂失联，稍后刷新即可。';
     toast('升级已开始');
   } catch (err) { $('verErr').textContent = err.message; $('verErr').classList.add('show'); }
 }));
