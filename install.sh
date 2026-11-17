@@ -1564,9 +1564,11 @@ if systemctl is-active --quiet "$AGENT_SERVICE" 2>/dev/null || [ -f "$AGENT_BINA
 
     # 配置迁移：为旧配置补齐新增字段（保留已有值，仅补充缺省），避免升级后新功能无法生效
     if command -v jq >/dev/null 2>&1 && [ -f "$AGENT_CONFIG_FILE" ]; then
+        # 空字符串也视为未设置：旧配置里 update_repo 可能已被写成 ""，
+        # 只用 // 无法覆盖（// 只对 null/false 生效），必须显式判空。
         jq --arg repo "tl0502/runman-agent" --arg nb "$NETAVARK_BASE" '. + {
-               update_repo:     (.update_repo     // $repo),
-               netavark_base:   (.netavark_base   // $nb),
+               update_repo:     (if ((.update_repo // "") == "") then $repo else .update_repo end),
+               netavark_base:   (if ((.netavark_base // "") == "") then $nb else .netavark_base end),
                ipv6_backup_dir: (.ipv6_backup_dir // "/var/lib/narwhal-agent/backups")
              }' "$AGENT_CONFIG_FILE" > "$AGENT_CONFIG_FILE.tmp" \
             && mv "$AGENT_CONFIG_FILE.tmp" "$AGENT_CONFIG_FILE" \
