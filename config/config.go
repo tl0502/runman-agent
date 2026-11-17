@@ -20,8 +20,9 @@ const (
 
 	// DefaultPlatformAddr 是官方平台的 gRPC 接入地址；配置为空时使用。
 	DefaultPlatformAddr = "hosting.fuckip.me:443"
-	// DefaultUpdateRepo 是官方自更新仓库；配置为空时使用。
-	DefaultUpdateRepo = "narwhal-cloud/runman-agent"
+	// DefaultUpdateRepo 是本 fork 的自更新仓库；配置为空时使用。
+	// 上游原值 narwhal-cloud/runman-agent 不再作为兜底，避免误拉官方构建。
+	DefaultUpdateRepo = "tl0502/runman-agent"
 	// DefaultNetavarkBase 是自定义 netavark（支持 snat_ipv6 / bandwidth_*）的下载基址。
 	DefaultNetavarkBase = "https://github.com/tl0502/netavark-Runman/releases/latest/download"
 )

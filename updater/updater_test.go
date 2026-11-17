@@ -17,7 +17,7 @@ func TestReleaseChannels(t *testing.T) {
 		t.Run(version, func(t *testing.T) {
 			h := newTestService(t, version, "{}")
 			api, base := h.releaseAPIURL(), h.releaseDownloadBase()
-			if !strings.Contains(api, "repos/narwhal-cloud/runman-agent/") || !strings.Contains(base, "/narwhal-cloud/runman-agent/") {
+			if !strings.Contains(api, "repos/tl0502/runman-agent/") || !strings.Contains(base, "/tl0502/runman-agent/") {
 				t.Fatalf("wrong repository: %s %s", api, base)
 			}
 			if strings.HasPrefix(version, "v") {
@@ -33,8 +33,8 @@ func TestReleaseChannels(t *testing.T) {
 					t.Fatalf("missing %s: %s", required, args)
 				}
 			}
-			if !strings.Contains(args, "narwhal-cloud/runman-agent") {
-				t.Fatal("expected narwhal-cloud update source")
+			if !strings.Contains(args, "tl0502/runman-agent") {
+				t.Fatal("expected tl0502 update source")
 			}
 		})
 	}

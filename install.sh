@@ -20,14 +20,9 @@ PODMAN_NETWORK="narwhal-net"
 
 AGENT_RELEASE_TAG="${AGENT_RELEASE_TAG:-continuous}"
 DOWNLOAD_BASE="${RUNMAN_AGENT_DOWNLOAD_BASE:-https://github.com/tl0502/runman-agent/releases/download/$AGENT_RELEASE_TAG}"
-CLOUD_HYPERVISOR_BASE="https://github.com/cloud-hypervisor/cloud-hypervisor/releases/latest/download"
-# 预构建系统镜像（cloudhv/incus），由 narwhal-cloud/images 仓库 CI 每月构建
-VM_IMAGES_BASE="https://github.com/narwhal-cloud/images/releases/download/vm-latest"
 NETAVARK_BASE="${NETAVARK_BASE:-https://github.com/tl0502/netavark-Runman/releases/latest/download}"
 # rfw v2 随 agent 同仓库发布，资产名为 rfw-amd64 / rfw-arm64
 RFW_BASE="$DOWNLOAD_BASE"
-DEFAULT_INCUS_IMAGE_MIRROR=""
-DEFAULT_INCUS_ALPINE_VERSION="3.24"
 
 # t EN ZH — returns the string for current language
 t() { [ "$LANG_CODE" = "zh" ] && echo "$2" || echo "$1"; }
@@ -41,14 +36,12 @@ die() { log "$1" >&2; exit 1; }
 
 backup_ipv6_config() {
     local ts; ts=$(date +%Y%m%d-%H%M%S)
-    local dir="$INCUS_IPV6_BACKUP_DIR/ipv6-$ts"
+    local dir="$BACKUP_DIR/ipv6-$ts"
     mkdir -p "$dir"
     # 仅在“变更前”调用：复制当前（原始）状态，并记录受管文件安装前是否已存在，
     # 供卸载/回滚时区分“恢复原始文件”还是“删除安装时新建的文件”。
     [ -f /etc/sysctl.d/99-narwhalcloud.conf ] && cp /etc/sysctl.d/99-narwhalcloud.conf "$dir/sysctl.conf"
     [ -f /etc/network/interfaces ] && cp /etc/network/interfaces "$dir/interfaces"
-    command -v incus >/dev/null 2>&1 && incus network show incusbr0 >"$dir/incusbr0.network" 2>/dev/null
-    [ -f /etc/modules-load.d/runman-incus.conf ] && cp /etc/modules-load.d/runman-incus.conf "$dir/runman-incus.conf"
     [ -f /etc/systemd/journald.conf ] && cp /etc/systemd/journald.conf "$dir/journald.conf"
     [ -f /etc/systemd/zram-generator.conf ] && cp /etc/systemd/zram-generator.conf "$dir/zram-generator.conf"
     [ -f /etc/udev/rules.d/99-loop-directio.rules ] && cp /etc/udev/rules.d/99-loop-directio.rules "$dir/loop-directio.rules"
@@ -59,23 +52,20 @@ backup_ipv6_config() {
         echo "IPV6_SUBNET=${IPV6_SUBNET:-}"
         echo "IPV6_ADDR=${IPV6_ADDR:-}"
         echo "IPV6_IFACE=${IPV6_IFACE:-}"
-        echo "INCUS_WG_IPV6_SUBNET=${INCUS_WG_IPV6_SUBNET:-}"
-        # 关键：记录受管文件/网络在安装前是否已存在（1=已存在需恢复，0=安装时新建需删除）
+        # 关键：记录受管文件在安装前是否已存在（1=已存在需恢复，0=安装时新建需删除）
         echo "HAD_SYSCTL=$( [ -f /etc/sysctl.d/99-narwhalcloud.conf ] && echo 1 || echo 0 )"
-        echo "HAD_MODULES=$( [ -f /etc/modules-load.d/runman-incus.conf ] && echo 1 || echo 0 )"
-        echo "HAD_INCUSBR0=$( command -v incus >/dev/null 2>&1 && incus network show incusbr0 >/dev/null 2>&1 && echo 1 || echo 0 )"
         echo "HAD_JOURNALD=$( [ -f /etc/systemd/journald.conf ] && echo 1 || echo 0 )"
         echo "HAD_ZRAM=$( [ -f /etc/systemd/zram-generator.conf ] && echo 1 || echo 0 )"
         echo "HAD_LOOP_RULE=$( [ -f /etc/udev/rules.d/99-loop-directio.rules ] && echo 1 || echo 0 )"
         echo "HAD_STORAGE_CONF=$( [ -f /etc/containers/storage.conf ] && echo 1 || echo 0 )"
         echo "HAD_RFW_SERVICE=$( [ -f /etc/systemd/system/rfw.service ] && echo 1 || echo 0 )"
     } > "$dir/meta.env"
-    echo "$dir" > "$INCUS_IPV6_BACKUP_DIR/latest"
+    echo "$dir" > "$BACKUP_DIR/latest"
     echo "$dir"
 }
 
 restore_ipv6_config() {
-    local target="${1:-$(cat "$INCUS_IPV6_BACKUP_DIR/latest" 2>/dev/null)}"
+    local target="${1:-$(cat "$BACKUP_DIR/latest" 2>/dev/null)}"
     [ -n "$target" ] && [ -d "$target" ] || { log "$(t "No IPv6 backup found" "未找到 IPv6 备份")"; return 1; }
     # 元数据只读取固定的 0/1 标记，不 source 文件，避免环境值被当成 shell 执行。
     meta_flag() {
@@ -84,8 +74,6 @@ restore_ipv6_config() {
         echo "${value:-0}"
     }
     HAD_SYSCTL=$(meta_flag HAD_SYSCTL)
-    HAD_MODULES=$(meta_flag HAD_MODULES)
-    HAD_INCUSBR0=$(meta_flag HAD_INCUSBR0)
     HAD_JOURNALD=$(meta_flag HAD_JOURNALD)
     HAD_ZRAM=$(meta_flag HAD_ZRAM)
     HAD_LOOP_RULE=$(meta_flag HAD_LOOP_RULE)
@@ -100,24 +88,6 @@ restore_ipv6_config() {
     fi
     # interfaces：仅当备份存在时恢复（避免误删用户原有配置）
     [ -f "$target/interfaces" ] && cp "$target/interfaces" /etc/network/interfaces
-    # 安全卸载会保留后端容器，因此也必须保留其依赖的 Incus 网桥。
-    # 完整清理/显式回滚时才恢复安装前的 incusbr0 状态。
-    if [ "${PRESERVE_INCUS_NETWORK:-0}" = "1" ]; then
-        log "$(t "Preserved incusbr0 because backend instances are being kept." "已保留 incusbr0，避免影响保留的后端实例。")"
-    elif command -v incus >/dev/null 2>&1; then
-        if [ "${HAD_INCUSBR0:-1}" = "1" ] && [ -f "$target/incusbr0.network" ]; then
-            incus network edit incusbr0 <"$target/incusbr0.network" 2>/dev/null \
-                && log "$(t "Restored incusbr0 network" "已恢复 incusbr0 网络配置")"
-        elif [ "${HAD_INCUSBR0:-1}" = "0" ]; then
-            incus network delete incusbr0 2>/dev/null \
-                && log "$(t "Removed incusbr0 (created by installer)" "已删除安装时创建的 incusbr0")"
-        fi
-    fi
-    # modules-load（安装时新建则删除）
-    if [ "${HAD_MODULES:-0}" = "0" ] && [ -f /etc/modules-load.d/runman-incus.conf ]; then
-        rm -f /etc/modules-load.d/runman-incus.conf
-        log "$(t "Removed runman-incus modules config" "已删除 runman-incus 内核模块配置")"
-    fi
 
     # 其它受管文件：安装前存在则恢复原文件；安装时新建则删除。
     restore_managed_file() {
@@ -153,12 +123,11 @@ install_ipv6_rollback_helper() {
 #   ./ipv6-rollback.sh              # 回滚到最近一次备份
 #   ./ipv6-rollback.sh <备份目录>   # 回滚到指定备份（/var/lib/narwhal-agent/backups/ipv6-xxx）
 set -e
-BACKUP_DIR="${INCUS_IPV6_BACKUP_DIR:-/var/lib/narwhal-agent/backups}"
+BACKUP_DIR="${BACKUP_DIR:-/var/lib/narwhal-agent/backups}"
 TARGET="${1:-$(cat "$BACKUP_DIR/latest" 2>/dev/null)}"
 [ -n "$TARGET" ] && [ -d "$TARGET" ] || { echo "未找到 IPv6 备份"; exit 1; }
 [ -f "$TARGET/sysctl.conf" ] && { cp "$TARGET/sysctl.conf" /etc/sysctl.d/99-narwhalcloud.conf && sysctl -p /etc/sysctl.d/99-narwhalcloud.conf >/dev/null 2>&1; }
 [ -f "$TARGET/interfaces" ] && cp "$TARGET/interfaces" /etc/network/interfaces
-[ -f "$TARGET/incusbr0.network" ] && command -v incus >/dev/null 2>&1 && incus network edit incusbr0 <"$TARGET/incusbr0.network" 2>/dev/null
 echo "已回滚 IPv6 配置: $TARGET"
 EOF
     chmod +x "$AGENT_BIN_DIR/ipv6-rollback.sh"
@@ -230,87 +199,26 @@ rotate_agent_token() {
 
 # ── Incus 制品清理 ──────────────────────────────────────────────────────────
 
-purge_incus_artifacts() {
-    command -v incus >/dev/null 2>&1 || {
-        log "$(t "Incus is not installed; nothing to purge." "未安装 Incus，无需清理。")"
-        return 0
-    }
-
-    local names name alias answer purge_arch failed=0
-    case "$(uname -m)" in
-        aarch64|arm64) purge_arch="arm64" ;;
-        *) purge_arch="amd64" ;;
-    esac
-    names=$(incus list --format csv -c n 2>/dev/null || true)
-    log "$(t "Incus instances to delete:" "将删除的 Incus 实例:") ${names:-<none>}"
-    log "$(t "Managed image aliases to delete:" "将删除的受管镜像别名:") alpine/3.24/cloud/$purge_arch/ready, alpine/3.23/cloud/$purge_arch/ready, debian/13/cloud/$purge_arch/ready"
-    log "$(t "Managed network/remote to delete:" "将删除的受管网络/远端:") incusbr0, custom-mirror"
-
-    if [ "$NON_INTERACTIVE" != "1" ] && [ -t 0 ]; then
-        read -rp "$(t "Type PURGE to continue: " "输入 PURGE 继续: ")" answer
-        [ "$answer" = "PURGE" ] || die "$(t "Purge cancelled." "已取消彻底清理。")"
-    fi
-
-    while IFS= read -r name; do
-        [ -n "$name" ] || continue
-        if ! incus delete "$name" --force >/dev/null 2>&1; then
-            log "$(t "Failed to delete Incus instance:" "删除 Incus 实例失败:") $name"
-            failed=1
-        fi
-    done <<< "$names"
-
-    for alias in "alpine/3.24/cloud/$purge_arch/ready" "alpine/3.23/cloud/$purge_arch/ready" "debian/13/cloud/$purge_arch/ready" "custom/alpine-base" "podcctv/alpine-base"; do
-        incus image info "$alias" >/dev/null 2>&1 || continue
-        if ! incus image delete "$alias" >/dev/null 2>&1; then
-            log "$(t "Failed to delete managed Incus image:" "删除受管 Incus 镜像失败:") $alias"
-            failed=1
-        fi
-    done
-    for remote_name in custom-mirror podcctv-mirror; do
-        if incus remote list --format csv -c n 2>/dev/null | grep -qx "$remote_name"; then
-            incus remote remove "$remote_name" >/dev/null 2>&1 || {
-                log "$(t "Failed to remove Incus remote:" "删除 Incus 远端失败:") $remote_name"
-                failed=1
-            }
-        fi
-    done
-    if incus network show incusbr0 >/dev/null 2>&1; then
-        incus network delete incusbr0 >/dev/null 2>&1 || {
-            log "$(t "Failed to delete incusbr0; check for remaining instances or profiles." "删除 incusbr0 失败；请检查残留实例或 profile 引用。")"
-            failed=1
-        }
-    fi
-    [ "$failed" = "0" ] || die "$(t "Incus purge was incomplete; see the failed items above." "Incus 清理未完成，请检查上方失败项目。")"
-    log "$(t "✓ Managed Incus instances, images, network and remote removed." "✓ 已删除受管 Incus 实例、镜像、网络和远端。")"
-}
-
 # ── 一键卸载 ────────────────────────────────────────────────────────────────
-# 仅撤销本安装器引入的变更，不影响既有业务（其它服务、incus 容器/镜像默认保留）。
+# 仅撤销本安装器引入的变更，不影响既有业务（其它服务、Podman 容器/镜像默认保留）。
 # 最关键的是先恢复 IPv6 / 网卡配置（基于安装前的完整备份），再停止服务、清理文件。
 do_uninstall() {
     [ "$(id -u)" = "0" ] || die "$(t "Uninstall requires root." "卸载需要 root 权限。")"
     log "$(t "=== NarwhalCloud Agent uninstall ===" "=== NarwhalCloud Agent 卸载 ===")"
     local install_origin_restored=0 previous_virt="unknown"
-    local PRESERVE_INCUS_NETWORK=0 PRESERVE_PODMAN_STORAGE=0
+    local PRESERVE_PODMAN_STORAGE=0
     if [ -f "$AGENT_CONFIG_FILE" ]; then
         previous_virt=$(grep -o '"virt_type"[[:space:]]*:[[:space:]]*"[^"]*"' "$AGENT_CONFIG_FILE" 2>/dev/null \
             | head -n1 | sed 's/.*:[[:space:]]*"//; s/"$//' || true)
     fi
 
-    # 普通卸载承诺保留后端状态。不要恢复掉保留实例正在使用的网桥，
-    # 也不要删除指向 /data 的 Podman storage.conf。
-    if [ "${PURGE_INCUS:-0}" != "1" ]; then
-        [ "$previous_virt" = "incus" ] && PRESERVE_INCUS_NETWORK=1
-        [ "$previous_virt" = "podman" ] && PRESERVE_PODMAN_STORAGE=1
-    fi
-
-    # 完整重装模式先删实例，避免恢复/删除网桥时仍被实例引用。
-    [ "${PURGE_INCUS:-0}" = "1" ] && purge_incus_artifacts
+    # 普通卸载承诺保留后端状态，也不要删除指向 /data 的 Podman storage.conf。
+    [ "$previous_virt" = "podman" ] && PRESERVE_PODMAN_STORAGE=1
 
     # 0. 最先恢复 IPv6 / 网卡配置（最关键：避免遗留错误路由/转发影响业务）
-    if [ -d "$INCUS_IPV6_BACKUP_DIR" ]; then
+    if [ -d "$BACKUP_DIR" ]; then
         local origin
-        origin=$(cat "$INCUS_IPV6_BACKUP_DIR/install-origin" 2>/dev/null || true)
+        origin=$(cat "$BACKUP_DIR/install-origin" 2>/dev/null || true)
         if [ -n "$origin" ] && restore_ipv6_config "$origin"; then
             install_origin_restored=1
         else
@@ -340,7 +248,6 @@ do_uninstall() {
     systemctl daemon-reload 2>/dev/null || true
 
     # 2. 删除安装时新增/修改的受管文件（restore 已按备份删除新建项，这里兜底）
-    rm -f /etc/modules-load.d/runman-incus.conf
     rm -f "$AGENT_BIN_DIR/ipv6-rollback.sh"
 
     # 3. 删除 agent 程序/配置目录，但保留 IPv6 备份（便于事后人工恢复）
@@ -348,43 +255,24 @@ do_uninstall() {
     if [ -d "$AGENT_DATA_DIR" ]; then
         for f in "$AGENT_DATA_DIR"/*; do
             [ -e "$f" ] || continue
-            [ "$f" = "$INCUS_IPV6_BACKUP_DIR" ] && continue
+            [ "$f" = "$BACKUP_DIR" ] && continue
             rm -rf "$f"
         done
     fi
 
-    if [ "${PURGE_INCUS:-0}" = "1" ]; then
-        log "$(t "Full uninstall complete; managed Incus artifacts were removed." "完整卸载完成；受管 Incus 制品已删除。")"
-    elif [ "$previous_virt" = "podman" ]; then
-        log "$(t "Uninstall complete. Podman containers, narwhal-net, images and /data are preserved." \
-            "卸载完成。已保留 Podman 容器、narwhal-net、镜像与 /data 数据盘。")"
-    else
-        log "$(t "Uninstall complete. Incus containers/images and other services are preserved." "卸载完成。已保留 incus 容器/镜像及其它业务服务。")"
-    fi
-    log "$(t "Backups kept at: $INCUS_IPV6_BACKUP_DIR (rerun install.sh --rollback-ipv6 if needed)" "备份保留于: $INCUS_IPV6_BACKUP_DIR（如有需要可重新运行 install.sh --rollback-ipv6）")"
-    if [ "${PURGE_INCUS:-0}" != "1" ] && [ "$previous_virt" = "incus" ]; then
-        log "$(t "For a clean Incus reinstall, use: bash install.sh --uninstall --purge-incus" "如需彻底清理 Incus 后重装: bash install.sh --uninstall --purge-incus")"
-    fi
+    log "$(t "Uninstall complete. Podman containers, narwhal-net, images and /data are preserved." \
+        "卸载完成。已保留 Podman 容器、narwhal-net、镜像与 /data 数据盘。")"
+    log "$(t "Backups kept at: $BACKUP_DIR (rerun install.sh --rollback-ipv6 if needed)" "备份保留于: $BACKUP_DIR（如有需要可重新运行 install.sh --rollback-ipv6）")"
 }
 
 # ── Language selection ────────────────────────────────────────────────────────
 
 # Support non-interactive mode via environment variable or command line argument
 INSTALL_RFW_FORCE=0
-# 1: 忽略版本戳，强制重新下载 cloudhv / incus 预构建镜像
+# 1: 忽略版本戳，强制重新拉取 Podman 基础镜像
 FORCE_IMAGE_REFRESH="${FORCE_IMAGE_REFRESH:-0}"
-
-# 本地 incus 镜像服务 / 定制能力相关环境变量（离线/内网部署用）
-[ "${INCUS_IMAGE_MIRROR+x}" = x ] && INCUS_IMAGE_MIRROR_EXPLICIT=1 || INCUS_IMAGE_MIRROR_EXPLICIT=0
-INCUS_IMAGE_MIRROR="${INCUS_IMAGE_MIRROR:-$DEFAULT_INCUS_IMAGE_MIRROR}"  # 私有 simplestreams 镜像服务器；留空则使用官方 GitHub releases
-INCUS_LOCAL_IMAGE_DIR="${INCUS_LOCAL_IMAGE_DIR:-}" # 本地镜像目录（含 incus-<distro>-<arch>.tar.gz），直接离线导入
-INCUS_ALPINE_BASE="${INCUS_ALPINE_BASE:-}"         # 定制 alpine 基础镜像：本地 tar.gz 路径或已存在的 incus 别名
-INCUS_IPV6_ALLOC="${INCUS_IPV6_ALLOC:-1}"          # 每个容器分配的 IPv6 数量（非 /64 网段精细化分配）
-INCUS_WG_IPV6_SUBNET="${INCUS_WG_IPV6_SUBNET:-}"   # 供 WireGuard 隧道分配的 IPv6 池（CIDR）
-INCUS_BANNER_PRESET="${INCUS_BANNER_PRESET:-none}" # none / default / minimal / project / custom
-INCUS_BANNER_TEXT="${INCUS_BANNER_TEXT:-}"         # preset=custom 时的完整横幅文本
-INCUS_IPV6_BACKUP_DIR="${INCUS_IPV6_BACKUP_DIR:-/var/lib/narwhal-agent/backups}" # IPv6 配置备份目录
-INCUS_IPV6_ONLY="${INCUS_IPV6_ONLY:-}" # 设为 1 时新建容器为纯 IPv6（不分配 IPv4），需 IPv6 模式为 subnet/snat
+BACKUP_DIR="${BACKUP_DIR:-/var/lib/narwhal-agent/backups}" # IPv6 配置备份目录
+IPV6_ROUTED="${IPV6_ROUTED:-0}"         # 1=独立 routed prefix（6in4/WireGuard 等），无需上游 NDP
 IPV6_ROUTED="${IPV6_ROUTED:-0}"         # 1=独立 routed prefix（6in4/WireGuard 等），无需上游 NDP
 [ "${PODMAN_REGISTRY_MIRROR+x}" = x ] && PODMAN_REGISTRY_MIRROR_EXPLICIT=1 || PODMAN_REGISTRY_MIRROR_EXPLICIT=0
 PODMAN_DATA_SIZE="${PODMAN_DATA_SIZE:-}" # Podman XFS 数据盘大小；留空时按根分区可用空间推荐
@@ -396,7 +284,6 @@ FORCE_MENU=0
 UPDATE_ONLY=0
 UPDATE_NETWORK_REQUESTED=0
 GUIDED_INSTALL=0
-PURGE_INCUS="${PURGE_INCUS:-0}"
 TOKEN_ACTION=""
 TOKEN_VALUE="${TOKEN_VALUE:-}"
 INITIAL_TOKEN="${NARWHAL_AGENT_TOKEN:-}"
@@ -415,7 +302,6 @@ show_help() {
 Runman Agent installer
 
   bash install.sh                         Guided menu
-  bash install.sh --virt incus            Install/update Incus backend
   bash install.sh --update-only           Back up and update Agent only; require an existing installation
   bash install.sh --detect-ipv6            Detect native/tunnel IPv6 and routed prefix
   bash install.sh --validate-ipv6 ...      Validate manually supplied IPv6 values
@@ -426,12 +312,10 @@ Runman Agent installer
   bash install.sh --restart-agent          Restart Agent and optional rfw
   bash install.sh --reset-panel-password   Reset panel password interactively
   bash install.sh --uninstall              Remove Agent; preserve backend containers/images/data
-  bash install.sh --uninstall --purge-incus
-                                           Remove Agent and managed Incus artifacts
 
 IPv6: --ipv6-mode none|snat|subnet --ipv6-addr ADDR
       --ipv6-subnet CIDR --ipv6-iface IFACE --ipv6-routed
-      --ipv6-only | --nat4 --skip-ipv6-probe
+      --skip-ipv6-probe
 Podman: --data-size 10G --podman-registry-mirror mirror.example.com
 EOF
 }
@@ -444,8 +328,6 @@ show_agent_status() {
     command -v systemctl >/dev/null 2>&1 && agent_state=$(systemctl is-active "$AGENT_SERVICE" 2>/dev/null || true)
     case "$virt" in
         podman) backend_state=$(systemctl is-active podman.socket 2>/dev/null || true) ;;
-        incus) backend_state=$(systemctl is-active incus 2>/dev/null || true) ;;
-        cloudhv) backend_state=$([ -e /dev/kvm ] && echo ready || echo no-kvm) ;;
     esac
     [ -f "$RFW_BIN_DIR/rfw" ] && rfw_state=$(systemctl is-active rfw 2>/dev/null || true)
     panel_host=$(curl -4 -s --max-time 5 ip.sb 2>/dev/null | head -n1 || true)
@@ -545,9 +427,8 @@ show_main_menu() {
     printf '  9) %s\n' "$(t "Back up IPv6 configuration" "备份 IPv6 配置")"
     printf ' 10) %s\n' "$(t "Roll back IPv6 configuration" "回滚 IPv6 配置")"
     printf ' 11) %s\n' "$(t "Uninstall Agent (keep containers/images)" "卸载 Agent（保留容器/镜像）")"
-    printf ' 12) %s\n' "$(t "Full Incus cleanup and uninstall" "清理 Incus 制品并完整卸载")"
-    printf ' 13) %s\n' "$(t "Configure/refresh container images" "配置/刷新容器镜像")"
-    printf ' 14) %s\n' "$(t "Agent-only upgrade (keep networking)" "仅升级 Agent（保留网络）")"
+    printf ' 12) %s\n' "$(t "Configure/refresh container images" "配置/刷新容器镜像")"
+    printf ' 13) %s\n' "$(t "Agent-only upgrade (keep networking)" "仅升级 Agent（保留网络）")"
     printf '  0) %s\n' "$(t "Exit" "退出")"
     read -rp '> ' _menu_choice
     case "${_menu_choice}" in
@@ -562,9 +443,8 @@ show_main_menu() {
         9) IPV6_ONESHOT_MODE="backup" ;;
         10) IPV6_ONESHOT_MODE="rollback" ;;
         11) UNINSTALL=1 ;;
-        12) UNINSTALL=1; PURGE_INCUS=1 ;;
-        13) GUIDED_INSTALL=1; FORCE_IMAGE_REFRESH=1; IMAGE_MENU=1 ;;
-        14) UPDATE_ONLY=1 ;;
+        12) GUIDED_INSTALL=1; FORCE_IMAGE_REFRESH=1; IMAGE_MENU=1 ;;
+        13) UPDATE_ONLY=1 ;;
         0) exit 0 ;;
         *) die "$(t "Invalid menu selection." "无效的菜单选项。")" ;;
     esac
@@ -577,23 +457,14 @@ while [[ $# -gt 0 ]]; do
         --virt) [ $# -ge 2 ] || die "--virt requires a value"; VIRT_TYPE_REQUESTED="$2"; shift 2 ;;
         --install-rfw) INSTALL_RFW_FORCE=1; shift ;;
         --force-images) FORCE_IMAGE_REFRESH=1; shift ;;
-        --image-mirror) [ $# -ge 2 ] || die "--image-mirror requires a value"; INCUS_IMAGE_MIRROR="$2"; INCUS_IMAGE_MIRROR_EXPLICIT=1; shift 2 ;;
-        --local-image-dir) [ $# -ge 2 ] || die "--local-image-dir requires a value"; INCUS_LOCAL_IMAGE_DIR="$2"; shift 2 ;;
-        --alpine-base) [ $# -ge 2 ] || die "--alpine-base requires a value"; INCUS_ALPINE_BASE="$2"; shift 2 ;;
         --data-size) [ $# -ge 2 ] || die "--data-size requires a value"; PODMAN_DATA_SIZE="$2"; shift 2 ;;
         --podman-registry-mirror) [ $# -ge 2 ] || die "--podman-registry-mirror requires a value"; PODMAN_REGISTRY_MIRROR="$2"; PODMAN_REGISTRY_MIRROR_EXPLICIT=1; shift 2 ;;
-        --ipv6-alloc) [ $# -ge 2 ] || die "--ipv6-alloc requires a value"; INCUS_IPV6_ALLOC="$2"; shift 2 ;;
-        --wg-ipv6-subnet) [ $# -ge 2 ] || die "--wg-ipv6-subnet requires a value"; INCUS_WG_IPV6_SUBNET="$2"; shift 2 ;;
         --ipv6-mode) [ $# -ge 2 ] || die "--ipv6-mode requires a value"; IPV6_MODE="$2"; shift 2 ;;
         --ipv6-addr) [ $# -ge 2 ] || die "--ipv6-addr requires a value"; IPV6_ADDR="$2"; shift 2 ;;
         --ipv6-subnet) [ $# -ge 2 ] || die "--ipv6-subnet requires a value"; IPV6_SUBNET="$2"; shift 2 ;;
         --ipv6-iface) [ $# -ge 2 ] || die "--ipv6-iface requires a value"; IPV6_IFACE="$2"; shift 2 ;;
         --ipv6-routed) IPV6_ROUTED=1; shift ;;
         --skip-ipv6-probe) SKIP_IPV6_PROBE=1; shift ;;
-        --banner-preset) [ $# -ge 2 ] || die "--banner-preset requires a value"; INCUS_BANNER_PRESET="$2"; shift 2 ;;
-        --banner-text) [ $# -ge 2 ] || die "--banner-text requires a value"; INCUS_BANNER_TEXT="$2"; shift 2 ;;
-        --ipv6-only) INCUS_IPV6_ONLY=1; UPDATE_NETWORK_REQUESTED=1; shift ;;
-        --nat4) INCUS_IPV6_ONLY=0; UPDATE_NETWORK_REQUESTED=1; shift ;;
         --token) [ $# -ge 2 ] || die "--token requires a value"; INITIAL_TOKEN="$2"; TOKEN_VALUE="$2"; shift 2 ;;
         --generate-token) GENERATE_TOKEN=1; shift ;;
         -y|--yes|--non-interactive) NON_INTERACTIVE=1; shift ;;
@@ -609,25 +480,20 @@ while [[ $# -gt 0 ]]; do
         --restart-agent) SYSTEM_ACTION="restart"; shift ;;
         --reset-panel-password) SYSTEM_ACTION="reset-password"; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
-        --purge-incus) PURGE_INCUS=1; UNINSTALL=1; shift ;;
         -h|--help) show_help; exit 0 ;;
         *) die "Unknown option: $1" ;;
     esac
 done
 
+# 本 fork 仅维护 Podman 后端；KVM / Incus 相关代码保留在 agent 内，但安装器不再提供。
 case "$VIRT_TYPE_REQUESTED" in
-    ""|podman|cloudhv|incus) ;;
-    *) die "Invalid --virt value '$VIRT_TYPE_REQUESTED' (expected podman, cloudhv, or incus)" ;;
+    ""|podman) ;;
+    *) die "This fork only supports the Podman backend (got --virt $VIRT_TYPE_REQUESTED)." ;;
 esac
 case "${IPV6_MODE:-}" in
     ""|none|snat|subnet) ;;
     *) die "Invalid IPv6 mode '${IPV6_MODE}' (expected none, snat, or subnet)" ;;
 esac
-case "$INCUS_IPV6_ALLOC" in
-    ''|*[!0-9]*) die "--ipv6-alloc must be an integer from 1 to 15" ;;
-esac
-[ "$INCUS_IPV6_ALLOC" -ge 1 ] && [ "$INCUS_IPV6_ALLOC" -le 15 ] \
-    || die "--ipv6-alloc must be an integer from 1 to 15"
 
 # One-shot operations and explicit non-interactive installs must never pause for
 # a language selection. Guided/menu installs keep the bilingual prompt.
@@ -692,18 +558,9 @@ cleanup_locks() {
 }
 
 install_packages() {
-    local virt_type="${1:-podman}"
     local max=3 attempt=1
     local base_packages="curl wget python3 uuid-runtime systemd-zram-generator jq chrony iptables iproute2 fdisk bc dnsutils"
-    local extra_packages
-
-    if [ "$virt_type" = "cloudhv" ]; then
-        extra_packages="qemu-utils cloud-image-utils zstd"
-    elif [ "$virt_type" = "incus" ]; then
-        extra_packages="incus uidmap acl bridge-utils"
-    else
-        extra_packages="podman aardvark-dns lxcfs xfsprogs"
-    fi
+    local extra_packages="podman aardvark-dns lxcfs xfsprogs"
 
     while [ $attempt -le $max ]; do
         log "$(t "Installing packages (attempt $attempt)..." "安装软件包 (第 $attempt 次)...")"
@@ -897,38 +754,18 @@ PY
 }
 
 prompt_ipv6_strategy() {
-    local backend="${1:-incus}" choice
+    local choice
     printf '\n%s\n' "$(t "Container network mode:" "容器网络模式:")"
     printf '  1) %s\n' "$(t "NAT4 + public IPv6 (auto detect; recommended)" "NAT4 + 公网 IPv6（自动探测，推荐）")"
-    if [ "$backend" = "incus" ]; then
-        printf '  2) %s\n' "$(t "IPv6-only (auto detect)" "纯 IPv6（自动探测）")"
-        printf '  3) %s\n' "$(t "NAT4 + manual routed/native /64" "NAT4 + 手工路由/原生 /64")"
-        printf '  4) %s\n' "$(t "IPv6-only + manual routed/native /64" "纯 IPv6 + 手工路由/原生 /64")"
-        printf '  5) %s\n' "$(t "IPv4 NAT only" "仅 IPv4 NAT")"
-        printf '  6) %s\n' "$(t "NAT4 + IPv6 SNAT (auto-detect host address)" "NAT4 + IPv6 SNAT（自动探测宿主机地址）")"
-    else
-        printf '  2) %s\n' "$(t "NAT4 + manual routed/native /64" "NAT4 + 手工路由/原生 /64")"
-        printf '  3) %s\n' "$(t "IPv4 NAT only" "仅 IPv4 NAT")"
-        printf '  4) %s\n' "$(t "NAT4 + IPv6 SNAT (auto-detect host address)" "NAT4 + IPv6 SNAT（自动探测宿主机地址）")"
-    fi
+    printf '  2) %s\n' "$(t "NAT4 + manual routed/native /64" "NAT4 + 手工路由/原生 /64")"
+    printf '  3) %s\n' "$(t "IPv4 NAT only" "仅 IPv4 NAT")"
+    printf '  4) %s\n' "$(t "NAT4 + IPv6 SNAT (auto-detect host address)" "NAT4 + IPv6 SNAT（自动探测宿主机地址）")"
     read -rp '[1] > ' choice
-    if [ "$backend" != "incus" ]; then
-        case "${choice:-1}" in
-            1) IPV6_DETECT_CONFIRMED=1 ;;
-            2) prompt_manual_ipv6 ;;
-            3) IPV6_MODE="none" ;;
-            4) IPV6_MODE="snat"; IPV6_DETECT_CONFIRMED=1 ;;
-            *) die "$(t "Invalid network mode." "无效网络模式。")" ;;
-        esac
-        return 0
-    fi
     case "${choice:-1}" in
-        1) INCUS_IPV6_ONLY=0; IPV6_DETECT_CONFIRMED=1 ;;
-        2) INCUS_IPV6_ONLY=1; IPV6_DETECT_CONFIRMED=1 ;;
-        3) INCUS_IPV6_ONLY=0; prompt_manual_ipv6 ;;
-        4) INCUS_IPV6_ONLY=1; prompt_manual_ipv6 ;;
-        5) INCUS_IPV6_ONLY=0; IPV6_MODE="none" ;;
-        6) INCUS_IPV6_ONLY=0; IPV6_MODE="snat"; IPV6_DETECT_CONFIRMED=1 ;;
+        1) IPV6_DETECT_CONFIRMED=1 ;;
+        2) prompt_manual_ipv6 ;;
+        3) IPV6_MODE="none" ;;
+        4) IPV6_MODE="snat"; IPV6_DETECT_CONFIRMED=1 ;;
         *) die "$(t "Invalid network mode." "无效网络模式。")" ;;
     esac
 }
@@ -1456,15 +1293,10 @@ write_config_file() {
     "ndp_iface": "$ndp_iface",
     "ndp_subnets": "$ndp_subnets",
     "ndp_network": "$ndp_network",
-    "ipv6_wg_subnet": "$INCUS_WG_IPV6_SUBNET",
-    "ipv6_backup_dir": "$INCUS_IPV6_BACKUP_DIR",
-    "incus_banner_preset": "$INCUS_BANNER_PRESET",
-    "incus_banner_text": "$INCUS_BANNER_TEXT",
-    "incus_ipv6_alloc": $INCUS_IPV6_ALLOC,
-    "incus_alpine_base": "$INCUS_ALPINE_BASE",
-    "incus_image_mirror": "$INCUS_IMAGE_MIRROR",
-    "incus_ipv6_only": $([ "${INCUS_IPV6_ONLY:-}" = "1" ] && echo true || echo false),
-    "rfw_addr": "$RFW_API_ADDR"
+    "ipv6_backup_dir": "$BACKUP_DIR",
+    "rfw_addr": "$RFW_API_ADDR",
+    "update_repo": "tl0502/runman-agent",
+    "netavark_base": "$NETAVARK_BASE"
 }
 EOF
     if [ -n "$agent_token" ]; then
@@ -1528,7 +1360,7 @@ install_rfw() {
     if [ ! -f "/etc/systemd/system/rfw.service" ]; then
         # 过滤掉 lo 及虚拟网桥
         mapfile -t interfaces < <(ip -o link show | awk -F': ' '{print $2}' \
-            | grep -v "^lo$" | grep -v "^narwhal-net$" | grep -v "^incusbr0$" \
+            | grep -v "^lo$" | grep -v "^narwhal-net$" | grep -v "^br-" \
             | grep -v "^podman" | grep -v "@")
 
         if [ ${#interfaces[@]} -eq 0 ]; then
@@ -1626,610 +1458,6 @@ EOF
     log "$(t "✓ rfw firewall installed/updated." "✓ rfw 防火墙已安装/更新。")"
 }
 
-# ── VM Images Updater ────────────────────────────────────────────────────────
-
-update_vm_images() {
-    local IMGDIR="${VM_IMAGE_DIR:-/opt/vm-images}"
-    local FORCE=0
-    # 可通过参数指定要构建的发行版（预构建镜像下载失败时的回退），默认全部
-    local TARGETS=("$@")
-    [ ${#TARGETS[@]} -eq 0 ] && TARGETS=(debian alpine)
-
-    log "$(t "VM image update started. Images dir: $IMGDIR" "VM 镜像更新开始。镜像目录: $IMGDIR")"
-
-    require_tools() {
-        for t in wget qemu-img mount umount losetup; do
-            command -v "$t" &>/dev/null || die "Missing tool: $t"
-        done
-    }
-
-    # Mount the root partition of a raw image, run a function with the mountpoint,
-    # then unmount. Automatically finds the largest Linux filesystem partition.
-    with_rootfs() {
-        local img="$1" fn="$2"
-        local mnt offset size best_size=0
-
-        while read -r o s; do
-            if [ "$s" -gt "$best_size" ]; then
-                best_size="$s"; offset="$o"; size="$s"
-            fi
-        done < <(list_partitions "$img")
-
-        mnt=$(mktemp -d)
-        mount -o loop,offset="$offset",sizelimit="$size" "$img" "$mnt" 2>/dev/null \
-            || { rmdir "$mnt"; die "Cannot mount rootfs of $img"; }
-
-        "$fn" "$mnt"
-
-        umount "$mnt" && rmdir "$mnt"
-    }
-
-    # ── Per-distro customization hooks ───────────────────────────────────────────
-    # 与 CI 预构建镜像保持一致：软件包与 sshd root 登录配置直接烤入镜像，
-    # Agent 的实例级 cloud-init 不再装包/改 sshd 配置
-
-    bake_sshd_config() {
-        local root="$1"
-        mkdir -p "$root/etc/ssh/sshd_config.d"
-        printf 'PermitRootLogin yes\nPasswordAuthentication yes\n' > "$root/etc/ssh/sshd_config.d/99-runman.conf"
-        sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' "$root/etc/ssh/sshd_config" 2>/dev/null || true
-        sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' "$root/etc/ssh/sshd_config" 2>/dev/null || true
-    }
-
-    customize_debian() {
-        local root="$1"
-        log "  Baking packages and sshd config (debian)..."
-        mount -t proc proc "$root/proc" 2>/dev/null || true
-        mount --bind /dev "$root/dev" 2>/dev/null || true
-        mv "$root/etc/resolv.conf" "$root/etc/resolv.conf.bak" 2>/dev/null || true
-        echo "nameserver 1.1.1.1" > "$root/etc/resolv.conf"
-        # 阻止 chroot 内维护脚本启动服务
-        printf '#!/bin/sh\nexit 101\n' > "$root/usr/sbin/policy-rc.d"
-        chmod +x "$root/usr/sbin/policy-rc.d"
-        chroot "$root" env DEBIAN_FRONTEND=noninteractive sh -c \
-            'apt-get update && apt-get install -y curl e2fsprogs cloud-guest-utils openssh-server && apt-get clean && rm -rf /var/lib/apt/lists/*' \
-            || log "  Warning: package bake failed, image may lack curl/e2fsprogs"
-        chroot "$root" systemctl enable ssh >/dev/null 2>&1 || true
-        rm -f "$root/usr/sbin/policy-rc.d" "$root/etc/resolv.conf"
-        mv "$root/etc/resolv.conf.bak" "$root/etc/resolv.conf" 2>/dev/null || true
-        bake_sshd_config "$root"
-        umount "$root/dev" 2>/dev/null || true
-        umount "$root/proc" 2>/dev/null || true
-    }
-
-    customize_alpine() {
-        local root="$1"
-        log "  Baking packages and sshd config (alpine)..."
-        mv "$root/etc/resolv.conf" "$root/etc/resolv.conf.bak" 2>/dev/null || true
-        echo "nameserver 1.1.1.1" > "$root/etc/resolv.conf"
-        chroot "$root" /sbin/apk add --no-cache curl e2fsprogs openssh \
-            || log "  Warning: package bake failed, image may lack curl/e2fsprogs"
-        rm -f "$root/etc/resolv.conf"
-        mv "$root/etc/resolv.conf.bak" "$root/etc/resolv.conf" 2>/dev/null || true
-        bake_sshd_config "$root"
-        ln -sf /etc/init.d/sshd "$root/etc/runlevels/default/sshd" 2>/dev/null || true
-    }
-
-    # Convert qcow2 to raw
-    to_raw() {
-        local src="$1" dst="$2"
-        log "  Converting to raw..."
-        qemu-img convert -f qcow2 -O raw "$src" "$dst"
-    }
-
-    # List all partitions in a raw image as "offset size" pairs (in bytes)
-    list_partitions() {
-        local img="$1"
-        fdisk -l "$img" | awk -v img="$img" '
-            $0 ~ "^"img {
-                # fdisk may insert a boot flag "*" as $2 — shift fields accordingly
-                if ($2 == "*") { start=$3; sectors=$5 }
-                else            { start=$2; sectors=$4 }
-                offset = start * 512
-                size   = sectors * 512
-                if (offset > 0 && size > 0)
-                    print offset, size
-            }
-        '
-    }
-
-    # Try to mount a partition and run a probe function; unmount and return status
-    try_mount() {
-        local img="$1" offset="$2" size="$3" mnt="$4"
-        mkdir -p "$mnt"
-        mount -o loop,offset="$offset",sizelimit="$size",ro "$img" "$mnt" 2>/dev/null
-    }
-
-    # Extract kernel and initrd from a raw disk image.
-    # Scans all partitions automatically to find vmlinuz/initrd.
-    extract_kernel() {
-        local raw="$1" outdir="$2"
-        local mnt vmlinuz initrd found=0
-
-        log "  Extracting kernel and initrd..."
-
-        while read -r offset size; do
-            mnt=$(mktemp -d)
-            if ! try_mount "$raw" "$offset" "$size" "$mnt"; then
-                rmdir "$mnt" 2>/dev/null || true
-                continue
-            fi
-
-            vmlinuz=$(find "$mnt" "$mnt/boot" -maxdepth 1 -name "vmlinuz-*" 2>/dev/null | grep -v rescue | sort -V | tail -1)
-            initrd=$(find  "$mnt" "$mnt/boot" -maxdepth 1 \( -name "initrd*" -o -name "initramfs-*.img" \) 2>/dev/null \
-                     | grep -v rescue | sort -V | tail -1)
-
-            if [ -n "$vmlinuz" ] && [ -n "$initrd" ]; then
-                cp "$vmlinuz" "$outdir/vmlinuz"
-                cp "$initrd"  "$outdir/initrd"
-                found=1
-            fi
-
-            umount "$mnt" && rmdir "$mnt"
-            [ "$found" -eq 1 ] && break
-        done < <(list_partitions "$raw")
-
-        [ "$found" -eq 1 ] || die "vmlinuz/initrd not found in any partition of $raw"
-        log "  Kernel: $(basename "$vmlinuz")"
-    }
-
-    # ── Per-distro build functions ────────────────────────────────────────────────
-
-    build_debian() {
-        local dir="$IMGDIR/debian"
-        mkdir -p "$dir"
-        log "[Debian 13]"
-
-        local base="https://cloud.debian.org/images/cloud/trixie/latest"
-        local qcow2="$dir/debian-13-generic-amd64.qcow2"
-        local sha_url="$base/SHA512SUMS"
-
-        if [ -f "$qcow2" ] && [ "$FORCE" -eq 0 ]; then
-            local remote_sha local_sha
-            remote_sha=$(wget -qO- "$sha_url" | grep "debian-13-generic-amd64.qcow2" | awk '{print $1}')
-            local_sha=$(sha512sum "$qcow2" 2>/dev/null | awk '{print $1}' || true)
-            if [ "$remote_sha" = "$local_sha" ]; then
-                log "  Already up-to-date"; return
-            fi
-        fi
-
-        wget -q --show-progress "$base/debian-13-generic-amd64.qcow2" -O "$qcow2"
-        to_raw "$qcow2" "$dir/current.raw"
-        extract_kernel "$dir/current.raw" "$dir"
-        with_rootfs "$dir/current.raw" customize_debian
-
-        echo "root=/dev/vda1 rw console=ttyS0,115200" > "$dir/cmdline"
-        log "  Done: $dir"
-    }
-
-    build_alpine() {
-        local dir="$IMGDIR/alpine"
-        mkdir -p "$dir"
-        log "[Alpine Linux (nocloud cloud image)]"
-
-        local cloud_base=""
-        local latest_qcow2=""
-
-        # Try to resolve from latest-stable releases/cloud
-        if wget -q --spider "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud/" 2>/dev/null; then
-            cloud_base="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud"
-            latest_qcow2=$(wget -qO- "$cloud_base/" 2>/dev/null \
-                | grep -o 'nocloud_alpine-[0-9][^"]*-x86_64-bios-cloudinit-r[0-9]*\.qcow2' \
-                | sort -uV | tail -1 || true)
-        fi
-
-        # Fallback to older stable versions if the newest releases directory does not contain 'cloud' yet
-        if [ -z "$latest_qcow2" ]; then
-            log "No cloud image found in latest-stable, searching previous v3.x releases..."
-            local versions
-            versions=$(wget -qO- "https://dl-cdn.alpinelinux.org/alpine/" 2>/dev/null \
-                | grep -o 'href=["'\''\]\?v3\.[0-9]*/\?["'\''\]\?' \
-                | sed -e 's/href=//' -e 's/["'\''/]//g' \
-                | sort -t. -k2,2rn || true)
-
-            for ver in $versions; do
-                local test_url="https://dl-cdn.alpinelinux.org/alpine/$ver/releases/cloud"
-                if wget -q --spider "$test_url/" 2>/dev/null; then
-                    local qcow
-                    qcow=$(wget -qO- "$test_url/" 2>/dev/null \
-                        | grep -o 'nocloud_alpine-[0-9][^"]*-x86_64-bios-cloudinit-r[0-9]*\.qcow2' \
-                        | sort -uV | tail -1 || true)
-                    if [ -n "$qcow" ]; then
-                        cloud_base="$test_url"
-                        latest_qcow2="$qcow"
-                        log "Found cloud image in $ver: $latest_qcow2"
-                        break
-                    fi
-                fi
-            done
-        fi
-
-        [ -n "$latest_qcow2" ] || die "Could not resolve Alpine cloud image filename"
-
-        local latest_ver
-        latest_ver=$(echo "$latest_qcow2" | grep -o '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*')
-        local current_ver
-        current_ver=$(cat "$dir/version" 2>/dev/null || true)
-
-        if [ "$latest_ver" = "$current_ver" ] && [ "$FORCE" -eq 0 ]; then
-            log "  Already up-to-date ($latest_ver)"; return
-        fi
-
-        log "  Latest version: $latest_ver ($latest_qcow2)"
-        local qcow2="$dir/$latest_qcow2"
-
-        if [ -f "$qcow2" ] && [ "$FORCE" -eq 0 ]; then
-            local remote_sha local_sha
-            remote_sha=$(wget -qO- "$cloud_base/${latest_qcow2}.sha512" | awk '{print $1}')
-            local_sha=$(sha512sum "$qcow2" 2>/dev/null | awk '{print $1}' || true)
-            if [ "$remote_sha" = "$local_sha" ]; then
-                log "  Already up-to-date (SHA512 matches)"; return
-            fi
-        fi
-
-        wget -q --show-progress "$cloud_base/$latest_qcow2" -O "$qcow2"
-        to_raw "$qcow2" "$dir/current.raw"
-
-        # Alpine nocloud image has no partition table — raw ext4 filesystem on the device.
-        # Mount directly and extract kernel/initrd from /boot.
-        local mnt
-        mnt=$(mktemp -d)
-        mount /opt/vm-images/alpine/current.raw "$mnt"
-        cp "$mnt/boot/vmlinuz-virt"   "$dir/vmlinuz"
-        cp "$mnt/boot/initramfs-virt" "$dir/initrd"
-        log "  Kernel: vmlinuz-virt"
-        customize_alpine "$mnt"
-        umount "$mnt" && rmdir "$mnt"
-
-        # Root is the whole device (no partition table), identified by UUID
-        local root_uuid
-        root_uuid=$(blkid -s UUID -o value "$dir/current.raw")
-        [ -n "$root_uuid" ] || die "Could not detect root UUID from Alpine image"
-
-        echo "root=UUID=$root_uuid rw modules=sd-mod,usb-storage,ext4 console=ttyS0,115200" > "$dir/cmdline"
-        echo "$latest_ver" > "$dir/version"
-        log "  Done: $dir (Alpine $latest_ver, cloud-init built-in)"
-    }
-
-    require_tools
-
-    for target in "${TARGETS[@]}"; do
-        case "$target" in
-            debian) build_debian ;;
-            alpine) build_alpine ;;
-        esac
-    done
-
-    log "$(t "VM image update finished." "VM 镜像更新完成。")"
-}
-
-# ── Prebuilt VM image download ───────────────────────────────────────────────
-# 从 narwhal-cloud/images 的滚动 release 下载 CI 预构建的 cloudhv 镜像包，
-# 避免安装时在线转换 qcow2 / 提取内核。失败的发行版记录在 VM_FETCH_FAILED，
-# 由调用方回退到 update_vm_images 本地构建。
-#
-# vm-latest 是滚动 tag，同名资产每月被覆盖，因此本地记录远端资产的 ETag /
-# Last-Modified 作为版本戳（.image-stamp），更新流程据此判断是否需要重新下载。
-
-# 返回远端资产的版本戳（优先 ETag，其次 Last-Modified）；无法获取时返回非 0
-remote_asset_stamp() {
-    local headers stamp
-    headers=$(curl -fsSLI --max-time 30 "$1" 2>/dev/null | tr -d '\r' | tr 'A-Z' 'a-z') || return 1
-    stamp=$(printf '%s\n' "$headers" | grep '^etag:' | tail -n1 | sed 's/^etag:[[:space:]]*//') || true
-    [ -z "$stamp" ] && stamp=$(printf '%s\n' "$headers" | grep '^last-modified:' | tail -n1 | sed 's/^last-modified:[[:space:]]*//') || true
-    [ -n "$stamp" ] || return 1
-    printf '%s\n' "$stamp"
-}
-
-# VM_FETCH_FAILED: 本次下载失败的发行版
-# VM_FETCH_ABSENT: 下载失败且本地没有可用镜像的发行版（需要回退本地构建）
-VM_FETCH_FAILED=()
-VM_FETCH_ABSENT=()
-fetch_vm_images() {
-    local IMGDIR="${VM_IMAGE_DIR:-/opt/vm-images}"
-    # 1: 镜像已存在时也检查远端是否有新版本（更新流程使用）
-    local refresh="${VM_IMAGE_REFRESH:-0}"
-    VM_FETCH_FAILED=()
-    VM_FETCH_ABSENT=()
-
-    local distro dir asset url tmp stamp_file remote_stamp present
-    for distro in debian alpine; do
-        dir="$IMGDIR/$distro"
-        asset="cloudhv-${distro}-${ARCH}.tar.zst"
-        url="$VM_IMAGES_BASE/$asset"
-        stamp_file="$dir/.image-stamp"
-        present=0
-        [ -f "$dir/current.raw" ] && [ -f "$dir/vmlinuz" ] && [ -f "$dir/initrd" ] && [ -f "$dir/cmdline" ] && present=1
-
-        remote_stamp=""
-        if [ "$present" = "1" ]; then
-            if [ "$refresh" != "1" ]; then
-                log "$(t "VM image $distro already present, skipping." "VM 镜像 $distro 已存在，跳过。")"
-                continue
-            fi
-            if [ "$FORCE_IMAGE_REFRESH" != "1" ]; then
-                remote_stamp=$(remote_asset_stamp "$url") || remote_stamp=""
-                if [ -z "$remote_stamp" ]; then
-                    log "$(t "Warning: cannot query remote version for $asset, keeping existing image." "警告: 无法获取 $asset 的远端版本信息，保留现有镜像。")"
-                    continue
-                fi
-                if [ -f "$stamp_file" ] && [ "$(cat "$stamp_file" 2>/dev/null)" = "$remote_stamp" ]; then
-                    log "$(t "VM image $distro is up to date." "VM 镜像 $distro 已是最新。")"
-                    continue
-                fi
-                log "$(t "Newer prebuilt VM image found for $distro, updating..." "发现 $distro 的新预构建 VM 镜像，开始更新...")"
-            else
-                log "$(t "Force refreshing VM image $distro..." "强制刷新 VM 镜像 $distro...")"
-            fi
-        fi
-        [ -n "$remote_stamp" ] || remote_stamp=$(remote_asset_stamp "$url") || remote_stamp=""
-
-        tmp=$(mktemp)
-        log "$(t "Downloading prebuilt VM image: $asset" "下载预构建 VM 镜像: $asset")"
-        # 解压到临时目录后整体替换，避免覆盖过程中 Agent 读到半个镜像
-        if download_with_retry "$url" "$tmp" \
-            && rm -rf "$dir.new" && mkdir -p "$dir.new" \
-            && tar --zstd -xf "$tmp" -C "$dir.new"; then
-            [ -n "$remote_stamp" ] && printf '%s\n' "$remote_stamp" > "$dir.new/.image-stamp"
-            rm -rf "$dir.old"
-            [ "$present" = "1" ] && mv "$dir" "$dir.old"
-            mkdir -p "$IMGDIR"
-            mv "$dir.new" "$dir"
-            rm -rf "$dir.old"
-            log "$(t "✓ VM image $distro installed." "✓ VM 镜像 $distro 安装完成。")"
-        else
-            rm -rf "$dir.new"
-            VM_FETCH_FAILED+=("$distro")
-            if [ "$present" = "1" ]; then
-                log "$(t "Warning: prebuilt $distro image unavailable, keeping existing image." "警告: 预构建 $distro 镜像不可用，保留现有镜像。")"
-            else
-                log "$(t "Warning: prebuilt $distro image unavailable, will build locally." "警告: 预构建 $distro 镜像不可用，将回退本地构建。")"
-                VM_FETCH_ABSENT+=("$distro")
-            fi
-        fi
-        rm -f "$tmp"
-    done
-
-    [ ${#VM_FETCH_FAILED[@]} -eq 0 ]
-}
-
-# ── Prebuilt Incus image import ──────────────────────────────────────────────
-# 导入预构建的 ready 镜像（别名与 Agent ensureReadyImage 一致），跳过首次创建
-# 实例时的在线构建；下载失败时 Agent 会自动回退构建。
-# INCUS_IMAGE_REFRESH=1 时对已存在的别名检查远端更新并重新导入。
-
-incus_ready_alias() {
-    case "$1" in
-        debian) echo "debian/13/cloud/$ARCH/ready" ;;
-        alpine) echo "alpine/$DEFAULT_INCUS_ALPINE_VERSION/cloud/$ARCH/ready" ;;
-    esac
-}
-
-import_incus_images() {
-    local refresh="${INCUS_IMAGE_REFRESH:-0}"
-    local stamp_dir="$AGENT_DATA_DIR/incus-image-stamps"
-    local requested_distros=("$@")
-    [ ${#requested_distros[@]} -gt 0 ] || requested_distros=(debian alpine)
-    command -v incus &>/dev/null || return 0
-    mkdir -p "$stamp_dir"
-
-    local distro alias asset url tmp stamp_file remote_stamp present
-    for distro in "${requested_distros[@]}"; do
-        alias=$(incus_ready_alias "$distro")
-        asset="incus-${distro}-${ARCH}.tar.gz"
-        # 支持通过 INCUS_IMAGE_MIRROR（本地静态服务/内网镜像）覆盖默认的 GitHub releases 基址
-        local img_base="$VM_IMAGES_BASE"
-        [ -n "$INCUS_IMAGE_MIRROR" ] && img_base="${INCUS_IMAGE_MIRROR%/}"
-        url="$img_base/$asset"
-        stamp_file="$stamp_dir/$distro-$ARCH"
-        present=0
-        incus image alias list --format csv 2>/dev/null | grep -q "^${alias}," && present=1
-
-        remote_stamp=""
-        if [ "$present" = "1" ]; then
-            if [ "$refresh" != "1" ]; then
-                log "$(t "Incus image $alias already exists, skipping." "Incus 镜像 $alias 已存在，跳过。")"
-                continue
-            fi
-            if [ "$FORCE_IMAGE_REFRESH" != "1" ]; then
-                remote_stamp=$(remote_asset_stamp "$url") || remote_stamp=""
-                if [ -z "$remote_stamp" ]; then
-                    log "$(t "Warning: cannot query remote version for $asset, keeping existing image." "警告: 无法获取 $asset 的远端版本信息，保留现有镜像。")"
-                    continue
-                fi
-                if [ -f "$stamp_file" ] && [ "$(cat "$stamp_file" 2>/dev/null)" = "$remote_stamp" ]; then
-                    log "$(t "Incus image $alias is up to date." "Incus 镜像 $alias 已是最新。")"
-                    continue
-                fi
-                log "$(t "Newer prebuilt Incus image found for $distro, updating..." "发现 $distro 的新预构建 Incus 镜像，开始更新...")"
-            else
-                log "$(t "Force refreshing Incus image $alias..." "强制刷新 Incus 镜像 $alias...")"
-            fi
-        fi
-        [ -n "$remote_stamp" ] || remote_stamp=$(remote_asset_stamp "$url") || remote_stamp=""
-
-        tmp=$(mktemp)
-        log "$(t "Downloading prebuilt Incus image: $asset" "下载预构建 Incus 镜像: $asset")"
-        # 先下载成功再删除旧镜像，避免下载失败后本地无镜像可用
-        if download_with_retry "$url" "$tmp"; then
-            [ "$present" = "1" ] && incus image delete "$alias" >/dev/null 2>&1 || true
-            if incus image import "$tmp" --alias "$alias"; then
-                [ -n "$remote_stamp" ] && printf '%s\n' "$remote_stamp" > "$stamp_file"
-                log "$(t "✓ Incus image imported: $alias" "✓ Incus 镜像已导入: $alias")"
-            else
-                rm -f "$stamp_file"
-                log "$(t "Warning: Incus image import failed, agent will build it on first instance creation." "警告: Incus 镜像导入失败，Agent 将在首次创建实例时自动构建。")"
-            fi
-        else
-            log "$(t "Warning: prebuilt Incus image unavailable, agent will build it on first instance creation." "警告: 预构建 Incus 镜像不可用，Agent 将在首次创建实例时自动构建。")"
-        fi
-        rm -f "$tmp"
-    done
-}
-
-# 从本地目录直接离线导入预构建 incus 镜像（无需任何网络）。
-# 目录内需包含 incus-<distro>-<arch>.tar.gz（文件名与远程资产一致）。
-import_local_incus_images() {
-    local dir="$INCUS_LOCAL_IMAGE_DIR"
-    [ -d "$dir" ] || { log "$(t "Local image dir not found: $dir" "本地镜像目录不存在: $dir")"; return 1; }
-    command -v incus >/dev/null 2>&1 || return 0
-    mkdir -p "$AGENT_DATA_DIR/incus-image-stamps"
-    for distro in debian alpine; do
-        local asset="incus-${distro}-${ARCH}.tar.gz"
-        local f="$dir/$asset"
-        [ -f "$f" ] || { log "$(t "Skip $asset (not in local dir)" "跳过 $asset（本地目录不存在）")"; continue; }
-        local alias; alias=$(incus_ready_alias "$distro")
-        incus image delete "$alias" >/dev/null 2>&1 || true
-        if incus image import "$f" --alias "$alias"; then
-            log "$(t "Imported local incus image: $alias" "已导入本地 incus 镜像: $alias")"
-        else
-            log "$(t "Warning: failed to import local image $asset" "警告: 本地镜像 $asset 导入失败")"
-        fi
-    done
-}
-
-# 导入定制 alpine 基础镜像（如 custom/alpine-base）。
-# 参数可为本地 tar.gz 路径（导入为别名 custom/alpine-base）或已存在的 incus 镜像别名。
-import_custom_alpine_base() {
-    [ -n "$INCUS_ALPINE_BASE" ] || return 0
-    command -v incus >/dev/null 2>&1 || return 0
-    if [ -f "$INCUS_ALPINE_BASE" ]; then
-        local alias="custom/alpine-base"
-        incus image delete "$alias" >/dev/null 2>&1 || true
-        if incus image import "$INCUS_ALPINE_BASE" --alias "$alias"; then
-            log "$(t "Imported custom alpine base as $alias" "已导入定制 alpine 基础镜像为 $alias")"
-            INCUS_ALPINE_BASE="$alias"
-        else
-            log "$(t "Warning: failed to import custom alpine base" "警告: 定制 alpine 基础镜像导入失败")"
-        fi
-    else
-        if incus image alias list --format csv 2>/dev/null | cut -d, -f1 | grep -qx "$INCUS_ALPINE_BASE" \
-           || incus image list --format csv 2>/dev/null | grep -q "$INCUS_ALPINE_BASE"; then
-            log "$(t "Using existing alpine base alias: $INCUS_ALPINE_BASE" "使用已存在的 alpine 基础镜像别名: $INCUS_ALPINE_BASE")"
-        else
-            log "$(t "Warning: alpine base alias not found: $INCUS_ALPINE_BASE" "警告: 未找到 alpine 基础镜像别名: $INCUS_ALPINE_BASE")"
-        fi
-    fi
-}
-
-# 从私有 simplestreams 镜像服务器导入镜像。
-# 服务器以 LXD/Incus 原生格式（lxd.tar.xz + rootfs.squashfs）发布，
-# 直接按 streams/v1/images.json 中的路径下载并 incus image import，
-# 不依赖 streams/v1/index.json（部分自建服务器未提供，incus remote add 会失败）。
-# 遍历 alpine / debian，按 Simple Streams 元数据匹配当前主机架构。
-# 返回 0 表示至少成功导入一个镜像（调用方据此决定其余发行版是否回退 GitHub）。
-import_incus_images_from_mirror() {
-    [ -n "$INCUS_IMAGE_MIRROR" ] || return 1
-    MIRROR_IMPORT_REASON=""
-    command -v incus >/dev/null 2>&1 || return 1
-    command -v jq    >/dev/null 2>&1 || { log "$(t "jq not available; skipping mirror import." "jq 不可用，跳过镜像导入。")"; return 1; }
-
-    local base="${INCUS_IMAGE_MIRROR%/}"
-    local meta
-    meta=$(curl -fsSL --max-time 30 "$base/streams/v1/images.json" 2>/dev/null) || {
-        log "$(t "Cannot reach mirror metadata: $base" "无法访问镜像元数据: $base")"; return 1
-    }
-
-    MIRROR_IMPORTED_DISTROS=""
-    local ok=0 matching_images=0 distro item_record metadata_path rootfs_path metadata_sha rootfs_sha tmpd metadata_file rootfs_file local_alias
-    for distro in alpine debian; do
-        # Accept current Incus names (incus.tar.xz + root.squashfs) and the
-        # legacy LXD names. Select the newest complete version deterministically.
-        item_record=$(printf '%s\n' "$meta" | jq -r --arg d "$distro" --arg arch "$ARCH" '
-          [.products | to_entries[]?
-           | select(
-               ((.key | startswith($d + ":")) or (((.value.os? // "") | ascii_downcase) == $d))
-               and ((.value.architecture? // .value.arch? // "") == $arch
-                    or ((.key | split(":") | index($arch)) != null))
-             )
-           | .value.versions | to_entries[]?
-           | {version: .key, items: .value.items}
-           | .metadata = (.items["incus.tar.xz"] // .items["lxd.tar.xz"])
-           | .rootfs = (.items["root.squashfs"] // .items["rootfs.squashfs"])
-           | select(.metadata.path? and .rootfs.path?)]
-          | sort_by(.version) | reverse | .[0]
-          | [.metadata.path, .rootfs.path, (.metadata.sha256 // ""), (.rootfs.sha256 // "")]
-          | @tsv' 2>/dev/null)
-        [ -n "$item_record" ] && [ "$item_record" != "null" ] || continue
-        IFS=$'\t' read -r metadata_path rootfs_path metadata_sha rootfs_sha <<< "$item_record"
-        [ -n "$metadata_path" ] && [ -n "$rootfs_path" ] || continue
-        matching_images=1
-
-        tmpd=$(mktemp -d)
-        metadata_file="$tmpd/incus.tar.xz"; rootfs_file="$tmpd/root.squashfs"
-        if download_with_retry "$base/$metadata_path" "$metadata_file" && download_with_retry "$base/$rootfs_path" "$rootfs_file"; then
-            if { [ -n "$metadata_sha" ] && [ "$(sha256sum "$metadata_file" | awk '{print $1}')" != "$metadata_sha" ]; } \
-                || { [ -n "$rootfs_sha" ] && [ "$(sha256sum "$rootfs_file" | awk '{print $1}')" != "$rootfs_sha" ]; }; then
-                log "$(t "Warning: mirror checksum verification failed for $distro" "警告: 镜像服务器中的 $distro 校验失败")"
-                rm -rf "$tmpd"
-                continue
-            fi
-            local_alias=$(incus_ready_alias "$distro")
-            incus image delete "$local_alias" >/dev/null 2>&1 || true
-            if incus image import "$metadata_file" "$rootfs_file" --alias "$local_alias"; then
-                log "$(t "✓ Imported $distro from mirror as $local_alias" "✓ 已从镜像服务器导入 $distro 为 $local_alias")"
-                ok=1
-                MIRROR_IMPORTED_DISTROS="$MIRROR_IMPORTED_DISTROS $distro"
-            else
-                log "$(t "Warning: incus image import from mirror failed for $distro" "警告: 从镜像服务器导入 $distro 失败")"
-            fi
-        else
-            log "$(t "Warning: failed to download $distro image from mirror" "警告: 从镜像服务器下载 $distro 镜像失败")"
-        fi
-        rm -rf "$tmpd"
-    done
-    [ "$ok" = "1" ] || {
-        if [ "$matching_images" = "0" ]; then
-            MIRROR_IMPORT_REASON="no_matching_arch"
-            log "$(t "Mirror has no importable image for $ARCH" "镜像站未发布适用于 $ARCH 的可导入镜像")"
-        else
-            MIRROR_IMPORT_REASON="unavailable"
-            log "$(t "Mirror provided no importable images" "镜像服务器未提供可导入的镜像")"
-        fi
-        return 1
-    }
-    return 0
-}
-
-import_missing_incus_images() {
-    local saved_mirror="$INCUS_IMAGE_MIRROR" distro
-    INCUS_IMAGE_MIRROR=""
-    for distro in debian alpine; do
-        case " $MIRROR_IMPORTED_DISTROS " in
-            *" $distro "*) ;;
-            *) import_incus_images "$distro" ;;
-        esac
-    done
-    INCUS_IMAGE_MIRROR="$saved_mirror"
-}
-
-# simplestreams 不可用时，仅当镜像源确实提供扁平 tarball 才按扁平源处理；
-# 否则切回官方预构建 Release，避免对一串必然 404 的 URL 重试。
-import_incus_fallback_images() {
-    local saved_mirror="$INCUS_IMAGE_MIRROR"
-    if [ -n "$saved_mirror" ] \
-        && curl -fsSI --max-time 10 "${saved_mirror%/}/incus-alpine-${ARCH}.tar.gz" >/dev/null 2>&1; then
-        import_incus_images
-    else
-        INCUS_IMAGE_MIRROR=""
-        import_incus_images
-        INCUS_IMAGE_MIRROR="$saved_mirror"
-    fi
-}
-
-# 交互式选择 SSH 登录横幅（欢迎页）预设；已通过参数/环境变量指定时跳过。
-prompt_banner() {
-    [ "$NON_INTERACTIVE" = "1" ] && return 0
-    [ "$INCUS_BANNER_PRESET" != "none" ] && return 0
-    read -rp "$(t "Configure SSH login banner? [1=none 2=default 3=project 4=custom]: " "配置 SSH 登录横幅? [1=无 2=默认 3=项目模板 4=自定义]: ")" _b
-    case "${_b:-1}" in
-        2) INCUS_BANNER_PRESET="default" ;;
-        3) INCUS_BANNER_PRESET="project" ;;
-        4) INCUS_BANNER_PRESET="custom"; read -rp "$(t "Enter banner text: " "请输入横幅文本: ")" INCUS_BANNER_TEXT ;;
-        *) INCUS_BANNER_PRESET="none" ;;
-    esac
-}
-
 # 从已存在的配置文件读取虚拟化类型（更新流程判断需要刷新哪类镜像）
 detect_installed_virt_type() {
     [ -f "$AGENT_CONFIG_FILE" ] || return 0
@@ -2238,40 +1466,18 @@ detect_installed_virt_type() {
 }
 
 prompt_existing_image_update() {
-    local virt="$1" choice current value
-    if [ "$virt" = "incus" ]; then
-        current=$(jq -r '.incus_image_mirror // ""' "$AGENT_CONFIG_FILE" 2>/dev/null || true)
-        printf '\n%s\n%s\n' "$(t "Incus image management:" "Incus 镜像管理:")" \
-            "$(t "Current mirror: ${current:-<GitHub/default>}" "当前镜像源: ${current:-<GitHub/默认>}")"
-        printf '  1) %s\n' "$(t "Refresh from current source" "从当前镜像源强制刷新")"
-        printf '  2) %s\n' "$(t "Set a simplestreams/flat mirror URL and refresh" "设置 simplestreams/扁平镜像地址并刷新")"
-        printf '  3) %s\n' "$(t "Import from an offline local directory" "从离线本地目录导入")"
-        printf '  4) %s\n' "$(t "Set a custom Alpine base file/alias" "设置自定义 Alpine 基础镜像文件/别名")"
-        printf '  5) %s\n' "$(t "Reset to default official images" "恢复默认官方镜像源")"
-        read -rp '[1] > ' choice
-        case "${choice:-1}" in
-            1) INCUS_IMAGE_MIRROR="$current" ;;
-            2) read -rp "$(t "Mirror URL: " "镜像服务 URL: ")" value; [ -n "$value" ] || die "$(t "Mirror URL cannot be empty." "镜像服务 URL 不能为空。")"; INCUS_IMAGE_MIRROR="$value"; INCUS_IMAGE_MIRROR_EXPLICIT=1 ;;
-            3) read -rp "$(t "Local image directory: " "本地镜像目录: ")" value; [ -d "$value" ] || die "$(t "Directory not found: $value" "目录不存在: $value")"; INCUS_LOCAL_IMAGE_DIR="$value" ;;
-            4) read -rp "$(t "Alpine base tarball path or Incus alias: " "Alpine 基础镜像 tarball 路径或 Incus 别名: ")" value; [ -n "$value" ] || die "$(t "Value cannot be empty." "输入不能为空。")"; INCUS_ALPINE_BASE="$value" ;;
-            5) INCUS_IMAGE_MIRROR=""; INCUS_IMAGE_MIRROR_EXPLICIT=1 ;;
-            *) die "$(t "Invalid image operation." "无效的镜像操作。")" ;;
-        esac
-    elif [ "$virt" = "podman" ]; then
-        printf '\n%s\n' "$(t "Podman image management:" "Podman 镜像管理:")"
-        printf '  1) %s\n' "$(t "Refresh the built-in Debian and Alpine images" "刷新内置 Debian 与 Alpine 镜像")"
-        printf '  2) %s\n' "$(t "Set docker.io registry mirror and refresh" "设置 docker.io 镜像加速并刷新")"
-        printf '  3) %s\n' "$(t "Clear installer-managed registry mirror" "清除安装脚本管理的镜像加速")"
-        read -rp '[1] > ' choice
-        case "${choice:-1}" in
-            1) ;;
-            2) read -rp "$(t "Registry mirror (host[:port][/prefix] or URL): " "镜像加速地址（host[:port][/prefix] 或 URL）: ")" value; [ -n "$value" ] || die "$(t "Mirror cannot be empty." "镜像加速地址不能为空。")"; PODMAN_REGISTRY_MIRROR="$value"; PODMAN_REGISTRY_MIRROR_EXPLICIT=1 ;;
-            3) PODMAN_REGISTRY_MIRROR=""; PODMAN_REGISTRY_MIRROR_EXPLICIT=1 ;;
-            *) die "$(t "Invalid image operation." "无效的镜像操作。")" ;;
-        esac
-    else
-        log "$(t "Image refresh will use the current cloud-hypervisor source." "镜像刷新将使用当前 cloud-hypervisor 镜像源。")"
-    fi
+    local choice value
+    printf '\n%s\n' "$(t "Podman image management:" "Podman 镜像管理:")"
+    printf '  1) %s\n' "$(t "Refresh the built-in Debian and Alpine images" "刷新内置 Debian 与 Alpine 镜像")"
+    printf '  2) %s\n' "$(t "Set docker.io registry mirror and refresh" "设置 docker.io 镜像加速并刷新")"
+    printf '  3) %s\n' "$(t "Clear installer-managed registry mirror" "清除安装脚本管理的镜像加速")"
+    read -rp '[1] > ' choice
+    case "${choice:-1}" in
+        1) ;;
+        2) read -rp "$(t "Registry mirror (host[:port][/prefix] or URL): " "镜像加速地址（host[:port][/prefix] 或 URL）: ")" value; [ -n "$value" ] || die "$(t "Mirror cannot be empty." "镜像加速地址不能为空。")"; PODMAN_REGISTRY_MIRROR="$value"; PODMAN_REGISTRY_MIRROR_EXPLICIT=1 ;;
+        3) PODMAN_REGISTRY_MIRROR=""; PODMAN_REGISTRY_MIRROR_EXPLICIT=1 ;;
+        *) die "$(t "Invalid image operation." "无效的镜像操作。")" ;;
+    esac
 }
 
 # ── Update flow ───────────────────────────────────────────────────────────────
@@ -2288,7 +1494,11 @@ preflight_existing_install() {
         || die "Invalid existing config.json; update aborted."
     local virt command_line
     virt=$(detect_installed_virt_type)
-    case "$virt" in podman|incus|cloudhv) ;; *) die "Unknown existing virt_type; update aborted." ;; esac
+    case "$virt" in
+        podman) ;;
+        incus|cloudhv) die "Existing backend is $virt; this fork only maintains Podman. Refusing to touch it." ;;
+        *) die "Unknown existing virt_type; update aborted." ;;
+    esac
     [ -z "$VIRT_TYPE_REQUESTED" ] || [ "$VIRT_TYPE_REQUESTED" = "$virt" ] \
         || die "An update cannot switch virtualization backends. Existing backend: $virt"
     [ "$UPDATE_NETWORK_REQUESTED" = "0" ] && [ -z "${IPV6_MODE:-}" ] \
@@ -2297,8 +1507,7 @@ preflight_existing_install() {
     if [ "$UPDATE_ONLY" = "1" ]; then
         [ "$IMAGE_MENU" = "0" ] && [ "$FORCE_IMAGE_REFRESH" != "1" ] \
             && [ "$INSTALL_RFW_FORCE" != "1" ] && [ -z "$INITIAL_TOKEN" ] \
-            && [ "$INCUS_IMAGE_MIRROR_EXPLICIT" != "1" ] && [ -z "$INCUS_ALPINE_BASE" ] \
-            && [ -z "$INCUS_LOCAL_IMAGE_DIR" ] && [ "$PODMAN_REGISTRY_MIRROR_EXPLICIT" != "1" ] \
+            && [ "$PODMAN_REGISTRY_MIRROR_EXPLICIT" != "1" ] \
             || die "--update-only cannot be combined with Token, image or firewall changes."
     fi
     command_line=$(systemctl show "$AGENT_SERVICE" -p ExecStart --value)
@@ -2311,8 +1520,8 @@ preflight_existing_install() {
 }
 
 backup_existing_install() {
-    mkdir -p "$INCUS_IPV6_BACKUP_DIR"
-    UPGRADE_BACKUP=$(mktemp -d "$INCUS_IPV6_BACKUP_DIR/upgrade-$(date +%Y%m%d-%H%M%S)-XXXXXX")
+    mkdir -p "$BACKUP_DIR"
+    UPGRADE_BACKUP=$(mktemp -d "$BACKUP_DIR/upgrade-$(date +%Y%m%d-%H%M%S)-XXXXXX")
     chmod 700 "$UPGRADE_BACKUP"
     cp -p "$AGENT_BINARY" "$UPGRADE_BACKUP/narwhal-agent"
     cp -p "$AGENT_CONFIG_FILE" "$UPGRADE_BACKUP/config.json"
@@ -2345,7 +1554,7 @@ if systemctl is-active --quiet "$AGENT_SERVICE" 2>/dev/null || [ -f "$AGENT_BINA
 
     _installed_virt=$(detect_installed_virt_type)
     if [ "$IMAGE_MENU" = "1" ] && [ "$NON_INTERACTIVE" != "1" ] && [ -t 0 ]; then
-        prompt_existing_image_update "$_installed_virt"
+        prompt_existing_image_update
     fi
 
     if [ -n "$INITIAL_TOKEN" ]; then
@@ -2355,16 +1564,10 @@ if systemctl is-active --quiet "$AGENT_SERVICE" 2>/dev/null || [ -f "$AGENT_BINA
 
     # 配置迁移：为旧配置补齐新增字段（保留已有值，仅补充缺省），避免升级后新功能无法生效
     if command -v jq >/dev/null 2>&1 && [ -f "$AGENT_CONFIG_FILE" ]; then
-        jq '. + {
-               incus_banner_preset: (.incus_banner_preset // "none"),
-               incus_banner_text:   (.incus_banner_text   // ""),
-               incus_ipv6_alloc:    (.incus_ipv6_alloc    // 1),
-               incus_alpine_base:   (.incus_alpine_base   // ""),
-               incus_image_mirror:  (.incus_image_mirror  // ""),
-               incus_ipv6_only:     (.incus_ipv6_only     // false),
-               ipv6_wg_subnet:      (if ((.ipv6_wg_subnet // "") == "" and (.ipv6_mode // "") == "subnet")
-                                        then (.ipv6_subnet // "") else (.ipv6_wg_subnet // "") end),
-               ipv6_backup_dir:     (.ipv6_backup_dir     // "/var/lib/narwhal-agent/backups")
+        jq --arg repo "tl0502/runman-agent" --arg nb "$NETAVARK_BASE" '. + {
+               update_repo:     (.update_repo     // $repo),
+               netavark_base:   (.netavark_base   // $nb),
+               ipv6_backup_dir: (.ipv6_backup_dir // "/var/lib/narwhal-agent/backups")
              }' "$AGENT_CONFIG_FILE" > "$AGENT_CONFIG_FILE.tmp" \
             && mv "$AGENT_CONFIG_FILE.tmp" "$AGENT_CONFIG_FILE" \
             && chmod 600 "$AGENT_CONFIG_FILE"
@@ -2410,64 +1613,17 @@ if systemctl is-active --quiet "$AGENT_SERVICE" 2>/dev/null || [ -f "$AGENT_BINA
         exit 0
     fi
 
-    # Refresh prebuilt base images for VM-style virtualization.
+    # Refresh base images for Podman (the only backend this fork maintains).
     # 已运行的实例使用的是镜像副本，替换基础镜像只影响之后新建的实例。
     VIRT_TYPE="$_installed_virt"
-    case "$VIRT_TYPE" in
-        podman)
-            ensure_podman_network_from_config
-            configure_podman_registry_mirror
-            install_podman_forwarding_compat
-            if [ "$FORCE_IMAGE_REFRESH" = "1" ]; then
-                for image in "docker.io/narwhalcloud/debian:podman" "docker.io/narwhalcloud/alpine:podman"; do
-                    podman pull "$image" || die "$(t "Failed to refresh Podman image: $image" "Podman 镜像刷新失败: $image")"
-                done
-            fi
-            ;;
-        cloudhv)
-            log "$(t "Checking prebuilt VM images for updates..." "检查预构建 VM 镜像更新...")"
-            VM_IMAGE_REFRESH=1
-            if ! fetch_vm_images; then
-                if [ ${#VM_FETCH_ABSENT[@]} -gt 0 ]; then
-                    log "$(t "Falling back to local image build for: ${VM_FETCH_ABSENT[*]}" "回退到本地构建镜像: ${VM_FETCH_ABSENT[*]}")"
-                    update_vm_images "${VM_FETCH_ABSENT[@]}"
-                fi
-            fi
-            ;;
-        incus)
-            if [ "$INCUS_IMAGE_MIRROR_EXPLICIT" = "1" ] || [ -n "$INCUS_ALPINE_BASE" ]; then
-                jq --arg mirror "$INCUS_IMAGE_MIRROR" --arg base "$INCUS_ALPINE_BASE" \
-                    '.incus_image_mirror = $mirror | if $base != "" then .incus_alpine_base = $base else . end' \
-                    "$AGENT_CONFIG_FILE" > "$AGENT_CONFIG_FILE.tmp" \
-                    && mv "$AGENT_CONFIG_FILE.tmp" "$AGENT_CONFIG_FILE" \
-                    && chmod 600 "$AGENT_CONFIG_FILE"
-                systemctl restart "$AGENT_SERVICE"
-            fi
-            log "$(t "Checking prebuilt Incus images for updates..." "检查预构建 Incus 镜像更新...")"
-            if [ -n "$INCUS_LOCAL_IMAGE_DIR" ]; then
-                import_local_incus_images || true
-            fi
-            if [ -n "$INCUS_ALPINE_BASE" ]; then
-                import_custom_alpine_base
-            fi
-            INCUS_IMAGE_REFRESH=1
-            _nc_mirror_ok=0
-            if [ -n "$INCUS_IMAGE_MIRROR" ] && import_incus_images_from_mirror; then
-                _nc_mirror_ok=1
-            else
-                if [ "${MIRROR_IMPORT_REASON:-}" = "no_matching_arch" ]; then
-                    log "$(t "Mirror has no $ARCH image; refreshing from the official $ARCH release." "镜像站没有 $ARCH 镜像；将从官方 $ARCH 预构建 Release 刷新。")"
-                else
-                    log "$(t "Mirror import failed on update; falling back to default source." "更新时镜像导入失败；回退到默认源。")"
-                fi
-            fi
-            if [ "$_nc_mirror_ok" = "1" ]; then
-                import_missing_incus_images
-            else
-                import_incus_fallback_images
-            fi
-            ;;
-    esac
+    ensure_podman_network_from_config
+    configure_podman_registry_mirror
+    install_podman_forwarding_compat
+    if [ "$FORCE_IMAGE_REFRESH" = "1" ]; then
+        for image in "docker.io/narwhalcloud/debian:podman" "docker.io/narwhalcloud/alpine:podman"; do
+            podman pull "$image" || die "$(t "Failed to refresh Podman image: $image" "Podman 镜像刷新失败: $image")"
+        done
+    fi
 
     # Update rfw if binary exists or force install requested
     if [ "$INSTALL_RFW_FORCE" = "1" ]; then
@@ -2495,28 +1651,9 @@ log "$(t "Starting fresh installation..." "开始全新安装流程...")"
 
 # ── Virtualization type selection ──────────────────────────────────────────────
 
-if [ -n "$VIRT_TYPE_REQUESTED" ]; then
-    VIRT_TYPE="$VIRT_TYPE_REQUESTED"
-else
-    printf "$(t "Select virtualization type:" "选择虚拟化类型：")\n"
-    printf "  1) Podman container ($(t "recommended" "推荐"))\n"
-    printf "  2) cloud-hypervisor VM ($(t "experimental, requires /dev/kvm" "实验性，需要 /dev/kvm"))\n"
-    printf "  3) Incus (LXC)\n"
-    log "$(t "NOTE: cloud-hypervisor (type 2) and Incus (type 3) are experimental." "提示：cloud-hypervisor（选项 2）与 Incus（选项 3）处于实验阶段。")"
-    read -rp "> " _virt_choice
-    case "${_virt_choice}" in
-        2) VIRT_TYPE="cloudhv" ;;
-        3) VIRT_TYPE="incus" ;;
-        *) VIRT_TYPE="podman" ;;
-    esac
-fi
-if [ "$VIRT_TYPE" = "cloudhv" ]; then
-    if [ ! -e "/dev/kvm" ]; then
-        die "$(t "ERROR: /dev/kvm not found. KVM is required for cloud-hypervisor." "错误: 未找到 /dev/kvm。cloud-hypervisor 需要 KVM 支持。")"
-    fi
-    log "$(t "✓ KVM support detected." "✓ 检测到 KVM 支持。")"
-fi
-log "$(t "Selected virtualization type: $VIRT_TYPE" "选择的虚拟化类型: $VIRT_TYPE")"
+# 本 fork 只维护 Podman 后端：不再询问，也不接受其它类型（--virt 已做前置校验）。
+VIRT_TYPE="podman"
+log "$(t "Backend: podman (the only backend this fork maintains)" "后端: podman（本 fork 只维护 Podman 后端）")"
 
 if [ "$VIRT_TYPE" = "podman" ]; then
     if [ ! -f /xfs_disk.img ]; then
@@ -2536,12 +1673,12 @@ fi
 
 # ── Installation ───────────────────────────────────────────────────────────────
 
-install_packages "$VIRT_TYPE"
+install_packages
 # 在任何受管系统文件变更之前保存唯一的安装基线。后续手工 --backup-ipv6
 # 只更新 latest，不覆盖 install-origin，确保 --uninstall 永远恢复到安装前。
-if [ ! -s "$INCUS_IPV6_BACKUP_DIR/install-origin" ]; then
+if [ ! -s "$BACKUP_DIR/install-origin" ]; then
     if b=$(backup_ipv6_config); then
-        echo "$b" > "$INCUS_IPV6_BACKUP_DIR/install-origin"
+        echo "$b" > "$BACKUP_DIR/install-origin"
         log "$(t "System config baseline saved to $b" "系统配置安装前基线已保存至 $b")"
     fi
 fi
@@ -2554,17 +1691,6 @@ start_service chrony
 if [ "$VIRT_TYPE" = "podman" ]; then
     start_service lxcfs
 fi
-if [ "$VIRT_TYPE" = "incus" ]; then
-    # 0. 加载必要的内核模块 (security.ipv6_filtering 需要)
-    log "$(t "Loading br_netfilter kernel module..." "加载 br_netfilter 内核模块...")"
-    modprobe br_netfilter || true
-    echo "br_netfilter" > /etc/modules-load.d/runman-incus.conf
-
-    start_service incus
-    # 等待 Socket 就绪
-    sleep 2
-fi
-
 cat > /etc/systemd/zram-generator.conf <<'EOF'
 [zram0]
 compression-algorithm=lz4
@@ -2659,7 +1785,7 @@ configure_host_ipv6_routing() {
 # 三种后端的交互安装统一进入网络场景菜单；命令行已给 --ipv6-mode 时不再询问。
 # Podman/cloud-hypervisor 固定保留 NAT4，因此不会显示 Incus 专属的纯 IPv6 选项。
 if [ "$NON_INTERACTIVE" != "1" ] && [ -z "${IPV6_MODE:-}" ]; then
-    prompt_ipv6_strategy "$VIRT_TYPE"
+    prompt_ipv6_strategy
 fi
 
 # 保存用户通过环境变量显式指定的值（如 IPV6_MODE=subnet bash install.sh）
@@ -2740,12 +1866,6 @@ elif [ -n "$IPV6_PREFIX" ]; then
 fi
 # IPV6_PREFIX 为空（无任何 IPv6）时 IPV6_MODE 保持 "none"
 
-# 纯 IPv6 容器要求已具备 IPv6（subnet/snat），否则无法创建仅 IPv6 的实例
-if [ "${INCUS_IPV6_ONLY:-}" = "1" ] && [ "$IPV6_MODE" = "none" ]; then
-    die "$(t "IPv6-only containers require an IPv6 subnet (IPV6_MODE=subnet/snat); current mode is 'none'." \
-        "纯 IPv6 容器需要可用的 IPv6 子网（IPV6_MODE=subnet/snat）；当前模式为 'none'。")"
-fi
-
 # 健壮性校验：subnet 模式必须有可用子网信息，否则降级
 if [ "$IPV6_MODE" = "subnet" ] && [ -z "$IPV6_SUBNET" ]; then
     if [ -n "$IPV6_ADDR" ]; then
@@ -2764,36 +1884,7 @@ fi
 
 # ── Network setup (conditional on virtualization type) ────────────────────────
 
-if [ "$VIRT_TYPE" = "cloudhv" ] || [ "$VIRT_TYPE" = "incus" ]; then
-    # IPv6 变量已由规范化块统一解析，此处直接使用
-    log "$(t "Setting up $VIRT_TYPE network..." "配置 $VIRT_TYPE 网络...")"
-
-    if [ "$VIRT_TYPE" = "cloudhv" ]; then
-        mkdir -p /opt/vm-images/instances /run/cloud-hypervisor
-    fi
-
-    if [ "$IPV6_MODE" = "none" ]; then
-        log "$(t "No public IPv6, IPv6 will not be configured." "无公网 IPv6，将不配置 IPv6。")"
-    elif [ "$IPV6_MODE" = "subnet" ]; then
-        if [ -n "$IPV6_IFACE" ] && [ "$IPV6_ROUTED" != "1" ]; then
-            configure_host_ipv6_routing "$IPV6_IFACE" "$IPV6_ADDR"
-        fi
-        log "$(t "✓ IPv6 subnet mode: $IPV6_SUBNET, VMs will get independent addresses." "✓ IPv6 子网模式: $IPV6_SUBNET，VM 将获得独立地址。")"
-    elif [ "$IPV6_MODE" = "snat" ]; then
-        log "$(t "✓ IPv6 SNAT mode: VMs share host IPv6 via masquerade." "✓ IPv6 SNAT 模式：VM 通过宿主机 MASQUERADE 共享 IPv6。")"
-    fi
-
-    # Incus 网桥会在安装末尾按这里解析出的最终模式创建/收敛。
-    log "$(t "✓ $VIRT_TYPE network parameters validated." "✓ $VIRT_TYPE 网络参数已验证。")"
-
-    if [ "$IPV6_MODE" = "subnet" ] && [ -n "$IPV6_SUBNET" ] && [ -n "$IPV6_IFACE" ]; then
-        if [ "$IPV6_ROUTED" = "1" ]; then
-            log "$(t "✓ Routed prefix mode: upstream NDP is not required." "✓ 独立路由前缀模式：无需上游 NDP 应答。")"
-        else
-            log "$(t "✓ NDP responder will be enabled for IPv6 subnet mode." "✓ NDP 响应器将在 IPv6 子网模式下启用。")"
-        fi
-    fi
-elif [ "$VIRT_TYPE" = "podman" ]; then
+if [ "$VIRT_TYPE" = "podman" ]; then
     # 先安装自定义 netavark（支持 snat_ipv6 选项），再操作网络
     if download_with_retry "$NETAVARK_BASE/netavark-new-$ARCH" "/usr/libexec/podman/netavark"; then
         chmod +x /usr/libexec/podman/netavark
@@ -2899,69 +1990,21 @@ start_service podman-restart
             || { log "$(t "Pulling $image..." "拉取 $image...")"; podman pull "$image" \
                 || log "$(t "Warning: failed to pull $image" "警告: $image 拉取失败")"; }
     done
-fi  # End of Podman vs cloud-hypervisor network setup
+fi  # End of Podman network setup
 
-# ── Cloud-hypervisor specific setup ────────────────────────────────────────────
-
-if [ "$VIRT_TYPE" = "cloudhv" ]; then
-    log "$(t "Setting up cloud-hypervisor..." "配置 cloud-hypervisor...")"
-
-    # Ensure agent bin directory exists
-    mkdir -p "$AGENT_BIN_DIR"
-
-    # Download cloud-hypervisor binary
-    if ! command -v cloud-hypervisor &>/dev/null && ! [ -f "$AGENT_BIN_DIR/cloud-hypervisor" ]; then
-        # 调试模式：检查本地文件
-        ch_local_name=""
-        case "$ARCH" in
-            amd64) ch_local_name="cloud-hypervisor-static" ;;
-            arm64) ch_local_name="cloud-hypervisor-static-aarch64" ;;
-            *) ch_local_name="cloud-hypervisor-static-$ARCH" ;;
-        esac
-
-        if [ -f "./$ch_local_name" ]; then
-            log "$(t "Found local cloud-hypervisor binary: ./$ch_local_name (debug mode)" "找到本地 cloud-hypervisor 二进制: ./$ch_local_name (调试模式)")"
-            cp "./$ch_local_name" "$AGENT_BIN_DIR/cloud-hypervisor"
-            chmod +x "$AGENT_BIN_DIR/cloud-hypervisor"
-            log "$(t "✓ cloud-hypervisor binary installed (from local)." "✓ cloud-hypervisor 二进制已安装 (来自本地)。")"
-        else
-            # 生产模式：从官方仓库下载
-            log "$(t "Downloading cloud-hypervisor binary from official repository..." "从官方仓库下载 cloud-hypervisor 二进制文件...")"
-            download_with_retry "$CLOUD_HYPERVISOR_BASE/$ch_local_name" "$AGENT_BIN_DIR/cloud-hypervisor"
-            chmod +x "$AGENT_BIN_DIR/cloud-hypervisor"
-            log "$(t "✓ cloud-hypervisor binary installed." "✓ cloud-hypervisor 二进制已安装。")"
-        fi
-    else
-        log "$(t "cloud-hypervisor binary already exists." "cloud-hypervisor 二进制已存在。")"
-    fi
-
-    # Download prebuilt base VM images (Debian, Alpine); fallback to local build
-    if ! fetch_vm_images; then
-        log "$(t "Falling back to local image build for: ${VM_FETCH_FAILED[*]}" "回退到本地构建镜像: ${VM_FETCH_FAILED[*]}")"
-        update_vm_images "${VM_FETCH_FAILED[@]}"
-    fi
+# IPv6 回滚辅助脚本（幂等）：配置了 IPv6 时提供一个可手动执行的恢复入口
+if [ "$IPV6_MODE" != "none" ]; then
+    install_ipv6_rollback_helper
 fi
 
 # ── Install agent ─────────────────────────────────────────────────────────────
 
 download_agent "$ARCH"
 
-# 初始化 NDP 参数（Podman public IPv6 模式或 cloud-hypervisor subnet 模式下有值）
+# 初始化 NDP 参数（Podman public IPv6 的 subnet 分支已填好，这里做兜底）
 NDP_IFACE="${NDP_IFACE:-}"
 NDP_SUBNETS="${NDP_SUBNETS:-}"
 NDP_NETWORK="${NDP_NETWORK:-}"
-if [ "$IPV6_MODE" = "subnet" ] && [ "$IPV6_ROUTED" != "1" ]; then
-    if [ "$VIRT_TYPE" = "cloudhv" ] || [ "$VIRT_TYPE" = "incus" ]; then
-        NDP_IFACE="$IPV6_IFACE"
-        NDP_SUBNETS="$IPV6_SUBNET"
-    fi
-fi
-
-# 在写 config.json 前确定 WireGuard IPv6 池，确保首启 Agent 即可读取。
-if [ "$VIRT_TYPE" = "incus" ] && [ "$IPV6_MODE" = "subnet" ] \
-    && [ -n "$IPV6_SUBNET" ] && [ -z "$INCUS_WG_IPV6_SUBNET" ]; then
-    INCUS_WG_IPV6_SUBNET="$IPV6_SUBNET"
-fi
 
 # 生成默认 Web 面板用户名和随机密码
 DEFAULT_USER="admin"
@@ -3003,134 +2046,6 @@ fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 
-if [ "$VIRT_TYPE" = "incus" ]; then
-    # 1. 初始化默认存储池
-    if ! incus storage show default >/dev/null 2>&1; then
-        log "$(t "Initializing Incus default storage pool..." "初始化 Incus 默认存储池...")"
-        incus storage create default dir
-    fi
-
-    # 2. 创建或收敛默认网桥。纯 IPv6 模式必须同时关闭 IPv4 地址和 NAT，
-    # 避免安装结果与面板声明不一致。
-    INCUS_IPV4="10.91.0.1/20"
-    INCUS_IPV4_NAT="true"
-    INCUS_IPV6="none"
-    INCUS_IPV6_NAT="false"
-    INCUS_DNS="1.1.1.1,2606:4700:4700::1111"
-    if [ "${INCUS_IPV6_ONLY:-0}" = "1" ]; then
-        INCUS_IPV4="none"
-        INCUS_IPV4_NAT="false"
-        INCUS_DNS="2606:4700:4700::1111,2001:4860:4860::8888"
-    fi
-
-    if [ "$IPV6_MODE" = "snat" ]; then
-        INCUS_IPV6="fd91:cafe:cafe:10::1/64"
-        INCUS_IPV6_NAT="true"
-    elif [ "$IPV6_MODE" = "subnet" ] && [ -n "$IPV6_SUBNET" ]; then
-        # 使用所分配前缀第一个 /112 的末地址作为网关，避免与常见的
-        # routed-prefix 宿主机地址 ::1/128 冲突；容器地址从 ::2 起分配。
-        INCUS_IPV6=$(python3 - "$IPV6_SUBNET" <<'PY'
-import ipaddress
-import sys
-net = ipaddress.IPv6Network(sys.argv[1], strict=False)
-bridge_prefix = max(net.prefixlen, 112)
-bridge = next(net.subnets(new_prefix=bridge_prefix)) if net.prefixlen < bridge_prefix else net
-print(f"{bridge.broadcast_address}/{bridge_prefix}")
-PY
-)
-    fi
-
-    if ! incus network show incusbr0 >/dev/null 2>&1; then
-        log "$(t "Initializing Incus network bridge incusbr0..." "初始化 Incus 网桥 incusbr0...")"
-        incus network create incusbr0 \
-            ipv4.address="$INCUS_IPV4" ipv4.nat="$INCUS_IPV4_NAT" \
-            ipv6.address="$INCUS_IPV6" ipv6.nat="$INCUS_IPV6_NAT" \
-            ipv6.routing=true \
-            ipv6.dhcp=false \
-            dns.nameservers="$INCUS_DNS"
-    else
-        log "$(t "Reconciling existing Incus network bridge incusbr0..." "收敛现有 Incus 网桥 incusbr0 配置...")"
-        incus network set incusbr0 ipv4.address "$INCUS_IPV4"
-        incus network set incusbr0 ipv4.nat "$INCUS_IPV4_NAT"
-        incus network set incusbr0 ipv6.address "$INCUS_IPV6"
-        incus network set incusbr0 ipv6.nat "$INCUS_IPV6_NAT"
-        incus network set incusbr0 ipv6.routing true
-        incus network set incusbr0 ipv6.dhcp false
-        incus network set incusbr0 dns.nameservers "$INCUS_DNS"
-    fi
-
-    [ "$(incus network get incusbr0 ipv4.address)" = "$INCUS_IPV4" ] \
-        || die "$(t "Incus IPv4 bridge validation failed." "Incus 网桥 IPv4 配置校验失败。")"
-    [ "$(incus network get incusbr0 ipv6.address)" = "$INCUS_IPV6" ] \
-        || die "$(t "Incus IPv6 bridge validation failed." "Incus 网桥 IPv6 配置校验失败。")"
-    log "$(t "✓ Incus bridge matches the selected network mode." "✓ Incus 网桥与所选网络模式一致。")"
-
-    # 3. 确保默认配置集 (profile) 使用基础磁盘
-    if incus profile show default >/dev/null 2>&1; then
-        incus profile device add default root disk path=/ pool=default >/dev/null 2>&1 || true
-        # 移除 profile 中的 eth0，由 Agent 在创建实例时动态注入，避免 IP 冲突
-        incus profile device remove default eth0 >/dev/null 2>&1 || true
-    fi
-
-    # 3.5 本地镜像服务 / 定制 alpine 基础镜像（离线 / 内网部署）
-    if [ -n "$INCUS_LOCAL_IMAGE_DIR" ]; then
-        import_local_incus_images || log "$(t "Warning: local image import had issues" "警告: 本地镜像导入存在问题")"
-    fi
-    if [ -n "$INCUS_ALPINE_BASE" ]; then
-        import_custom_alpine_base
-    fi
-
-    # 3.6 配置 SSH 登录横幅（欢迎页）
-    prompt_banner
-
-    # 3.7 WireGuard IPv6 池：subnet 模式下复用同一前缀供 WG 隧道分配
-    if [ "$IPV6_MODE" = "subnet" ] && [ -n "$IPV6_SUBNET" ] && [ -z "$INCUS_WG_IPV6_SUBNET" ]; then
-        INCUS_WG_IPV6_SUBNET="$IPV6_SUBNET"
-    fi
-
-    # 4. 导入预构建的 ready 镜像（离线目录优先；否则从私有镜像服务器 / 默认源）
-    if [ -n "$INCUS_LOCAL_IMAGE_DIR" ]; then
-        log "$(t "Using local image dir, skipping remote import." "使用本地镜像目录，跳过远程导入。")"
-    else
-        _nc_mirror_ok=0
-        if [ -n "$INCUS_IMAGE_MIRROR" ]; then
-            if import_incus_images_from_mirror; then
-                _nc_mirror_ok=1
-            else
-                if [ "${MIRROR_IMPORT_REASON:-}" = "no_matching_arch" ]; then
-                    log "$(t "Mirror has no $ARCH image; will use the official $ARCH release." "镜像站没有 $ARCH 镜像；将使用官方 $ARCH 预构建 Release。")"
-                else
-                    log "$(t "Mirror import skipped/failed; will use configured base / default source." "镜像导入跳过/失败；将使用配置源 / 默认源。")"
-                fi
-            fi
-        fi
-        if [ "$_nc_mirror_ok" = "1" ]; then
-            # 镜像服务器已提供部分发行版：其余（如 debian）从 GitHub 默认源补齐；
-            # 若镜像不可达导致前述导入均失败，则此处一并补齐 alpine
-            import_missing_incus_images
-        else
-            import_incus_fallback_images
-        fi
-    fi
-
-    # 4.1 注册私有 simplestreams 镜像服务器为 incus remote（best-effort）。
-    #     便于运维直接通过 remote 使用自定义镜像，也顺带验证镜像服务是否可用。
-    if [ -n "$INCUS_IMAGE_MIRROR" ] && command -v incus >/dev/null 2>&1; then
-        if incus remote list 2>/dev/null | grep -qw "custom-mirror"; then
-            log "$(t "Incus remote custom-mirror already registered." "incus remote custom-mirror 已注册。")"
-        elif incus remote add custom-mirror "$INCUS_IMAGE_MIRROR" --protocol=simplestreams --public >/dev/null 2>&1; then
-            log "$(t "✓ Registered incus remote custom-mirror ($INCUS_IMAGE_MIRROR)" "✓ 已注册 incus remote custom-mirror ($INCUS_IMAGE_MIRROR)")"
-        else
-            log "$(t "Warning: could not register custom-mirror (index.json missing/unreachable). Runtime build falls back to upstream." "警告: 无法注册 custom-mirror（index.json 缺失/不可达）。运行时构建将回退到默认源。")"
-        fi
-    fi
-
-    # 5. IPv6 回滚辅助脚本（幂等）；配置备份已在“变更前”阶段完成，此处不再覆盖 latest 快照
-    if [ "$IPV6_MODE" != "none" ]; then
-        install_ipv6_rollback_helper
-    fi
-fi
-
 IP=$(curl -4 -s --max-time 10 ip.sb 2>/dev/null || echo "N/A")
 echo ""
 log "========================================"
@@ -3143,10 +2058,5 @@ log "$(t "Token:        $INITIAL_TOKEN" "对接 Token:    $INITIAL_TOKEN")"
 echo ""
 log "$(t "Token rotation: bash install.sh --rotate-token" "Token 轮换:    bash install.sh --rotate-token")"
 log "$(t "Custom Token:  bash install.sh --rotate-token --token '<new-token>'" "自定义 Token:   bash install.sh --rotate-token --token '<新Token>'")"
-if [ "${INCUS_IPV6_ONLY:-0}" = "1" ]; then
-    _nat4_en="off"; _nat4_zh="关闭"
-else
-    _nat4_en="on"; _nat4_zh="开启"
-fi
-log "$(t "Network:      IPv4 NAT=$_nat4_en, IPv6=$IPV6_MODE" "网络模式:      IPv4 NAT=$_nat4_zh, IPv6=$IPV6_MODE")"
+log "$(t "Network:      IPv4 NAT=on, IPv6=$IPV6_MODE" "网络模式:      IPv4 NAT=开启, IPv6=$IPV6_MODE")"
 log "========================================"
