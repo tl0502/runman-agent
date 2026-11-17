@@ -553,6 +553,21 @@
               </div>
             </div>
           </div>
+
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">容器网络</span>
+              <span class="card-note">所有容器共用</span>
+            </div>
+            <div class="card-body form-grid">
+              <div class="field">
+                <label for="publicIpv4">对外 IPv4 <span class="hint">端口映射只在此地址监听，出站流量也用它</span></label>
+                <select class="input" id="publicIpv4">
+                  <option value="">未指定（所有 IP 均可访问）</option>
+                </select>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="card">

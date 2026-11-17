@@ -311,6 +311,33 @@ func (m *Manager) RefreshVM(ctx context.Context, vmID string) {
 	}
 }
 
+// ReloadAll 按当前配置重建所有监听，用于切换对外 IP。
+// 只释放 listener 再重建，DB 记录保留；单条重建失败由 reconcileLoop 兜底重试。
+func (m *Manager) ReloadAll(ctx context.Context) {
+	m.mu.RLock()
+	ids := make([]string, 0, len(m.mappings))
+	for id := range m.mappings {
+		ids = append(ids, id)
+	}
+	m.mu.RUnlock()
+
+	sort.Strings(ids)
+	for _, id := range ids {
+		m.RefreshVM(ctx, id)
+	}
+	log.Printf("[PortForward] rebound %d VM(s) to public IPv4 %q", len(ids), m.cfg.Get().EgressIPv4())
+}
+
+// listenAddress 返回监听地址。bindIP 为空时监听所有本地地址（旧行为），
+// 否则只监听该地址，容器对外仅在这一个 IP 上可达。
+func listenAddress(bindIP string, port int) string {
+	if bindIP == "" {
+		return fmt.Sprintf(":%d", port)
+	}
+	// JoinHostPort 而不是字符串拼接：IPv6 地址需要 [ ] 包裹。
+	return net.JoinHostPort(bindIP, strconv.Itoa(port))
+}
+
 // AddMapping 添加转发规则，相同规则幂等，配置变更时先删后加
 func (m *Manager) AddMapping(ctx context.Context, vmId string, protocol string, hostPort, guestPort int, description string) error {
 	return m.addMapping(ctx, vmId, protocol, hostPort, guestPort, description, true)
@@ -365,8 +392,11 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 		connActiveIPs: make(map[string]int64),
 	}
 
+	// 对外 IPv4 非空时只在该地址上监听；为空则保持旧行为（所有本地地址）。
+	bindIP := m.cfg.Get().EgressIPv4()
+
 	if protocol == "tcp" {
-		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", hostPort))
+		ln, err := net.Listen("tcp", listenAddress(bindIP, hostPort))
 		if err != nil {
 			cancel()
 			return err
@@ -374,7 +404,7 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 		entry.ln = ln
 		go m.runTCP(runCtx, ln, targetAddr, entry)
 	} else {
-		pc, err := net.ListenPacket("udp", fmt.Sprintf(":%d", hostPort))
+		pc, err := net.ListenPacket("udp", listenAddress(bindIP, hostPort))
 		if err != nil {
 			cancel()
 			return err

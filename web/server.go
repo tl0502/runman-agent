@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -25,6 +26,7 @@ import (
 	"runman-agent/monitor"
 	"runman-agent/proto/agent"
 	"runman-agent/updater"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -126,6 +128,7 @@ func (s *Server) ListenAndServe(addr string) error {
 	// 系统
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/config", s.handleConfig)
+	mux.HandleFunc("GET /api/network/addresses", s.handleNetworkAddresses)
 	mux.HandleFunc("/api/brand/icon", s.handleBrandIcon)
 	// 自定义图标同时充当 tab 图标；没有配置时回落到内置 favicon。
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
@@ -629,6 +632,8 @@ type configRequest struct {
 	// nil = 未提交；false = 显式关闭，因此用指针。
 	PlatformInsecure *bool   `json:"platform_insecure"`
 	NetavarkBase     *string `json:"netavark_base"`
+	// 容器对外 IPv4：端口映射监听该地址，出站 SNAT 也用它。空串表示恢复默认。
+	PublicIPv4 *string `json:"public_ipv4"`
 }
 
 type configResponse struct {
@@ -650,6 +655,7 @@ type configResponse struct {
 	UpdateAPIURL     string `json:"update_api_url"`
 	PlatformInsecure bool   `json:"platform_insecure"`
 	NetavarkBase     string `json:"netavark_base"`
+	PublicIPv4       string `json:"public_ipv4"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -709,6 +715,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if req.NetavarkBase != nil {
 				cfg.NetavarkBase = strings.TrimSpace(*req.NetavarkBase)
 			}
+			if req.PublicIPv4 != nil {
+				cfg.PublicIPv4 = strings.TrimSpace(*req.PublicIPv4)
+			}
 		})
 		if err != nil {
 			http.Error(w, "failed to save config: "+err.Error(), 500)
@@ -737,6 +746,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		UpdateAPIURL:     conf.UpdateAPIURL,
 		PlatformInsecure: conf.PlatformInsecure,
 		NetavarkBase:     conf.NetavarkBase,
+		PublicIPv4:       conf.PublicIPv4,
 	})
 }
 
@@ -1718,4 +1728,74 @@ func (s *Server) handleVMTTY(w http.ResponseWriter, r *http.Request) {
 		_ = conn.WriteMessage(websocket.TextMessage,
 			[]byte("\r\n[disconnected: "+err.Error()+"]\r\n"))
 	}
+}
+
+// netAddressResponse 返回宿主机可选的对外地址，供面板下拉使用。
+type netAddressResponse struct {
+	IPv4    []string `json:"ipv4"`
+	Primary string   `json:"primary"`
+}
+
+// handleNetworkAddresses 枚举本机网卡上的 IPv4 地址。
+// 过滤掉回环、容器网桥、veth 等虚拟接口，只留下真正可对外使用的地址。
+func (s *Server) handleNetworkAddresses(w http.ResponseWriter, _ *http.Request) {
+	jsonOK(w, netAddressResponse{
+		IPv4:    listHostIPv4(),
+		Primary: primaryIPv4(),
+	})
+}
+
+func listHostIPv4() []string {
+	result := []string{}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return result
+	}
+	for _, ifi := range ifaces {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if isVirtualInterface(ifi.Name) {
+			continue
+		}
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() {
+				continue
+			}
+			result = append(result, ip4.String())
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func isVirtualInterface(name string) bool {
+	for _, prefix := range []string{"podman", "docker", "br-", "veth", "cni", "virbr", "vnet", "tun", "tap"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// primaryIPv4 返回默认路由会选中的源地址。UDP 的 Dial 只做路由查找，不发包。
+func primaryIPv4() string {
+	conn, err := net.Dial("udp4", "1.1.1.1:53")
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = conn.Close() }()
+	if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+		return addr.IP.String()
+	}
+	return ""
 }

@@ -19,6 +19,7 @@ import (
 	"runman-agent/db"
 	"runman-agent/manager"
 	"runman-agent/manager/cloudhv"
+	"runman-agent/manager/egress"
 	"runman-agent/manager/incus"
 	"runman-agent/manager/podman"
 	"runman-agent/manager/portforward"
@@ -61,6 +62,7 @@ type Agent struct {
 	hostMon       *monitor.HostMonitor
 	pf            *portforward.Manager
 	wg            *wgbind.Manager
+	egress        *egress.Applier
 	config        config.Config // 缓存的配置副本（仅在 run() 循环中更新）
 	mu            sync.RWMutex
 	connected     bool
@@ -160,6 +162,13 @@ func main() {
 	hostMon := monitor.NewHostMonitor()
 
 	pf := portforward.New(svc, database, cfg)
+
+	// 容器出站源地址：先落 SNAT，再恢复端口转发，避免规则与监听地址不一致。
+	eg := egress.New(cfg)
+	if err := eg.Apply(context.Background()); err != nil {
+		log.Printf("[Egress] apply at startup failed: %v", err)
+	}
+
 	// 启动时从 DB 恢复已持久化的端口转发规则
 	pf.Restore(context.Background())
 
@@ -186,6 +195,7 @@ func main() {
 		hostMon: hostMon,
 		pf:      pf,
 		wg:      wg,
+		egress:  eg,
 		config:  conf,
 	}
 
@@ -227,6 +237,8 @@ func main() {
 	go a.detectIPv4()
 	go a.detectIPv6()
 	go a.refreshPublicIPLoop()
+	// 面板修改对外 IPv4 后 10 秒内生效：出口 SNAT 与端口监听一起重建。
+	go a.watchPublicIP(context.Background())
 
 	// 按需启动 NDP 应答器（公网 IPv6 场景）
 	if conf.NdpIface != "" {
@@ -495,6 +507,43 @@ func (a *Agent) watchPlatformAddr(ctx context.Context, cancel context.CancelFunc
 				return
 			}
 		}
+	}
+}
+
+// watchPublicIP 轮询配置里的对外 IPv4。变化时先改出口 SNAT，再重建所有端口监听。
+// 应用失败时不更新基线，下一轮自动重试。
+func (a *Agent) watchPublicIP(ctx context.Context) {
+	if a.egress == nil || a.pf == nil {
+		return
+	}
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	applied := a.cfg.Get().EgressIPv4()
+	appliedOK := true
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		current := a.cfg.Get().EgressIPv4()
+		if appliedOK && current == applied {
+			continue
+		}
+
+		log.Printf("[Agent] public IPv4 changed: %q -> %q", applied, current)
+		if err := a.egress.Apply(ctx); err != nil {
+			log.Printf("[Egress] apply on change failed (will retry): %v", err)
+			appliedOK = false
+			continue
+		}
+
+		a.pf.ReloadAll(ctx)
+		applied, appliedOK = current, true
 	}
 }
 

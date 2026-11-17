@@ -59,6 +59,15 @@ type Config struct {
 	// 为空时回落到 DefaultNetavarkBase。
 	NetavarkBase string `json:"netavark_base"`
 
+	// PublicIPv4 是所有容器共用的对外地址：端口映射只在该地址上监听，
+	// 容器出站流量也 SNAT 成该地址。容器本身仍使用 narwhal-net 的内网地址。
+	// 为空时保持旧行为（监听 0.0.0.0，出站走 netavark 默认 masquerade）。
+	PublicIPv4 string `json:"public_ipv4"`
+
+	// PublicIPv6 为预留字段：当前版本未实现 IPv6 对外地址，仅保留键位，
+	// 避免以后新增字段还要再做一次配置迁移。
+	PublicIPv6 string `json:"public_ipv6"`
+
 	// 监控配置
 	MonitorNIC  string `json:"monitor_nic"`
 	MonitorDisk string `json:"monitor_disk"`
@@ -260,4 +269,9 @@ func (c Config) NetavarkDownloadBase() string {
 		return v
 	}
 	return DefaultNetavarkBase
+}
+
+// EgressIPv4 返回对外 IPv4（去掉空白）。空表示不指定，走默认行为。
+func (c Config) EgressIPv4() string {
+	return strings.TrimSpace(c.PublicIPv4)
 }

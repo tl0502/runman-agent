@@ -976,7 +976,7 @@ $('formRule').addEventListener('submit', async (e) => {
 /* ══════════════════════════════ 设置 ═══════════════════════════════════════ */
 const CONF_FIELDS = ['siteName', 'token', 'platformAddr', 'monitorNIC', 'monitorDisk', 'maxPortForward',
   'maxForwardIPs', 'trafficResetDay', 'entryHost', 'updateRepo', 'updateBase', 'updateApi', 'netavarkBase',
-  'webUser', 'webPass'];
+  'publicIpv4', 'webUser', 'webPass'];
 
 function confSnapshot() {
   const o = {};
@@ -1010,6 +1010,38 @@ function loadConfigIntoForm(c) {
   $('platformInsecure').checked = !!c.platform_insecure;
   state.snapshot = confSnapshot();
   syncDirty();
+  loadNetworkAddresses(c.public_ipv4 || '');
+}
+
+// loadNetworkAddresses 拉取宿主机可用的 IPv4 填充下拉框。
+// 当前配置值若不在列表里（IP 尚未绑到网卡），补一项保留，避免保存时被清空。
+async function loadNetworkAddresses(selected) {
+  const sel = $('publicIpv4');
+  if (!sel) return;
+  let addrs = [];
+  let primary = '';
+  try {
+    const data = await api('GET', '/api/network/addresses');
+    addrs = (data && data.ipv4) || [];
+    primary = (data && data.primary) || '';
+  } catch (e) { /* 拉不到就只留空选项 */ }
+
+  sel.innerHTML = '<option value="">未指定（所有 IP 均可访问）</option>';
+  addrs.forEach((ip) => {
+    const opt = document.createElement('option');
+    opt.value = ip;
+    opt.textContent = ip === primary ? `${ip}（主 IP）` : ip;
+    sel.appendChild(opt);
+  });
+  if (selected && !addrs.includes(selected)) {
+    const opt = document.createElement('option');
+    opt.value = selected;
+    opt.textContent = `${selected}（当前配置）`;
+    sel.appendChild(opt);
+  }
+  sel.value = selected || '';
+  state.snapshot = confSnapshot();
+  syncDirty();
 }
 
 CONF_FIELDS.forEach((id) => $(id)?.addEventListener('input', syncDirty));
@@ -1033,6 +1065,7 @@ async function saveConfig(btn) {
       update_base_url: $('updateBase').value.trim(),
       update_api_url: $('updateApi').value.trim(),
       netavark_base: $('netavarkBase').value.trim(),
+      public_ipv4: $('publicIpv4').value,
       platform_insecure: $('platformInsecure').checked,
     };
     try {
