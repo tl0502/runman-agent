@@ -782,27 +782,35 @@ select.input:disabled { cursor: not-allowed; }
 .pick-item.is-off:hover { background: none; color: var(--ink-1); }
 
 .check { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-1); cursor: pointer; }
-.check input {
-  appearance: none;
-  width: 15px; height: 15px;
-  border-radius: 4.5px;
-  border: 1px solid var(--line-strong);
-  background: var(--card-solid);
-  display: grid;
-  place-items: center;
-  transition: background .15s ease, border-color .15s ease;
-  flex: none;
+.check input { position: absolute; opacity: 0; width: 0; height: 0; }
+.check-box { width: 15px; height: 15px; flex: none; display: block; }
+.cb-bg {
+  fill: var(--card-solid);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  transition: fill .16s ease, stroke .16s ease;
 }
-.check input:checked { background: #101114; border-color: #101114; }
-[data-theme="dark"] .check input:checked { background: #f4f5f7; border-color: #f4f5f7; }
-.check input:checked::after {
-  content: "";
-  width: 8px; height: 4.5px;
-  border: 1.8px solid #fff;
-  border-top: 0; border-right: 0;
-  transform: rotate(-45deg) translateY(-1px);
+.cb-mark {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 14;
+  stroke-dashoffset: 14;
+  transition: stroke-dashoffset .24s ease .06s;
 }
-[data-theme="dark"] .check input:checked::after { border-color: #0b0c0e; }
+.check input:checked + .check-box { animation: cb-pop .3s var(--ease); }
+.check input:checked + .check-box .cb-bg { fill: #101114; stroke: #101114; }
+.check input:checked + .check-box .cb-mark { stroke-dashoffset: 0; }
+.check input:focus-visible + .check-box .cb-bg { stroke: var(--blue); stroke-width: 1.6; }
+[data-theme="dark"] .check input:checked + .check-box .cb-bg { fill: #f4f5f7; stroke: #f4f5f7; }
+[data-theme="dark"] .cb-mark { stroke: #0b0c0e; }
+@keyframes cb-pop {
+  0% { transform: scale(.82); }
+  55% { transform: scale(1.1); }
+  100% { transform: scale(1); }
+}
 
 .form-grid { display: grid; gap: 14px; }
 .form-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1234,8 +1242,8 @@ table.data tbody tr.is-clickable { cursor: pointer; }
   transition: opacity .24s ease, transform .3s var(--ease);
 }
 .savebar.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
-.savebar .msg { font-size: 12.5px; color: var(--ink-1); }
-.savebar .msg b { color: var(--ink-0); }
+.savebar .msg { font-size: 12.5px; color: var(--ink-1); letter-spacing: 0; line-height: 1.2; }
+.savebar .msg b { color: var(--ink-0); font-weight: 600; margin: 0 2px; }
 
 /* ── 设置页：语义配对的行对齐网格 ─────────────────────────────────────────── */
 .settings-rows { display: grid; gap: 16px; }

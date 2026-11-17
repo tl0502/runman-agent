@@ -90,6 +90,11 @@ type Config struct {
 	// ContainerNoNewPrivs 为 true 时给容器设置 no_new_privileges，阻断 setuid 提权。nil 视为 true。
 	ContainerNoNewPrivs *bool `json:"container_no_new_privs"`
 
+	// ContainerUserns 为 true 时给容器启用 user namespace（userns=auto），
+	// 容器内 root 映射成宿主机非特权 uid，逃逸后拿不到宿主 root。nil 视为 true。
+	// 依赖宿主机 /etc/subuid、/etc/subgid 为 root 配置了足够的 id 范围。
+	ContainerUserns *bool `json:"container_userns"`
+
 	// ContainerPidsLimit 是容器的 pids 上限（cgroup pids.max）。<=0 时使用默认 2048。
 	ContainerPidsLimit int64 `json:"container_pids_limit"`
 
@@ -321,6 +326,14 @@ func (c Config) NoNewPrivsEnabled() bool {
 		return true
 	}
 	return *c.ContainerNoNewPrivs
+}
+
+// UsernsEnabled 返回是否为容器开启 user namespace。nil 视为 true。
+func (c Config) UsernsEnabled() bool {
+	if c.ContainerUserns == nil {
+		return true
+	}
+	return *c.ContainerUserns
 }
 
 // PidsLimit 返回容器的 pids 上限，<=0 时回落默认值。

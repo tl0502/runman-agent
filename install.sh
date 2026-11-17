@@ -999,6 +999,21 @@ EOF
         || log "$(t "Kernel parameters will take effect after reboot." "内核参数将在重启后生效。")"
 }
 
+# rootful podman 的 userns=auto 使用 "containers" 用户的 subuid/subgid 池
+# （该用户是占位，不登录、无家目录，专门为 rootful podman 保留 id 范围）。
+# 默认给 100 个容器的量（起始 1000000）。
+ensure_subuid() {
+    if ! id -u containers >/dev/null 2>&1; then
+        useradd --comment "Podman userns id pool" --no-create-home --shell /usr/sbin/nologin containers
+        log "$(t "✓ Created helper user containers (userns)." "✓ 已创建 userns 占位用户 containers。")"
+    fi
+    for f in /etc/subuid /etc/subgid; do
+        sed -i '/^containers:/d' "$f" 2>/dev/null || true
+        echo 'containers:1000000:6553600' >> "$f"
+    done
+    log "$(t "✓ Configured subuid/subgid for containers (userns)." "✓ 已为 containers 配置 subuid/subgid（userns）。")"
+}
+
 configure_journald() {
     log "$(t "Configuring systemd-journald limits..." "配置 systemd-journald 日志限制...")"
     cat > /etc/systemd/journald.conf <<EOF
@@ -1692,6 +1707,7 @@ if [ ! -s "$BACKUP_DIR/install-origin" ]; then
 fi
 if [ "$VIRT_TYPE" = "podman" ]; then
     check_podman_version
+    ensure_subuid
 fi
 enable_bbr
 configure_journald

@@ -131,6 +131,16 @@ func lxcfsMounts() []specs.Mount {
 	return mounts
 }
 
+// userNamespace 根据配置返回容器的 user namespace 设置。
+// 开启时用 userns=auto（rootful 自动分配 subuid 映射，容器内 root ≠ 宿主 root）；
+// 关闭时返回零值（默认 host，容器 root == 宿主 root）。
+func userNamespace(cfg config.Config) specgen.Namespace {
+	if cfg.UsernsEnabled() {
+		return specgen.Namespace{NSMode: specgen.Auto}
+	}
+	return specgen.Namespace{}
+}
+
 // createWithRetry 创建容器；若名字被残留容器占用（包括仅存在于 storage 层、
 // libpod DB 不认识的 "external" 容器，重装/创建中途失败后可能残留），
 // 强制清理同名容器后重试一次。
@@ -302,6 +312,7 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 			CapDrop:         sec.DropCaps(),
 			CapAdd:          sec.AddCaps(),
 			NoNewPrivileges: ptr(sec.NoNewPrivsEnabled()),
+			UserNS:          userNamespace(sec),
 		},
 		ContainerNetworkConfig: specgen.ContainerNetworkConfig{
 			Networks:   netOpts,
