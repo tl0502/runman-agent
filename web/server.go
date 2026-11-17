@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runman-agent/config"
@@ -209,9 +210,9 @@ func (s *Server) ListenAndServe(addr string) error {
 			http.NotFound(w, r)
 			return
 		}
-		if strings.HasSuffix(filePath, ".png") {
-			w.Header().Set("Content-Type", "image/png")
-		}
+		w.Header().Set("Content-Type", staticContentType(filePath))
+		// 面板随二进制一起升级，缓存必须每次回源，避免升级后仍用旧 CSS/JS。
+		w.Header().Set("Cache-Control", "no-cache")
 		if _, err := w.Write(data); err != nil {
 			log.Printf("write response error: %v", err)
 		}
@@ -221,6 +222,45 @@ func (s *Server) ListenAndServe(addr string) error {
 }
 
 // ─── 辅助 ──────────────────────────────────────────────────────────────────────
+
+// staticContentType 按扩展名返回 Content-Type。
+// 面板的 CSS/JS 若被当作 text/plain 返回，浏览器会拒绝应用样式（严格 MIME 校验）。
+func staticContentType(name string) string {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".html":
+		return "text/html; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".js", ".mjs":
+		return "text/javascript; charset=utf-8"
+	case ".json":
+		return "application/json; charset=utf-8"
+	case ".svg":
+		return "image/svg+xml"
+	case ".png":
+		return "image/png"
+	case ".ico":
+		return "image/x-icon"
+	case ".woff2":
+		return "font/woff2"
+	case ".woff":
+		return "font/woff"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// normalizeSiteName 归一化面板品牌名：去空白、限长 24 字符、空值回落默认。
+func normalizeSiteName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return config.DefaultSiteName
+	}
+	if r := []rune(name); len(r) > 24 {
+		name = string(r[:24])
+	}
+	return name
+}
 
 func jsonOK(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -399,15 +439,16 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, _ *http.Request) {
 }
 
 type configRequest struct {
-	Token           string `json:"token"`
-	MonitorNIC      string `json:"monitor_nic"`
-	MonitorDisk     string `json:"monitor_disk"`
-	WebUser         string `json:"web_user"`
-	WebPass         string `json:"web_pass"` // plaintext，服务端 bcrypt 后存储
-	Host            string `json:"host"`
-	MaxPortForward  int32  `json:"max_port_forward"`
-	MaxForwardIPs   *int32 `json:"max_forward_ips"` // 指针以区分"未提交"与"设为 0（不限制）"
-	TrafficResetDay int    `json:"traffic_reset_day"`
+	Token           string  `json:"token"`
+	MonitorNIC      string  `json:"monitor_nic"`
+	MonitorDisk     string  `json:"monitor_disk"`
+	WebUser         string  `json:"web_user"`
+	WebPass         string  `json:"web_pass"` // plaintext，服务端 bcrypt 后存储
+	SiteName        *string `json:"site_name"`
+	Host            string  `json:"host"`
+	MaxPortForward  int32   `json:"max_port_forward"`
+	MaxForwardIPs   *int32  `json:"max_forward_ips"` // 指针以区分"未提交"与"设为 0（不限制）"
+	TrafficResetDay int     `json:"traffic_reset_day"`
 
 	// 接入点配置。指针用于区分"未提交"（保持原值）与"提交空串"（回落到内置默认），
 	// 保证不认识这些字段的旧客户端调用 POST /api/config 时行为完全不变。
@@ -416,7 +457,8 @@ type configRequest struct {
 	UpdateBaseURL *string `json:"update_base_url"`
 	UpdateAPIURL  *string `json:"update_api_url"`
 	// nil = 未提交；false = 显式关闭，因此用指针。
-	PlatformInsecure *bool `json:"platform_insecure"`
+	PlatformInsecure *bool   `json:"platform_insecure"`
+	NetavarkBase     *string `json:"netavark_base"`
 }
 
 type configResponse struct {
@@ -424,6 +466,7 @@ type configResponse struct {
 	MonitorNIC      string `json:"monitor_nic"`
 	MonitorDisk     string `json:"monitor_disk"`
 	WebUser         string `json:"web_user"`
+	SiteName        string `json:"site_name"`
 	VirtType        string `json:"virt_type"`
 	Host            string `json:"host"`
 	MaxPortForward  int32  `json:"max_port_forward"`
@@ -435,6 +478,7 @@ type configResponse struct {
 	UpdateBaseURL    string `json:"update_base_url"`
 	UpdateAPIURL     string `json:"update_api_url"`
 	PlatformInsecure bool   `json:"platform_insecure"`
+	NetavarkBase     string `json:"netavark_base"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -466,6 +510,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if req.WebUser != "" {
 				cfg.WebUser = req.WebUser
 			}
+			if req.SiteName != nil {
+				cfg.SiteName = normalizeSiteName(*req.SiteName)
+			}
 			if req.WebPass != "" {
 				hash, _ := bcrypt.GenerateFromPassword([]byte(req.WebPass), bcrypt.DefaultCost)
 				cfg.WebPassHash = string(hash)
@@ -488,6 +535,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if req.PlatformInsecure != nil {
 				cfg.PlatformInsecure = *req.PlatformInsecure
 			}
+			if req.NetavarkBase != nil {
+				cfg.NetavarkBase = strings.TrimSpace(*req.NetavarkBase)
+			}
 		})
 		if err != nil {
 			http.Error(w, "failed to save config: "+err.Error(), 500)
@@ -502,6 +552,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		MonitorNIC:       conf.MonitorNIC,
 		MonitorDisk:      conf.MonitorDisk,
 		WebUser:          conf.WebUser,
+		SiteName:         conf.SiteName,
 		VirtType:         conf.VirtType,
 		Host:             conf.Host,
 		MaxPortForward:   conf.MaxPortForward,
@@ -512,6 +563,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		UpdateBaseURL:    conf.UpdateBaseURL,
 		UpdateAPIURL:     conf.UpdateAPIURL,
 		PlatformInsecure: conf.PlatformInsecure,
+		NetavarkBase:     conf.NetavarkBase,
 	})
 }
 

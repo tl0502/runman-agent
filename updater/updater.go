@@ -254,6 +254,7 @@ func (s *Service) updateCommandArgs() []string {
 	return []string{"--unit=narwhal-agent-update", "--collect", "--property=Type=exec",
 		"--property=WorkingDirectory=/", "--setenv=AGENT_RELEASE_TAG=" + releaseChannel(s.currentVer),
 		"--setenv=RUNMAN_AGENT_DOWNLOAD_BASE=" + s.releaseDownloadBase(),
+		"--setenv=NETAVARK_BASE=" + s.cfg.Get().NetavarkDownloadBase(),
 		"bash", installScript, "en", "--update-only", "--non-interactive"}
 }
 

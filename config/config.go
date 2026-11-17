@@ -15,10 +15,15 @@ const (
 	DefaultMaxPortForward = 20
 	DefaultWebUser        = "admin"
 
+	// DefaultSiteName 是面板顶栏显示的品牌名；可在设置页改成任意名称（白标）。
+	DefaultSiteName = "Run"
+
 	// DefaultPlatformAddr 是官方平台的 gRPC 接入地址；配置为空时使用。
 	DefaultPlatformAddr = "hosting.fuckip.me:443"
 	// DefaultUpdateRepo 是官方自更新仓库；配置为空时使用。
 	DefaultUpdateRepo = "narwhal-cloud/runman-agent"
+	// DefaultNetavarkBase 是自定义 netavark（支持 snat_ipv6 / bandwidth_*）的下载基址。
+	DefaultNetavarkBase = "https://github.com/tl0502/netavark-Runman/releases/latest/download"
 )
 
 // Config 是 agent 的全局配置，从 JSON 配置文件读取，通过 Web API 可修改。
@@ -48,6 +53,10 @@ type Config struct {
 	// 仅用于接入使用 IP 地址或自签证书的第三方平台。
 	PlatformInsecure bool `json:"platform_insecure"`
 
+	// NetavarkBase 是 Podman 后端自定义 netavark 的下载基址，安装/更新时传给 install.sh。
+	// 为空时回落到 DefaultNetavarkBase。
+	NetavarkBase string `json:"netavark_base"`
+
 	// 监控配置
 	MonitorNIC  string `json:"monitor_nic"`
 	MonitorDisk string `json:"monitor_disk"`
@@ -55,6 +64,9 @@ type Config struct {
 	// Web 面板认证
 	WebUser     string `json:"web_user"`
 	WebPassHash string `json:"web_pass_hash"` // bcrypt hash
+
+	// 面板品牌名，显示在顶栏与浏览器标题；空值回落 DefaultSiteName。
+	SiteName string `json:"site_name"`
 
 	// 公网入口地址（空则由服务端自取）
 	Host string `json:"host"`
@@ -185,6 +197,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.MaxPortForward <= 0 {
 		cfg.MaxPortForward = DefaultMaxPortForward
 	}
+	if cfg.SiteName == "" {
+		cfg.SiteName = DefaultSiteName
+	}
 	if cfg.TrafficResetDay <= 0 || cfg.TrafficResetDay > 28 {
 		cfg.TrafficResetDay = 1
 	}
@@ -230,4 +245,12 @@ func (c Config) UpdateDownloadBase() string {
 // UpdateAPIBase 返回版本查询接口的覆盖值；空表示由仓库地址派生。
 func (c Config) UpdateAPIBase() string {
 	return strings.TrimRight(strings.TrimSpace(c.UpdateAPIURL), "/")
+}
+
+// NetavarkDownloadBase 返回实际生效的 netavark 下载基址。
+func (c Config) NetavarkDownloadBase() string {
+	if v := strings.TrimRight(strings.TrimSpace(c.NetavarkBase), "/"); v != "" {
+		return v
+	}
+	return DefaultNetavarkBase
 }

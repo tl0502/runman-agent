@@ -23,7 +23,7 @@ DOWNLOAD_BASE="${RUNMAN_AGENT_DOWNLOAD_BASE:-https://github.com/narwhal-cloud/ru
 CLOUD_HYPERVISOR_BASE="https://github.com/cloud-hypervisor/cloud-hypervisor/releases/latest/download"
 # 预构建系统镜像（cloudhv/incus），由 narwhal-cloud/images 仓库 CI 每月构建
 VM_IMAGES_BASE="https://github.com/narwhal-cloud/images/releases/download/vm-latest"
-NETAVARK_BASE="https://github.com/narwhal-cloud/netavark/releases/latest/download"
+NETAVARK_BASE="${NETAVARK_BASE:-https://github.com/tl0502/netavark-Runman/releases/latest/download}"
 # rfw v2 随 agent 同仓库发布，资产名为 rfw-amd64 / rfw-arm64
 RFW_BASE="$DOWNLOAD_BASE"
 DEFAULT_INCUS_IMAGE_MIRROR=""
