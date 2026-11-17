@@ -200,7 +200,6 @@ async function refreshStatus() {
     $('mNetMeta').textContent = `累计 ↑ ${fmtBytes(d.net_out_total)} · ↓ ${fmtBytes(d.net_in_total)}`;
 
     $('ovUptime').textContent = fmtUptime(d.uptime);
-    $('ovUpdated').textContent = '刚刚更新';
 
     const monthIn = Number(d.month_in_total) || 0, monthOut = Number(d.month_out_total) || 0;
     const totalGb = gb(monthIn) + gb(monthOut);
@@ -220,7 +219,6 @@ function renderHostKv() {
   const c = state.config || {};
   const d = state.lastStatus || {};
   const rows = [
-    ['虚拟化', `<span class="badge badge-quiet">${esc((c.virt_type || '—').toUpperCase())}</span>`],
     ['内核', esc(d.kernel || '—')],
     ['监听网卡', esc(c.monitor_nic || '全部')],
     ['监听磁盘', esc(c.monitor_disk || '/')],
@@ -228,7 +226,6 @@ function renderHostKv() {
     ['端口转发上限', `${c.max_port_forward || 20} 条 / VM`],
   ];
   $('hostKv').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
-  $('ovVirt').textContent = (c.virt_type || '').toUpperCase() || '—';
   $('ovHostAddr').textContent = c.host || '自动探测';
   $('ovHost').textContent = c.host || location.host;
   $('ovOs').textContent = d.os || '—';
@@ -306,8 +303,6 @@ function filteredVMs() {
 function renderVMs() {
   const vms = state.vms;
   const run = vms.filter((v) => v.status === 2).length;
-  $('vmSubCount').textContent = `${vms.length} 台`;
-  $('vmSubState').textContent = `${run} 运行中 · ${vms.length - run} 其他`;
   $('cAll').textContent = vms.length;
   $('cRun').textContent = run;
   $('cStop').textContent = vms.length - run;
@@ -878,7 +873,6 @@ async function checkRfw() {
     if (d.online) {
       badge.className = 'badge badge-ok';
       badge.innerHTML = '<span class="dot"></span>运行中';
-      $('rfwSub').textContent = '规则实时下发到本机';
       $('rfwOnline').hidden = false;
       $('rfwOffline').hidden = true;
       $('rfwIface').textContent = d.status?.iface || '—';
@@ -887,7 +881,6 @@ async function checkRfw() {
     } else {
       badge.className = 'badge badge-bad';
       badge.innerHTML = '<span class="dot"></span>未运行';
-      $('rfwSub').textContent = '未检测到 RFW 服务';
       $('rfwOnline').hidden = true;
       $('rfwOffline').hidden = false;
     }
@@ -895,7 +888,6 @@ async function checkRfw() {
     const badge = $('rfwBadge');
     badge.className = 'badge badge-quiet';
     badge.innerHTML = '<span class="dot"></span>不可用';
-    $('rfwSub').textContent = 'RFW 检测失败';
   }
 }
 
