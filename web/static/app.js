@@ -9,6 +9,15 @@ const qs = (sel, root = document) => root.querySelector(sel);
 const qsa = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 /* ── 工具 ─────────────────────────────────────────────────────────────────── */
+// fmtVersion 拼接展示用的版本串：语义化 tag + 构建短 sha。
+// 只有 tag 时显示 tag，没有 tag 时退回占位符。
+const fmtVersion = (v, withCommit = true) => {
+  const tag = (v && v.current) || '—';
+  if (!withCommit) return tag;
+  const c = (v && v.commit) || '';
+  return c ? `${tag} · ${c}` : tag;
+};
+
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function fmtBytes(b, d = 1) {
@@ -104,6 +113,7 @@ const state = {
   customImages: [],
   dirty: false,
   siteIcon: 0,
+  version: null,
   lastStatus: null,
 };
 
@@ -1186,7 +1196,7 @@ $('verCheck').addEventListener('click', (e) => withBusy(e.currentTarget, async (
   $('verErr').classList.remove('show');
   try {
     const d = await api('GET', '/api/update-check');
-    $('verCurrent').textContent = d.current || '—';
+    $('verCurrent').textContent = fmtVersion({ ...state.version, current: d.current });
     if (d.error) { $('verErr').textContent = '检查失败：' + d.error; $('verErr').classList.add('show'); return; }
     if (d.has_update) {
       $('verLatest').textContent = d.latest;
@@ -1210,8 +1220,8 @@ $('verUpgrade').addEventListener('click', (e) => withBusy(e.currentTarget, async
     if (d && !d.error) {
       head = d.has_update
         ? `发现新版本 ${d.latest}（当前 ${d.current}）。\n升级后服务会自动重启，面板会短暂失联。\n\n`
-        : `当前已是最新版本 ${d.current}。\n继续会重新下载并安装同一版本的发布包（版本号不变），`
-          + '适用于拉取 CI 重新构建的产物。\n\n';
+        : `当前已是最新版本 ${d.current}。\n继续会按同一版本重新下载并覆盖安装，`
+          + '仅用于修复损坏的安装。\n\n';
     }
   } catch (err) { /* 检查失败不阻塞升级 */ }
 
@@ -1461,6 +1471,7 @@ function toggleConsoleMax() {
 /* ══════════════════════════════ 启动 ═══════════════════════════════════════ */
 async function init() {
   applyTheme(localStorage.getItem('run-theme') || 'light');
+  enhanceSelects();
   setView((location.hash || '#overview').slice(1), { push: false });
 
   try {
@@ -1475,8 +1486,9 @@ async function init() {
     state.images = (imgs || []).filter(Boolean);
     applyBrand(state.config.site_name, state.config.site_icon);
     $('virtPill').textContent = `VIRT ${(state.config.virt_type || '?').toUpperCase()}`;
-    $('versionPill').textContent = version?.current || 'v—';
-    $('aboutVersion').textContent = version?.current || '—';
+    state.version = version || null;
+    $('versionPill').textContent = fmtVersion(version, false);
+    $('aboutVersion').textContent = fmtVersion(version);
     $('aboutVirt').textContent = (state.config.virt_type || '').toUpperCase() || '—';
     $('aboutRepo').textContent = state.config.update_repo || 'GitHub 默认';
 
@@ -1530,5 +1542,209 @@ $('ovCopyHost').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText($('ovHostAddr').textContent); toast('已复制'); }
   catch { toast('复制失败', 'bad'); }
 });
+
+/* ── 自绘下拉 ───────────────────────────────────────────────────────────────
+   原生 <select> 的展开列表由浏览器绘制，圆角、间距、hover 都无法跟随本套设计，
+   深色主题下尤其突兀。这里保留原生元素（取值、表单校验、change 事件照旧），
+   仅在它上面盖一层按钮 + 浮层。 */
+
+let openPick = null;
+
+// enhanceSelect 把单个原生 select 换成自绘控件，重复调用无副作用。
+function enhanceSelect(el) {
+  if (!el || el.dataset.pickReady === '1') return;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'pick';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'input pick-btn';
+  btn.setAttribute('aria-haspopup', 'listbox');
+  btn.setAttribute('aria-expanded', 'false');
+  btn.innerHTML = '<span></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    + 'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
+
+  const menu = document.createElement('div');
+  menu.className = 'pick-menu';
+  menu.setAttribute('role', 'listbox');
+  menu.hidden = true;
+
+  // select 夹在 button 与 menu 之间，保持在原父节点的同一位置，避免布局跳变。
+  el.parentNode.insertBefore(wrap, el);
+  wrap.appendChild(el);
+  wrap.appendChild(btn);
+  wrap.appendChild(menu);
+  el.dataset.pickReady = '1';
+
+  const label = btn.querySelector('span');
+  let hoverIdx = -1;
+
+  const syncLabel = () => {
+    const opt = el.options[el.selectedIndex];
+    label.textContent = opt ? opt.textContent : '';
+    btn.disabled = el.disabled;
+    wrap.classList.toggle('is-disabled', !!el.disabled);
+    btn.title = opt ? opt.textContent : '';
+  };
+
+  const renderMenu = () => {
+    hoverIdx = el.selectedIndex;
+    menu.innerHTML = Array.from(el.options).map((o, i) => {
+      const on = i === el.selectedIndex;
+      return `<button type="button" class="pick-item${on ? ' is-on' : ''}${o.disabled ? ' is-off' : ''}"`
+        + ` role="option" aria-selected="${on}" data-idx="${i}">`
+        + `<span>${esc(o.textContent)}</span>`
+        + (on ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" '
+          + 'stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>' : '')
+        + '</button>';
+    }).join('');
+    const cur = menu.querySelector('.is-on');
+    if (cur) cur.classList.add('is-hover');
+  };
+
+  const place = () => {
+    const r = btn.getBoundingClientRect();
+    menu.style.width = `${r.width}px`;
+    menu.style.left = `${r.left}px`;
+    menu.style.top = '0px';
+    const mh = menu.offsetHeight;
+    const below = window.innerHeight - r.bottom;
+    // 下方放不下且上方更宽敞时向上展开
+    let top = (below < mh + 10 && r.top > below)
+      ? r.top - mh - 6
+      : r.bottom + 6;
+    // 两个方向都放不下时夹在视口内，避免浮层跑到屏幕外
+    top = Math.min(Math.max(8, top), Math.max(8, window.innerHeight - mh - 8));
+    const left = Math.min(Math.max(8, r.left), Math.max(8, window.innerWidth - r.width - 8));
+    menu.style.top = `${top}px`;
+    menu.style.left = `${left}px`;
+  };
+
+  // 把菜单项滚进浮层自身的可视区。只动 menu.scrollTop，绝不能用
+  // scrollIntoView——它会连带滚动窗口，而窗口滚动会立即触发浮层收起。
+  const scrollItemIntoView = (item) => {
+    if (!item) return;
+    const top = item.offsetTop, bottom = top + item.offsetHeight;
+    if (top < menu.scrollTop + 1) menu.scrollTop = top - 1;
+    else if (bottom > menu.scrollTop + menu.clientHeight - 1) menu.scrollTop = bottom - menu.clientHeight + 1;
+  };
+
+  const open = () => {
+    if (el.disabled) return;
+    // 同一时刻只允许一个浮层展开，先收起上一个。
+    if (openPick) openPick();
+    renderMenu();
+    // 浮层挂到 body 再定位：卡片上的 backdrop-filter 会把 fixed 的
+    // 包含块从视口改成卡片自身，视口坐标会被错误地按卡片偏移解释。
+    if (menu.parentNode !== document.body) document.body.appendChild(menu);
+    menu.hidden = false;
+    wrap.classList.add('is-open');
+    btn.setAttribute('aria-expanded', 'true');
+    place();
+    openPick = close;
+    scrollItemIntoView(menu.querySelector('.is-on'));
+  };
+
+  const close = () => {
+    menu.hidden = true;
+    // 移回原位，select 所在容器被销毁时浮层也一并回收，不留孤儿节点。
+    if (menu.parentNode === document.body && wrap.isConnected) wrap.appendChild(menu);
+    wrap.classList.remove('is-open');
+    btn.setAttribute('aria-expanded', 'false');
+    if (openPick === close) openPick = null;
+  };
+
+  const choose = (idx) => {
+    const opt = el.options[idx];
+    if (!opt || opt.disabled) return;
+    el.selectedIndex = idx;
+    // 原生 change 事件：调用方靠它做后续动作，必须照常派发。
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    syncLabel();
+    close();
+    btn.focus();
+  };
+
+  btn.addEventListener('click', () => (menu.hidden ? open() : close()));
+
+  btn.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      open();
+    }
+  });
+
+  menu.addEventListener('click', (e) => {
+    const item = e.target.closest('.pick-item');
+    if (item) choose(Number(item.dataset.idx));
+  });
+
+  menu.addEventListener('mousemove', (e) => {
+    const item = e.target.closest('.pick-item');
+    if (!item) return;
+    hoverIdx = Number(item.dataset.idx);
+    menu.querySelectorAll('.pick-item').forEach((n, i) => n.classList.toggle('is-hover', i === hoverIdx));
+  });
+
+  // 打开状态下接管键盘：方向键移动、回车确认、Esc 关闭
+  document.addEventListener('keydown', (e) => {
+    if (menu.hidden) return;
+    if (e.key === 'Escape') { e.preventDefault(); close(); btn.focus(); return; }
+    if (e.key === 'Tab') { close(); return; }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Enter') return;
+    e.preventDefault();
+    if (e.key === 'Enter') { choose(hoverIdx); return; }
+    const step = e.key === 'ArrowDown' ? 1 : -1;
+    let i = hoverIdx;
+    for (let n = 0; n < el.options.length; n++) {
+      i = (i + step + el.options.length) % el.options.length;
+      if (!el.options[i].disabled) break;
+    }
+    hoverIdx = i;
+    menu.querySelectorAll('.pick-item').forEach((n, idx) => n.classList.toggle('is-hover', idx === i));
+    scrollItemIntoView(menu.querySelectorAll('.pick-item')[i]);
+  });
+
+  // 窗口滚动/resize 时浮层位置会失效，直接收起，比跟随重排更省事也更稳。
+  // 注意捕获阶段会听到浮层内部的滚动，那是我们自己设 scrollTop，要放行。
+  window.addEventListener('scroll', (e) => {
+    if (menu.hidden) return;
+    if (e.target === menu) return;
+    close();
+  }, true);
+  window.addEventListener('resize', () => { if (!menu.hidden) close(); });
+
+  // 程序化赋值（el.value = ...）不会触发 change，包一层 setter 保证显示同步。
+  try {
+    const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+    if (desc && desc.get && desc.set) {
+      Object.defineProperty(el, 'value', {
+        configurable: true,
+        get() { return desc.get.call(el); },
+        set(v) { desc.set.call(el, v); syncLabel(); },
+      });
+    }
+  } catch { /* 拿不到描述符就退回 change + Observer */ }
+
+  // option 增删、disabled 变化都重新渲染
+  new MutationObserver(() => { syncLabel(); if (!menu.hidden) { renderMenu(); place(); } })
+    .observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'required'] });
+
+  el.addEventListener('change', syncLabel);
+  syncLabel();
+}
+
+function enhanceSelects(root = document) {
+  root.querySelectorAll('select.input').forEach(enhanceSelect);
+}
+
+// 点击浮层与按钮之外的地方收起。
+// 浮层展开时挂在 body 上（躲开卡片的 backdrop-filter 包含块），
+// 所以判定“内部”时要把 .pick-menu 一起算进去。
+document.addEventListener('mousedown', (e) => {
+  if (openPick && !e.target.closest('.pick, .pick-menu')) openPick();
+});
+
 
 init();

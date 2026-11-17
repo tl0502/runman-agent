@@ -18,8 +18,14 @@ RFW_BIN_DIR="$AGENT_BIN_DIR"   # rfw 与 agent 放在同一目录，匹配面板
 RFW_API_ADDR="127.0.0.1:7734"  # rfw 仅监听本地，由 agent 面板反代
 PODMAN_NETWORK="narwhal-net"
 
-AGENT_RELEASE_TAG="${AGENT_RELEASE_TAG:-continuous}"
-DOWNLOAD_BASE="${RUNMAN_AGENT_DOWNLOAD_BASE:-https://github.com/tl0502/runman-agent/releases/download/$AGENT_RELEASE_TAG}"
+# 发布采用语义化 tag（vX.Y.Z），latest 指向最新正式发布；也允许指定具体 tag。
+AGENT_RELEASE_TAG="${AGENT_RELEASE_TAG:-latest}"
+if [ "$AGENT_RELEASE_TAG" = "latest" ]; then
+    DEFAULT_DOWNLOAD_BASE="https://github.com/tl0502/runman-agent/releases/latest/download"
+else
+    DEFAULT_DOWNLOAD_BASE="https://github.com/tl0502/runman-agent/releases/download/$AGENT_RELEASE_TAG"
+fi
+DOWNLOAD_BASE="${RUNMAN_AGENT_DOWNLOAD_BASE:-$DEFAULT_DOWNLOAD_BASE}"
 NETAVARK_BASE="${NETAVARK_BASE:-https://github.com/tl0502/netavark-Runman/releases/latest/download}"
 # rfw v2 随 agent 同仓库发布，资产名为 rfw-amd64 / rfw-arm64
 RFW_BASE="$DOWNLOAD_BASE"

@@ -64,6 +64,7 @@ type Server struct {
 	vmSnapshots  map[string]*vmNetSnapshot
 	vmSnapshotMu sync.Mutex
 	version      string
+	commit       string
 	updater      *updater.Service
 
 	monitorHst map[string][]vmListItem
@@ -73,7 +74,7 @@ type Server struct {
 // NewServer 接收两个 manager：
 // - mgr (svc) 是 VMService 包装层
 // - rawMgr 是真正的驱动实现（CloudHV/Podman），用于内存上报等功能
-func NewServer(database *db.DB, mgr manager.VMManager, hostMon *monitor.HostMonitor, cfg *config.Manager, pf *portforward.Manager, wg *wgbind.Manager, agent interface{}, rawMgr manager.VMManager, version string, upd *updater.Service) *Server {
+func NewServer(database *db.DB, mgr manager.VMManager, hostMon *monitor.HostMonitor, cfg *config.Manager, pf *portforward.Manager, wg *wgbind.Manager, agent interface{}, rawMgr manager.VMManager, version, commit string, upd *updater.Service) *Server {
 	var cloudHVMgr *cloudhv.Manager
 	if ch, ok := rawMgr.(*cloudhv.Manager); ok {
 		cloudHVMgr = ch
@@ -89,6 +90,7 @@ func NewServer(database *db.DB, mgr manager.VMManager, hostMon *monitor.HostMoni
 		wg:          wg,
 		agent:       agent,
 		version:     version,
+		commit:      commit,
 		updater:     upd,
 		vmSnapshots: make(map[string]*vmNetSnapshot),
 		monitorHst:  make(map[string][]vmListItem),
@@ -766,12 +768,14 @@ func (s *Server) handleConnection(w http.ResponseWriter, _ *http.Request) {
 
 type versionResponse struct {
 	Current string `json:"current"`
+	Commit  string `json:"commit,omitempty"`
 	BuildAt string `json:"build_at"`
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	jsonOK(w, versionResponse{
 		Current: s.version,
+		Commit:  s.commit,
 		BuildAt: time.Now().UTC().Format(time.RFC3339),
 	})
 }
@@ -784,48 +788,24 @@ type updateCheckResponse struct {
 }
 
 func (s *Server) handleUpdateCheck(w http.ResponseWriter, _ *http.Request) {
-	latest, err := s.checkLatestVersion()
-	resp := updateCheckResponse{
-		Current: s.version,
-		Latest:  latest,
+	resp := updateCheckResponse{Current: s.version}
+	if s.updater == nil {
+		resp.Error = "updater not initialized"
+		jsonOK(w, resp)
+		return
 	}
 
+	// 复用 updater 的地址派生：面板看到的“最新版本”必须和真正下载的源一致。
+	latest, err := s.updater.LatestVersion()
 	if err != nil {
 		resp.Error = err.Error()
 		jsonOK(w, resp)
 		return
 	}
 
-	resp.HasUpdate = latest != "" && latest != s.version
+	resp.Latest = latest
+	resp.HasUpdate = updater.VersionNewer(latest, s.version)
 	jsonOK(w, resp)
-}
-
-// checkLatestVersion 从 GitHub Releases 获取最新版本号
-func (s *Server) checkLatestVersion() (version string, err error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get("https://api.github.com/repos/narwhal-cloud/runman-agent/releases/latest")
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("github api returned %d", resp.StatusCode)
-	}
-
-	var release struct {
-		TagName string `json:"tag_name"`
-	}
-
-	if err = json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", err
-	}
-
-	if release.TagName == "" {
-		return "", fmt.Errorf("no releases found")
-	}
-
-	return release.TagName, nil
 }
 
 type upgradeResponse struct {

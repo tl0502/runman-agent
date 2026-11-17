@@ -657,7 +657,9 @@ main {
   transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
   appearance: none;
 }
-[data-theme="dark"] .input { background: rgba(255, 255, 255, .05); }
+/* 必须用 background-color：简写 background 会一并重置
+   background-repeat/position/size，下拉箭头在暗色下会铺满整个控件。 */
+[data-theme="dark"] .input { background-color: rgba(255, 255, 255, .05); }
 .input::placeholder { color: var(--ink-3); }
 .input:hover { border-color: var(--line-strong); }
 .input:focus {
@@ -669,12 +671,14 @@ main {
 .input.mono { font-family: var(--mono); font-size: 11.5px; }
 textarea.input { height: auto; min-height: 72px; padding: 9px 11px; line-height: 1.5; resize: vertical; }
 
+/* 原生 select：JS 增强失败时的回退样式。原生 popup 无法跟随主题，
+   正常路径下由下方 .pick 自绘组件接管外观。 */
 select.input {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8f97' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
+  background-size: 12px 12px;
   padding-right: 30px;
-  /* select 不会像 input 那样自动垂直居中，显式给行高 */
   line-height: 32px;
   cursor: pointer;
   text-overflow: ellipsis;
@@ -684,13 +688,98 @@ select.input {
 [data-theme="dark"] select.input {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23bfc5cd' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
 }
-/* 展开后的选项由系统绘制，显式给背景色避免深色主题下白底 */
-select.input option {
-  background: var(--card-solid);
-  color: var(--ink-0);
-  line-height: 1.6;
-}
 select.input:disabled { cursor: not-allowed; }
+
+/* ── 自绘下拉 ───────────────────────────────────────────────────────────────
+   原生 <select> 的展开列表由系统绘制，圆角/间距/hover 都无法跟随这套设计，
+   深色主题下尤其突兀。这里保留原生元素负责取值、校验与 change 事件，
+   只把外观换成按钮 + 浮层。 */
+
+.pick { position: relative; width: 100%; }
+
+/* 原生元素仍在文档流里占据可聚焦、可校验的位置，但视觉与鼠标都让出。 */
+.pick > select.input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  pointer-events: none;
+  appearance: none;
+  background-image: none;
+}
+
+.pick-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+.pick-btn > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pick-btn > svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--ink-2);
+  transition: transform .18s var(--ease);
+}
+.pick.is-open > .pick-btn {
+  border-color: var(--ink-2);
+  box-shadow: 0 0 0 3px var(--fill);
+}
+.pick.is-open > .pick-btn > svg { transform: rotate(180deg); }
+.pick.is-disabled > .pick-btn { cursor: not-allowed; opacity: .55; }
+
+.pick-menu {
+  position: fixed;
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 264px;
+  overflow-y: auto;
+  padding: 5px;
+  border-radius: var(--r-md, 12px);
+  border: 1px solid var(--line-strong);
+  background: var(--card-solid);
+  box-shadow: 0 18px 44px rgba(16, 18, 24, .16), 0 2px 6px rgba(16, 18, 24, .07);
+  animation: pickIn .14s var(--ease);
+}
+[data-theme="dark"] .pick-menu {
+  box-shadow: 0 20px 48px rgba(0, 0, 0, .58), 0 2px 6px rgba(0, 0, 0, .45);
+}
+@keyframes pickIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.pick-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink-1);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pick-item > span { overflow: hidden; text-overflow: ellipsis; }
+.pick-item > svg { width: 13px; height: 13px; flex: none; color: var(--ink-0); }
+.pick-item:hover,
+.pick-item.is-hover { background: var(--fill); color: var(--ink-0); }
+.pick-item.is-on { color: var(--ink-0); }
+.pick-item.is-off { opacity: .4; cursor: not-allowed; }
+.pick-item.is-off:hover { background: none; color: var(--ink-1); }
 
 .check { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-1); cursor: pointer; }
 .check input {

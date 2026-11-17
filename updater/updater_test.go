@@ -12,20 +12,17 @@ import (
 	"runman-agent/config"
 )
 
-func TestReleaseChannels(t *testing.T) {
-	for _, version := range []string{"main", "continuous", "continuous-" + strings.Repeat("a", 40), "v1.2.3"} {
+// 发布统一走语义化 tag，任何本地版本都必须查 releases/latest。
+func TestReleaseChannelIsAlwaysLatest(t *testing.T) {
+	for _, version := range []string{"main", "continuous", "continuous-" + strings.Repeat("a", 40), "v1.2.3", "dev-abcdef0"} {
 		t.Run(version, func(t *testing.T) {
 			h := newTestService(t, version, "{}")
 			api, base := h.releaseAPIURL(), h.releaseDownloadBase()
 			if !strings.Contains(api, "repos/tl0502/runman-agent/") || !strings.Contains(base, "/tl0502/runman-agent/") {
 				t.Fatalf("wrong repository: %s %s", api, base)
 			}
-			if strings.HasPrefix(version, "v") {
-				if !strings.HasSuffix(api, "/latest") || !strings.HasSuffix(base, "/latest/download") {
-					t.Fatal("stable channel changed")
-				}
-			} else if !strings.HasSuffix(api, "/tags/continuous") || !strings.HasSuffix(base, "/download/continuous") {
-				t.Fatal("rolling channel changed")
+			if !strings.HasSuffix(api, "/releases/latest") || !strings.HasSuffix(base, "/releases/latest/download") {
+				t.Fatalf("expected latest channel, got %s %s", api, base)
 			}
 			args := strings.Join(h.updateCommandArgs(), " ")
 			for _, required := range []string{"--unit=narwhal-agent-update", "--update-only", "--non-interactive", "--setenv=RUNMAN_AGENT_DOWNLOAD_BASE=" + base} {
@@ -35,6 +32,9 @@ func TestReleaseChannels(t *testing.T) {
 			}
 			if !strings.Contains(args, "tl0502/runman-agent") {
 				t.Fatal("expected tl0502 update source")
+			}
+			if !strings.Contains(args, "--setenv=AGENT_RELEASE_TAG=latest") {
+				t.Fatalf("installer must resolve latest: %s", args)
 			}
 		})
 	}
@@ -137,7 +137,7 @@ func TestEndpointOverrides(t *testing.T) {
 	if got, want := s.releaseDownloadBase(), "https://mirror.example.com/rel/continuous"; got != want {
 		t.Fatalf("download base = %q, want %q", got, want)
 	}
-	if got, want := s.releaseAPIURL(), "https://mirror.example.com/api/releases/tags/continuous"; got != want {
+	if got, want := s.releaseAPIURL(), "https://mirror.example.com/api/releases/latest"; got != want {
 		t.Fatalf("api url = %q, want %q", got, want)
 	}
 
@@ -148,5 +148,33 @@ func TestEndpointOverrides(t *testing.T) {
 	}
 	if got, want := repoOnly.cfg.Get().PlatformAddress(), config.DefaultPlatformAddr; got != want {
 		t.Fatalf("default platform addr = %q, want %q", got, want)
+	}
+}
+
+func TestVersionNewer(t *testing.T) {
+	cases := []struct {
+		latest, current string
+		want            bool
+		why             string
+	}{
+		{"v0.4.1", "v0.4.0", true, "patch 递增"},
+		{"v0.5.0", "v0.4.9", true, "minor 递增"},
+		{"v1.0.0", "v0.9.9", true, "major 递增"},
+		{"v0.4.0", "v0.4.0", false, "同版本"},
+		{"v0.4.0", "v0.5.0", false, "远端更旧，不应提示更新"},
+		{"v0.4.0", "continuous-" + strings.Repeat("a", 40), true, "旧 continuous 构建需迁移到发布版"},
+		{"v0.4.0", "dev-abcdef0", true, "dev 构建可被发布版覆盖"},
+		{"v0.4.0", "v0.4.0-rc1", true, "正式版高于预发布"},
+		{"v0.4.0-rc2", "v0.4.0-rc1", true, "预发布之间按字典序"},
+		{"v0.4.0-rc1", "v0.4.0", false, "预发布不高于正式版"},
+		{"continuous", "v0.4.0", false, "远端不是正式 tag"},
+		{"main", "v0.4.0", false, "远端不是正式 tag"},
+		{"", "v0.4.0", false, "空值"},
+		{"v0.4", "v0.3.9", false, "段数不足视为非法"},
+	}
+	for _, c := range cases {
+		if got := VersionNewer(c.latest, c.current); got != c.want {
+			t.Errorf("VersionNewer(%q, %q) = %v, want %v (%s)", c.latest, c.current, got, c.want, c.why)
+		}
 	}
 }

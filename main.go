@@ -41,7 +41,12 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-var version = "dev"
+// version 由构建时注入，发布版为语义化 tag（如 v0.4.0）；
+// commit 是构建所用的短 sha，用于在面板上区分同版本的不同构建。
+var (
+	version = "dev"
+	commit  = ""
+)
 
 // agentConsoleSession 保存一个活跃的控制台 TTY 会话的状态，
 // 用于将平台下发的 stdin / resize 消息路由到正确的 AttachTTY 调用。
@@ -205,7 +210,7 @@ func main() {
 
 	// 启动本地 Web 状态页，供运维人员直接查看节点信息
 	// 同时传入 rawMgr 以便 Web 服务能访问具体的 Manager 实现（如 CloudHV 的内存报告）
-	ws := web.NewServer(database, svc, hostMon, cfg, a.pf, a.wg, a, rawMgr, version, upd)
+	ws := web.NewServer(database, svc, hostMon, cfg, a.pf, a.wg, a, rawMgr, version, commit, upd)
 	go func() {
 		log.Printf("Starting web server on %s", conf.Web)
 		_ = ws.ListenAndServe(conf.Web)

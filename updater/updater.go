@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"runman-agent/config"
 	"runman-agent/db"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,29 +37,23 @@ type Service struct {
 	updateMu    sync.Mutex
 }
 
-// Rolling releases must compare the embedded commit, not the constant tag
-// "continuous" (or the old build version "main"). Tagged builds stay stable.
-func releaseChannel(version string) string {
-	if strings.HasPrefix(version, "v") {
-		return "latest"
-	}
-	return "continuous"
+// releaseChannel 统一返回 latest。
+//
+// 发布采用语义化 tag（vX.Y.Z），GitHub 的 releases/latest 指向最新的正式发布；
+// 历史上按 commit 滚动的 continuous 通道已废弃，但旧机器上跑的
+// continuous-<sha> 仍需能查到发布版，因此不再按版本号分流，
+// 由 VersionNewer 判定为“需要迁移到发布版”。
+func releaseChannel(string) string {
+	return "latest"
 }
 
 // releaseAPIURL 返回版本查询接口。配置了 update_api_url 时直接使用，
 // 否则按 update_repo 派生 GitHub API 地址。
 func (s *Service) releaseAPIURL() string {
 	if base := s.cfg.Get().UpdateAPIBase(); base != "" {
-		if releaseChannel(s.currentVer) == "latest" {
-			return base + "/latest"
-		}
-		return base + "/tags/continuous"
+		return strings.TrimRight(base, "/") + "/latest"
 	}
-	base := "https://api.github.com/repos/" + s.cfg.Get().UpdateRepository() + "/releases/"
-	if releaseChannel(s.currentVer) == "latest" {
-		return base + "latest"
-	}
-	return base + "tags/continuous"
+	return "https://api.github.com/repos/" + s.cfg.Get().UpdateRepository() + "/releases/latest"
 }
 
 // releaseDownloadBase 返回 releases 下载基址。配置了 update_base_url 时直接使用，
@@ -67,14 +62,82 @@ func (s *Service) releaseDownloadBase() string {
 	if base := s.cfg.Get().UpdateDownloadBase(); base != "" {
 		return base
 	}
-	base := "https://github.com/" + s.cfg.Get().UpdateRepository() + "/releases/"
-	if releaseChannel(s.currentVer) == "latest" {
-		return base + "latest/download"
-	}
-	return base + "download/continuous"
+	// 语义化发布下，latest/download 恒指向最新正式版的资产。
+	return "https://github.com/" + s.cfg.Get().UpdateRepository() + "/releases/latest/download"
 }
 
 var commitPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+
+// LatestVersion 返回远程最新发布版本号，供面板的“检查更新”使用。
+// 地址与 updater 自身一致，避免面板查官方仓库、更新却走自有源的口径分裂。
+func (s *Service) LatestVersion() (string, error) {
+	return s.fetchLatestVersion()
+}
+
+// VersionNewer 判断 latest 是否比 current 更新。
+//
+// current 不是 v 前缀（历史上的 continuous-<sha> 构建）时视为需要迁移，
+// 因为只要远端已有正式发布，它就应该换成发布版。
+// 远端不是正式 tag 时一律返回 false，避免把异常数据当成“有新版本”。
+func VersionNewer(latest, current string) bool {
+	lMajor, lMinor, lPatch, lPre, lOK := parseSemver(latest)
+	if !lOK {
+		return false
+	}
+	cMajor, cMinor, cPatch, cPre, cOK := parseSemver(current)
+	if !cOK {
+		return true
+	}
+
+	switch {
+	case lMajor != cMajor:
+		return lMajor > cMajor
+	case lMinor != cMinor:
+		return lMinor > cMinor
+	case lPatch != cPatch:
+		return lPatch > cPatch
+	}
+	// 同号：正式版高于预发布，预发布之间按字典序（够用，不追求 SemVer 全序）。
+	if lPre == cPre {
+		return false
+	}
+	if lPre == "" {
+		return true
+	}
+	if cPre == "" {
+		return false
+	}
+	return lPre > cPre
+}
+
+// parseSemver 解析 vMAJOR.MINOR.PATCH[-pre][+build]。不允许缺段。
+func parseSemver(v string) (major, minor, patch int, pre string, ok bool) {
+	v = strings.TrimSpace(v)
+	if !strings.HasPrefix(v, "v") {
+		return 0, 0, 0, "", false
+	}
+	core := v[1:]
+	if i := strings.IndexByte(core, '+'); i >= 0 {
+		core = core[:i]
+	}
+	if i := strings.IndexByte(core, '-'); i >= 0 {
+		pre = core[i+1:]
+		core = core[:i]
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return 0, 0, 0, "", false
+	}
+	nums := make([]int, 3)
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return 0, 0, 0, "", false
+		}
+		nums[i] = n
+	}
+	return nums[0], nums[1], nums[2], pre, true
+}
 
 func releaseVersion(rel githubRelease, channel string) (string, error) {
 	if channel == "continuous" {
@@ -140,8 +203,8 @@ func (s *Service) checkAndRun(ctx context.Context) {
 		return
 	}
 
-	// 如果版本一致，清理数据库中的待更新记录
-	if latest == s.currentVer {
+	// 没有更新的版本（含相等与回滚场景），清理数据库中的待更新记录
+	if !VersionNewer(latest, s.currentVer) {
 		// log.Printf("[Updater] Current version %s is up-to-date", s.currentVer)
 		_ = s.database.SetSystem("pending_update_ver", "")
 		_ = s.database.SetSystem("update_target_time", "")
