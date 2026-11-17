@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"runman-agent/proto/agent"
+	"time"
 )
 
 // ResizeEvent 表示终端尺寸变更事件，由 Web 层通过 WebSocket 控制消息触发。
@@ -62,6 +63,10 @@ type VMManager interface {
 	// GetVMInfo 信息查询
 	GetVMInfo(ctx context.Context, vmID string) (*agent.VMSummary, error)
 	ListVMs(ctx context.Context) ([]*agent.VMSummary, error)
+
+	// GetVMCreatedAt 返回 VM 的创建时间（用于 Web 面板展示）。
+	// 驱动无法提供时返回零值 time.Time{}（前端显示为「—」）。
+	GetVMCreatedAt(ctx context.Context, vmID string) (time.Time, error)
 
 	// GetVMLocalIP 获取 VM 的可达内部地址（IPv4 优先，无 IPv4 时可返回 IPv6）
 	// 用于用户态端口转发。

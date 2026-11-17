@@ -448,6 +448,15 @@ func jsonErr(w http.ResponseWriter, err error, code int) {
 
 // ─── 监控 TSDB ─────────────────────────────────────────────────────────────────
 
+// vmCreatedAtUnix 返回 VM 的真实创建时间（Unix 秒）；无法获取时返回 0，前端显示「—」。
+func (s *Server) vmCreatedAtUnix(vmID string) int64 {
+	t, err := s.mgr.GetVMCreatedAt(context.Background(), vmID)
+	if err != nil || t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
 func (s *Server) startMonitorLoop() {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -472,7 +481,7 @@ func (s *Server) startMonitorLoop() {
 				CpuPct:    vm.CpuPct,
 				RamUsedMb: vm.RamUsedMb,
 				Ips:       vm.Ips,
-				CreatedAt: now.UnixMilli(),
+				CreatedAt: s.vmCreatedAtUnix(vm.VmId),
 			}
 
 			if traffic != nil {
@@ -1050,7 +1059,7 @@ func (s *Server) handleListVMs(w http.ResponseWriter, r *http.Request) {
 			CpuPct:    vm.CpuPct,
 			RamUsedMb: vm.RamUsedMb,
 			Ips:       vm.Ips,
-			CreatedAt: now.UnixMilli(),
+			CreatedAt: s.vmCreatedAtUnix(vm.VmId),
 		}
 
 		// 从 DB 读取累计流量和月度流量

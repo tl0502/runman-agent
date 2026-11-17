@@ -1417,6 +1417,11 @@ func (m *Manager) GetVMLocalIP(_ context.Context, vmID string) (string, error) {
 	return netCfg.IPv4, nil
 }
 
+// GetVMCreatedAt CloudHV 后端未记录创建时间，返回零值（前端显示「—」）。
+func (m *Manager) GetVMCreatedAt(_ context.Context, vmID string) (time.Time, error) {
+	return time.Time{}, nil
+}
+
 func (m *Manager) GetSupportedImages(_ context.Context) ([]*agent.OSImageInfo, error) {
 	var images []*agent.OSImageInfo
 	for _, distro := range []string{"debian", "alpine"} {

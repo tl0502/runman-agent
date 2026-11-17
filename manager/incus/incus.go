@@ -1057,6 +1057,11 @@ func (m *Manager) GetVMLocalIPv6(_ context.Context, vmID string) (string, error)
 	return addressWithoutCIDR(conf.IPv6), nil
 }
 
+// GetVMCreatedAt Incus 后端未记录创建时间，返回零值（前端显示「—」）。
+func (m *Manager) GetVMCreatedAt(_ context.Context, vmID string) (time.Time, error) {
+	return time.Time{}, nil
+}
+
 func incusForwardIP(ipv4, ipv6 string) string {
 	if ip := addressWithoutCIDR(ipv4); ip != "" {
 		return ip

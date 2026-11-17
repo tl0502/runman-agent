@@ -26,10 +26,12 @@ import (
 	"github.com/containers/podman/v5/pkg/bindings/images"
 	entTypes "github.com/containers/podman/v5/pkg/domain/entities/types"
 	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/util"
 	dockerContainer "github.com/docker/docker/api/types/container"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	netTypes "go.podman.io/common/libnetwork/types"
 	"go.podman.io/image/v5/manifest"
+	stypes "go.podman.io/storage/types"
 
 	"runman-agent/config"
 	"runman-agent/db"
@@ -139,6 +141,22 @@ func userNamespace(cfg config.Config) specgen.Namespace {
 		return specgen.Namespace{NSMode: specgen.Auto}
 	}
 	return specgen.Namespace{}
+}
+
+// userNamespaceIDMapping 返回 auto userns 所需的 ID 映射配置。
+// specgen 的 UserNS=auto 在 bindings 创建路径下不会自动生成 uid/gid 映射
+// （只有 CLI 的 FillOutSpecGen 才会补 IDMappings），必须显式设置 AutoUserNs，
+// libpod 才会从 containers 用户的 subuid/subgid 池分配映射。
+func userNamespaceIDMapping(cfg config.Config) *stypes.IDMappingOptions {
+	if !cfg.UsernsEnabled() {
+		return nil
+	}
+	opts, err := util.ParseIDMapping("auto", nil, nil, "", "")
+	if err != nil {
+		log.Printf("[Podman] parse userns=auto idmapping failed: %v", err)
+		return nil
+	}
+	return opts
 }
 
 // createWithRetry 创建容器；若名字被残留容器占用（包括仅存在于 storage 层、
@@ -313,6 +331,7 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 			CapAdd:          sec.AddCaps(),
 			NoNewPrivileges: ptr(sec.NoNewPrivsEnabled()),
 			UserNS:          userNamespace(sec),
+			IDMappings:      userNamespaceIDMapping(sec),
 		},
 		ContainerNetworkConfig: specgen.ContainerNetworkConfig{
 			Networks:   netOpts,
@@ -558,6 +577,15 @@ func (m *Manager) GetVMLocalIP(_ context.Context, vmID string) (string, error) {
 		return "", err
 	}
 	return ipv4.String(), nil
+}
+
+// GetVMCreatedAt 返回容器的真实创建时间（来自 podman inspect 的 Created 字段）。
+func (m *Manager) GetVMCreatedAt(_ context.Context, vmID string) (time.Time, error) {
+	inspect, err := containers.Inspect(m.timeoutCtx(), vmID, nil)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return inspect.Created, nil
 }
 
 func (m *Manager) GetSupportedImages(_ context.Context) ([]*agent.OSImageInfo, error) {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"strings"
+	"time"
 
 	"runman-agent/db"
 	"runman-agent/proto/agent"
@@ -128,6 +129,10 @@ func (s *VMService) GetVMInfo(ctx context.Context, vmID string) (*agent.VMSummar
 	}
 	info.VmId = vmID
 	return info, nil
+}
+
+func (s *VMService) GetVMCreatedAt(ctx context.Context, vmID string) (time.Time, error) {
+	return s.mgr.GetVMCreatedAt(ctx, vmID)
 }
 
 func (s *VMService) ListVMs(ctx context.Context) ([]*agent.VMSummary, error) {
