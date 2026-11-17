@@ -563,6 +563,23 @@
 
         <div class="card">
           <div class="card-head">
+            <span class="card-title">容器网络</span>
+          </div>
+          <div class="card-body form-grid">
+            <label class="check"><input type="checkbox" id="containerIsolate"> 容器间隔离</label>
+            <div class="field">
+              <label for="hostAllowPorts">宿主机端口白名单 <span class="hint">留空 = 容器不能访问宿主机端口</span></label>
+              <input class="input mono" id="hostAllowPorts" placeholder="例如 53, 8792">
+            </div>
+            <div class="field">
+              <label for="containerAllowSubnets">内网子网白名单 <span class="hint">留空 = 容器只能出公网</span></label>
+              <input class="input mono" id="containerAllowSubnets" placeholder="例如 10.0.0.0/8">
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
             <span class="card-title">关于</span>
             <span class="card-note" id="aboutVirt">—</span>
           </div>

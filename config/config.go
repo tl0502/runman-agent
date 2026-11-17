@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -357,6 +358,40 @@ func (c Config) AllowedSubnets() []string {
 	out := make([]string, 0, len(c.ContainerAllowSubnets))
 	for _, s := range c.ContainerAllowSubnets {
 		v := strings.TrimSpace(s)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+// ParsePortList 把逗号分隔的端口字符串解析成 []int，非法值（非数字、越界）忽略。
+func ParsePortList(s string) []int {
+	parts := strings.Split(s, ",")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		v := strings.TrimSpace(p)
+		if v == "" {
+			continue
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 65535 {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// ParseSubnetList 把逗号分隔的 CIDR 字符串解析成 []string，去空去重。
+func ParseSubnetList(s string) []string {
+	seen := map[string]bool{}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		v := strings.TrimSpace(p)
 		if v == "" || seen[v] {
 			continue
 		}

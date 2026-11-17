@@ -636,6 +636,11 @@ type configRequest struct {
 	NetavarkBase     *string `json:"netavark_base"`
 	// 容器对外 IPv4：端口映射监听该地址，出站 SNAT 也用它。空串表示恢复默认。
 	PublicIPv4 *string `json:"public_ipv4"`
+
+	// 容器网络隔离。指针用于区分"未提交"（保持原值）与"显式 false"。
+	ContainerIsolate      *bool   `json:"container_isolate"`
+	HostAllowPorts        *string `json:"host_allow_ports"`        // 逗号分隔端口，空串 = 清空
+	ContainerAllowSubnets *string `json:"container_allow_subnets"` // 逗号分隔 CIDR，空串 = 清空
 }
 
 type configResponse struct {
@@ -658,6 +663,10 @@ type configResponse struct {
 	PlatformInsecure bool   `json:"platform_insecure"`
 	NetavarkBase     string `json:"netavark_base"`
 	PublicIPv4       string `json:"public_ipv4"`
+
+	ContainerIsolate      bool     `json:"container_isolate"`
+	HostAllowPorts        []int    `json:"host_allow_ports"`
+	ContainerAllowSubnets []string `json:"container_allow_subnets"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -720,6 +729,15 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if req.PublicIPv4 != nil {
 				cfg.PublicIPv4 = strings.TrimSpace(*req.PublicIPv4)
 			}
+			if req.ContainerIsolate != nil {
+				cfg.ContainerIsolate = req.ContainerIsolate
+			}
+			if req.HostAllowPorts != nil {
+				cfg.HostAllowPorts = config.ParsePortList(*req.HostAllowPorts)
+			}
+			if req.ContainerAllowSubnets != nil {
+				cfg.ContainerAllowSubnets = config.ParseSubnetList(*req.ContainerAllowSubnets)
+			}
 		})
 		if err != nil {
 			http.Error(w, "failed to save config: "+err.Error(), 500)
@@ -749,6 +767,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		PlatformInsecure: conf.PlatformInsecure,
 		NetavarkBase:     conf.NetavarkBase,
 		PublicIPv4:       conf.PublicIPv4,
+
+		ContainerIsolate:      conf.IsolateEnabled(),
+		HostAllowPorts:        conf.AllowedHostPorts(),
+		ContainerAllowSubnets: conf.AllowedSubnets(),
 	})
 }
 

@@ -989,12 +989,13 @@ $('formRule').addEventListener('submit', async (e) => {
 /* ══════════════════════════════ 设置 ═══════════════════════════════════════ */
 const CONF_FIELDS = ['siteName', 'token', 'platformAddr', 'monitorNIC', 'monitorDisk', 'maxPortForward',
   'maxForwardIPs', 'trafficResetDay', 'entryHost', 'updateRepo', 'updateBase', 'updateApi', 'netavarkBase',
-  'publicIpv4', 'webUser', 'webPass'];
+  'publicIpv4', 'webUser', 'webPass', 'hostAllowPorts', 'containerAllowSubnets'];
 
 function confSnapshot() {
   const o = {};
   CONF_FIELDS.forEach((id) => { o[id] = $(id).value; });
   o.platformInsecure = $('platformInsecure').checked;
+  o.containerIsolate = $('containerIsolate').checked;
   return JSON.stringify(o);
 }
 
@@ -1021,6 +1022,9 @@ function loadConfigIntoForm(c) {
   $('updateApi').value = c.update_api_url || '';
   $('netavarkBase').value = c.netavark_base || '';
   $('platformInsecure').checked = !!c.platform_insecure;
+  $('containerIsolate').checked = c.container_isolate !== false;
+  $('hostAllowPorts').value = (c.host_allow_ports || []).join(', ');
+  $('containerAllowSubnets').value = (c.container_allow_subnets || []).join(', ');
   state.snapshot = confSnapshot();
   syncDirty();
   loadNetworkAddresses(c.public_ipv4 || '');
@@ -1059,6 +1063,7 @@ async function loadNetworkAddresses(selected) {
 
 CONF_FIELDS.forEach((id) => $(id)?.addEventListener('input', syncDirty));
 $('platformInsecure').addEventListener('change', syncDirty);
+$('containerIsolate').addEventListener('change', syncDirty);
 
 async function saveConfig(btn) {
   await withBusy(btn, async () => {
@@ -1080,6 +1085,9 @@ async function saveConfig(btn) {
       netavark_base: $('netavarkBase').value.trim(),
       public_ipv4: $('publicIpv4').value,
       platform_insecure: $('platformInsecure').checked,
+      container_isolate: $('containerIsolate').checked,
+      host_allow_ports: $('hostAllowPorts').value.trim(),
+      container_allow_subnets: $('containerAllowSubnets').value.trim(),
     };
     try {
       await api('POST', '/api/config', body);
