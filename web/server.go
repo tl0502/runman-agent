@@ -272,7 +272,7 @@ func normalizeSiteName(name string) string {
 const maxBrandIconSize = 256 << 10 // 256 KB
 
 // 固定文件名：换图标时删掉旧的，避免同扩展名残留两份。
-var brandIconNames = []string{"brand-icon.png", "brand-icon.jpg", "brand-icon.webp", "brand-icon.svg"}
+var brandIconNames = []string{"brand-icon.png", "brand-icon.jpg", "brand-icon.webp", "brand-icon.svg", "brand-icon.ico"}
 
 // brandIconFile 返回当前自定义图标的路径与其修改时间（无图标返回空串、0）。
 // 修改时间用作前端缓存键，换图标后 URL 自动变化。
@@ -300,6 +300,8 @@ func brandIconContentType(name string) string {
 		return "image/webp"
 	case ".svg":
 		return "image/svg+xml"
+	case ".ico":
+		return "image/x-icon"
 	default:
 		return "application/octet-stream"
 	}
@@ -314,6 +316,8 @@ func sniffBrandIcon(b []byte) (string, bool) {
 		return ".jpg", true
 	case len(b) > 12 && bytes.HasPrefix(b, []byte("RIFF")) && string(b[8:12]) == "WEBP":
 		return ".webp", true
+	case len(b) > 4 && b[0] == 0x00 && b[1] == 0x00 && b[2] == 0x01 && b[3] == 0x00:
+		return ".ico", true
 	}
 	head := strings.ToLower(string(bytes.TrimLeft(bytes.TrimPrefix(b, []byte{0xef, 0xbb, 0xbf}), " \t\r\n")))
 	if strings.HasPrefix(head, "<svg") || (strings.HasPrefix(head, "<?xml") && strings.Contains(head, "<svg")) {
@@ -404,7 +408,7 @@ func (s *Server) handleBrandIcon(w http.ResponseWriter, r *http.Request) {
 		}
 		ext, ok := sniffBrandIcon(data)
 		if !ok {
-			jsonErr(w, fmt.Errorf("只支持 PNG / JPEG / WebP / SVG"), 400)
+			jsonErr(w, fmt.Errorf("只支持 PNG / JPEG / WebP / SVG / ICO"), 400)
 			return
 		}
 		for _, name := range brandIconNames {
