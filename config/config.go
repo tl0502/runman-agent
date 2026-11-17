@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -15,6 +16,9 @@ const (
 	DefaultWeb            = ":8792"
 	DefaultMaxPortForward = 20
 	DefaultWebUser        = "admin"
+
+	// DefaultContainerPidsLimit 是容器的默认 pids 上限（显式化运行时默认值）。
+	DefaultContainerPidsLimit = 2048
 
 	// DefaultSiteName 是面板顶栏显示的品牌名；可在设置页改成任意名称（白标）。
 	DefaultSiteName = "Run"
@@ -67,6 +71,32 @@ type Config struct {
 	// PublicIPv6 为预留字段：当前版本未实现 IPv6 对外地址，仅保留键位，
 	// 避免以后新增字段还要再做一次配置迁移。
 	PublicIPv6 string `json:"public_ipv6"`
+
+	// ── 容器隔离与安全加固 ────────────────────────────────────────────────────
+	// ContainerIsolate 为 true 时在 narwhal-net 网络启用 netavark isolate，
+	// 使容器之间不能互相访问（只能访问网关与出站）。nil 视为 true。
+	ContainerIsolate *bool `json:"container_isolate"`
+
+	// HostAllowPorts 是允许容器访问的宿主机 TCP 端口白名单（仅约束新连接，
+	// established/related 回程不受限）。为空时容器不能主动访问宿主机任何端口。
+	HostAllowPorts []int `json:"host_allow_ports"`
+
+	// ContainerAllowSubnets 是允许容器访问的内网/私有网段白名单（CIDR 列表）。
+	// 为空时容器默认不能访问任何私有网段（10/8、172.16/12、192.168/16、169.254/16），
+	// 只能出公网。填入的网段会被放行。
+	ContainerAllowSubnets []string `json:"container_allow_subnets"`
+
+	// ContainerNoNewPrivs 为 true 时给容器设置 no_new_privileges，阻断 setuid 提权。nil 视为 true。
+	ContainerNoNewPrivs *bool `json:"container_no_new_privs"`
+
+	// ContainerPidsLimit 是容器的 pids 上限（cgroup pids.max）。<=0 时使用默认 2048。
+	ContainerPidsLimit int64 `json:"container_pids_limit"`
+
+	// ContainerDropCaps / ContainerAddCaps 是创建容器时额外 drop/add 的 capabilities
+	// （逗号分隔，如 "SYS_MODULE,SYS_RAWIO"）。留空则不改变运行时默认 capability 集。
+	// 注意：systemd + sshd 镜像对默认 capability 集依赖较强，激进 drop 需先在测试机验证。
+	ContainerDropCaps string `json:"container_drop_caps"`
+	ContainerAddCaps  string `json:"container_add_caps"`
 
 	// 监控配置
 	MonitorNIC  string `json:"monitor_nic"`
@@ -274,4 +304,76 @@ func (c Config) NetavarkDownloadBase() string {
 // EgressIPv4 返回对外 IPv4（去掉空白）。空表示不指定，走默认行为。
 func (c Config) EgressIPv4() string {
 	return strings.TrimSpace(c.PublicIPv4)
+}
+
+// IsolateEnabled 返回是否启用容器间网络隔离（netavark isolate）。nil 视为 true。
+func (c Config) IsolateEnabled() bool {
+	if c.ContainerIsolate == nil {
+		return true
+	}
+	return *c.ContainerIsolate
+}
+
+// NoNewPrivsEnabled 返回是否为容器开启 no_new_privileges。nil 视为 true。
+func (c Config) NoNewPrivsEnabled() bool {
+	if c.ContainerNoNewPrivs == nil {
+		return true
+	}
+	return *c.ContainerNoNewPrivs
+}
+
+// PidsLimit 返回容器的 pids 上限，<=0 时回落默认值。
+func (c Config) PidsLimit() int64 {
+	if c.ContainerPidsLimit <= 0 {
+		return DefaultContainerPidsLimit
+	}
+	return c.ContainerPidsLimit
+}
+
+// DropCaps 返回创建容器时额外 drop 的 capability 列表（去空）。
+func (c Config) DropCaps() []string { return splitCSV(c.ContainerDropCaps) }
+
+// AddCaps 返回创建容器时额外 add 的 capability 列表（去空）。
+func (c Config) AddCaps() []string { return splitCSV(c.ContainerAddCaps) }
+
+// AllowedHostPorts 返回容器可访问的宿主机 TCP 端口白名单：去重、过滤非法值、升序。
+func (c Config) AllowedHostPorts() []int {
+	seen := map[int]bool{}
+	out := make([]int, 0, len(c.HostAllowPorts))
+	for _, p := range c.HostAllowPorts {
+		if p < 1 || p > 65535 || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// AllowedSubnets 返回允许容器访问的内网/私有网段白名单：去空、去重、保持顺序。
+func (c Config) AllowedSubnets() []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(c.ContainerAllowSubnets))
+	for _, s := range c.ContainerAllowSubnets {
+		v := strings.TrimSpace(s)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+// splitCSV 把逗号分隔的字符串切成去空白的片段。
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

@@ -20,6 +20,7 @@ import (
 	"runman-agent/manager"
 	"runman-agent/manager/cloudhv"
 	"runman-agent/manager/egress"
+	"runman-agent/manager/hostfw"
 	"runman-agent/manager/incus"
 	"runman-agent/manager/podman"
 	"runman-agent/manager/portforward"
@@ -68,6 +69,7 @@ type Agent struct {
 	pf            *portforward.Manager
 	wg            *wgbind.Manager
 	egress        *egress.Applier
+	hostfw        *hostfw.Applier
 	config        config.Config // 缓存的配置副本（仅在 run() 循环中更新）
 	mu            sync.RWMutex
 	connected     bool
@@ -134,7 +136,7 @@ func main() {
 	var rawMgr manager.VMManager
 	switch conf.VirtType {
 	case "podman":
-		rawMgr, err = podman.New(database)
+		rawMgr, err = podman.New(database, cfg)
 	case "cloudhv":
 		// cloud-hypervisor 初始化时传入 IPv6 配置（从配置文件读取）
 		rawMgr, err = cloudhv.New(database, conf.IPv6Mode, conf.IPv6Subnet, conf.IPv6Addr, conf.IPv6Iface)
@@ -174,6 +176,12 @@ func main() {
 		log.Printf("[Egress] apply at startup failed: %v", err)
 	}
 
+	// 容器 → 宿主机端口白名单（独立 nft 表），与 egress/1Panel 解耦。
+	fw := hostfw.New(cfg)
+	if err := fw.Apply(context.Background()); err != nil {
+		log.Printf("[HostFW] apply at startup failed: %v", err)
+	}
+
 	// 启动时从 DB 恢复已持久化的端口转发规则
 	pf.Restore(context.Background())
 
@@ -201,6 +209,7 @@ func main() {
 		pf:      pf,
 		wg:      wg,
 		egress:  eg,
+		hostfw:  fw,
 		config:  conf,
 	}
 
@@ -244,6 +253,8 @@ func main() {
 	go a.refreshPublicIPLoop()
 	// 面板修改对外 IPv4 后 10 秒内生效：出口 SNAT 与端口监听一起重建。
 	go a.watchPublicIP(context.Background())
+	// 宿主机端口白名单变化后 10 秒内生效（幂等，仅在有变化时重建 nft 表）。
+	go a.watchHostFirewall(context.Background())
 
 	// 按需启动 NDP 应答器（公网 IPv6 场景）
 	if conf.NdpIface != "" {
@@ -549,6 +560,28 @@ func (a *Agent) watchPublicIP(ctx context.Context) {
 
 		a.pf.ReloadAll(ctx)
 		applied, appliedOK = current, true
+	}
+}
+
+// watchHostFirewall 轮询宿主机端口白名单配置，变化时重建 inet runman-hostfw 表。
+func (a *Agent) watchHostFirewall(ctx context.Context) {
+	if a.hostfw == nil {
+		return
+	}
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		if err := a.hostfw.Apply(ctx); err != nil {
+			log.Printf("[HostFW] apply failed (will retry): %v", err)
+		}
 	}
 }
 

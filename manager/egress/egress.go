@@ -60,7 +60,7 @@ func (a *Applier) Apply(ctx context.Context) error {
 
 	want := a.cfg.Get().EgressIPv4()
 
-	changed, err := writeNetworkOption(want)
+	changed, err := writeNetworkOption(optionKey, want)
 	if err != nil {
 		return err
 	}
@@ -93,8 +93,9 @@ func describe(ip string) string {
 	return ip
 }
 
-// writeNetworkOption 把 outbound_addr4 写进（或从）网络配置里移除，返回是否有改动。
-func writeNetworkOption(want string) (bool, error) {
+// writeNetworkOption 把某个字符串选项写进（或从）网络配置里移除，返回是否有改动。
+// want 为空表示删除该选项。
+func writeNetworkOption(key, want string) (bool, error) {
 	raw, err := os.ReadFile(networkFile)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -116,17 +117,17 @@ func writeNetworkOption(want string) (bool, error) {
 		}
 	}
 
-	current, has := options[optionKey]
+	current, has := options[key]
 	if want == "" {
 		if !has {
 			return false, nil
 		}
-		delete(options, optionKey)
+		delete(options, key)
 	} else {
 		if has && current == want {
 			return false, nil
 		}
-		options[optionKey] = want
+		options[key] = want
 	}
 
 	if len(options) == 0 {

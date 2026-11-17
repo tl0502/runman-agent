@@ -31,6 +31,7 @@ import (
 	netTypes "go.podman.io/common/libnetwork/types"
 	"go.podman.io/image/v5/manifest"
 
+	"runman-agent/config"
 	"runman-agent/db"
 	"runman-agent/manager"
 	"runman-agent/proto/agent"
@@ -46,11 +47,12 @@ func ptr[T any](v T) *T { return &v }
 type Manager struct {
 	ctx   context.Context
 	db    *db.DB
+	cfg   *config.Manager
 	alloc *cpualloc.Allocator
 	mu    sync.Mutex // 全局锁，序列化所有容器生命周期操作，防止 IP/Cpuset 分配冲突
 }
 
-func New(database *db.DB) (*Manager, error) {
+func New(database *db.DB, cfg *config.Manager) (*Manager, error) {
 	alloc := cpualloc.New(runtime.NumCPU())
 	if vmConfigs, err2 := database.ListPodmanConfigs(); err2 == nil {
 		for _, c := range vmConfigs {
@@ -69,7 +71,7 @@ func New(database *db.DB) (*Manager, error) {
 		return nil, err
 	}
 
-	return &Manager{ctx: ctx, db: database, alloc: alloc}, nil
+	return &Manager{ctx: ctx, db: database, cfg: cfg, alloc: alloc}, nil
 }
 
 func (m *Manager) timeoutCtx() context.Context {
@@ -78,7 +80,7 @@ func (m *Manager) timeoutCtx() context.Context {
 	return ctx
 }
 
-func buildResourceConfig(cpu int64, ramMb int64, cpuset string) specgen.ContainerResourceConfig {
+func buildResourceConfig(cpu int64, ramMb int64, cpuset string, pidsLimit int64) specgen.ContainerResourceConfig {
 	res := &specs.LinuxResources{}
 	if ramMb > 0 {
 		res.Memory = &specs.LinuxMemory{
@@ -92,6 +94,9 @@ func buildResourceConfig(cpu int64, ramMb int64, cpuset string) specgen.Containe
 			Period: ptr(uint64(100000)),
 			Cpus:   cpuset,
 		}
+	}
+	if pidsLimit > 0 {
+		res.Pids = &specs.LinuxPids{Limit: pidsLimit}
 	}
 	return specgen.ContainerResourceConfig{
 		ResourceLimits: res,
@@ -157,6 +162,12 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 	}
 	if req.DiskGb < 1 {
 		req.DiskGb = 1
+	}
+
+	// 安全/隔离配置快照（cap、pids、no-new-privs）
+	sec := config.Config{}
+	if m.cfg != nil {
+		sec = m.cfg.Get()
 	}
 
 	// 1. 拉取镜像（大镜像首次拉取可能很慢，使用独立的长超时）
@@ -287,11 +298,16 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 			},
 			Mounts: lxcfsMounts(),
 		},
+		ContainerSecurityConfig: specgen.ContainerSecurityConfig{
+			CapDrop:         sec.DropCaps(),
+			CapAdd:          sec.AddCaps(),
+			NoNewPrivileges: ptr(sec.NoNewPrivsEnabled()),
+		},
 		ContainerNetworkConfig: specgen.ContainerNetworkConfig{
 			Networks:   netOpts,
 			DNSServers: []net.IP{net.ParseIP("1.1.1.1"), net.ParseIP("2606:4700:4700::1111")},
 		},
-		ContainerResourceConfig: buildResourceConfig(int64(req.Cpu), req.RamMb, cpuSet),
+		ContainerResourceConfig: buildResourceConfig(int64(req.Cpu), req.RamMb, cpuSet, sec.PidsLimit()),
 		ContainerHealthCheckConfig: specgen.ContainerHealthCheckConfig{
 			HealthConfig: &manifest.Schema2HealthConfig{
 				Test:    []string{"NONE"},
