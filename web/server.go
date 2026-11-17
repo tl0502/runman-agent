@@ -127,6 +127,8 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/brand/icon", s.handleBrandIcon)
+	// 自定义图标同时充当 tab 图标；没有配置时回落到内置 favicon。
+	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/api/system/info", s.handleSystemInfo)
 	mux.HandleFunc("/api/connection", s.handleConnection)
 	mux.HandleFunc("/api/version", s.handleVersion)
@@ -320,6 +322,46 @@ func sniffBrandIcon(b []byte) (string, bool) {
 	return "", false
 }
 
+// writeBrandIcon 把自定义图标写进响应；无图标或读取失败时返回 false，由调用方决定回落。
+func (s *Server) writeBrandIcon(w http.ResponseWriter, r *http.Request) bool {
+	file, mtime := s.brandIconFile()
+	if file == "" {
+		return false
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return false
+	}
+	etag := fmt.Sprintf(`"%x-%x"`, mtime, len(data))
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
+	w.Header().Set("Content-Type", brandIconContentType(file))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// 图标被单独打开时（SVG 可带脚本），用 CSP 掐断一切外部与脚本能力。
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", etag)
+	_, _ = w.Write(data)
+	return true
+}
+
+// handleFavicon 让浏览器标签图标跟随自定义站点图标；未配置时回落到内置 favicon。
+func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	if s.writeBrandIcon(w, r) {
+		return
+	}
+	data, err := staticFiles.ReadFile("static/favicon.ico")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "image/x-icon")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(data)
+}
+
 // handleBrandIcon 负责自定义站点图标的读取、上传与重置。
 func (s *Server) handleBrandIcon(w http.ResponseWriter, r *http.Request) {
 	dir := s.cfg.Dir()
@@ -330,28 +372,9 @@ func (s *Server) handleBrandIcon(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		path, mtime := s.brandIconFile()
-		if path == "" {
+		if !s.writeBrandIcon(w, r) {
 			http.NotFound(w, r)
-			return
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		etag := fmt.Sprintf(`"%x-%x"`, mtime, len(data))
-		if r.Header.Get("If-None-Match") == etag {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-		w.Header().Set("Content-Type", brandIconContentType(path))
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		// 图标被单独打开时（SVG 可带脚本），用 CSP 掐断一切外部与脚本能力。
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("ETag", etag)
-		_, _ = w.Write(data)
 
 	case http.MethodPost:
 		var req struct {

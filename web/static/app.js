@@ -1090,7 +1090,16 @@ function renderBrandIcon(version) {
     img.removeAttribute('src');
     svg.hidden = false;
   }
+  applyFavicon(state.siteIcon);
   renderIconPreview();
+}
+
+// 浏览器标签图标跟随站点图标。改 href（带版本）可以绕开 ico 的强缓存。
+function applyFavicon(version) {
+  const link = $('favicon');
+  if (!link) return;
+  link.removeAttribute('type');
+  link.href = version > 0 ? `/api/brand/icon?v=${version}` : '/favicon.ico';
 }
 
 function renderIconPreview() {
