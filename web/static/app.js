@@ -236,8 +236,11 @@ function renderHostKv() {
     ['端口转发上限', `${c.max_port_forward || 20} 条 / VM`],
   ];
   $('hostKv').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
-  $('ovHostAddr').textContent = c.host || '自动探测';
-  $('ovHost').textContent = c.host || location.host;
+  // 入口地址展示与心跳上报同优先级：host > public_ipv4 > 自动探测。
+  // 都为空时回落到面板自身访问地址，避免复制按钮拿到「自动探测」这种无效文本。
+  const entryAddr = c.host || c.public_ipv4 || location.host;
+  $('ovHostAddr').textContent = entryAddr;
+  $('ovHost').textContent = entryAddr;
   $('ovOs').textContent = d.os || '—';
   $('flowReset').textContent = c.traffic_reset_day ? `每月 ${c.traffic_reset_day} 日重置` : '—';
 }

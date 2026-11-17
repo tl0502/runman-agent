@@ -198,7 +198,7 @@
           <dl class="kv" id="hostKv"></dl>
           <div class="divider"></div>
           <div class="row between small push-bottom">
-            <span class="muted">出口地址</span>
+            <span class="muted">入口地址</span>
             <span class="row" style="gap:6px">
               <span class="mono" id="ovHostAddr">—</span>
               <button class="act" id="ovCopyHost" title="复制">
@@ -522,8 +522,14 @@
                 <input class="input mono" id="platformAddr" placeholder="hosting.example.com:443">
               </div>
               <div class="field">
-                <label for="entryHost">入口域名 <span class="hint">留空 = 自动探测公网 IP</span></label>
+                <label for="entryHost">入口地址 <span class="hint">留空则用对外 IPv4，再留空自动探测</span></label>
                 <input class="input mono" id="entryHost" placeholder="myhost.ddns.net">
+              </div>
+              <div class="field">
+                <label for="publicIpv4">对外 IPv4 <span class="hint">端口监听与出站；入口地址留空时作为入口上报</span></label>
+                <select class="input" id="publicIpv4">
+                  <option value="">未指定（默认）</option>
+                </select>
               </div>
               <label class="check"><input type="checkbox" id="platformInsecure"> 跳过平台 TLS 证书校验</label>
             </div>
@@ -550,21 +556,6 @@
               <div class="field">
                 <label for="netavarkBase">Netavark 下载基址 <span class="hint">Podman 后端</span></label>
                 <input class="input mono" id="netavarkBase" placeholder="https://…/releases/latest/download">
-              </div>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-head">
-              <span class="card-title">容器网络</span>
-              <span class="card-note">所有容器共用</span>
-            </div>
-            <div class="card-body form-grid">
-              <div class="field">
-                <label for="publicIpv4">对外 IPv4 <span class="hint">端口只在此地址监听，出站也用它</span></label>
-                <select class="input" id="publicIpv4">
-                  <option value="">未指定（默认）</option>
-                </select>
               </div>
             </div>
           </div>

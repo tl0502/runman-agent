@@ -682,11 +682,19 @@ func (a *Agent) sendHeartbeat(stream agent.AgentGateway_ConnectClient) {
 	a.mu.RLock()
 	virtType := a.config.VirtType
 	hb.VirtType = virtType
-	liveHost := a.cfg.Get().Host // 每次心跳读取最新配置，确保面板修改立即生效
-	if liveHost != "" {
+	// 每次心跳读取最新配置，确保面板修改立即生效。
+	// entry_host 优先级：host（手动入口，支持 DDNS 域名）> public_ipv4（弹性 IP，对外入口地址）
+	// > 自动探测的公网 IPv4。弹性 IP 场景下平台展示的入口地址应与对外 IPv4 一致，
+	// 而不是 NAT 出口探测结果。
+	liveHost := a.cfg.Get().Host
+	livePublic := a.cfg.Get().PublicIPv4
+	switch {
+	case liveHost != "":
 		hb.EntryHost = liveHost
-	} else {
-		hb.EntryHost = a.entryIPv4 // 未手动配置时使用自动检测的公网 IPv4
+	case livePublic != "":
+		hb.EntryHost = livePublic
+	default:
+		hb.EntryHost = a.entryIPv4
 	}
 	hb.EntryIpv6 = a.entryIPv6
 	a.mu.RUnlock()
