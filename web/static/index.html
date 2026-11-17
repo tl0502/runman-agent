@@ -1,2384 +1,1002 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN" data-theme="light">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Narwhal Cloud</title>
-    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/>
-    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
-    <style>
-        .pulse { animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
-        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-        .modal-bg { background: rgba(0,0,0,0.5); }
-        #terminal-container .xterm { height: 100%; }
-        #terminal-container .xterm-viewport { overflow-y: auto !important; }
-        #terminal-container .xterm-screen { margin-bottom: 4px; }
-        .console-maximized {
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 100vw !important;
-            height: 100vh !important;
-            max-width: none !important;
-            max-height: none !important;
-            border-radius: 0 !important;
-            resize: none !important;
-            margin: 0 !important;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Run</title>
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="/vendor/xterm.css">
 </head>
-<body class="bg-slate-100 text-slate-800 min-h-screen">
+<body>
+<div class="ambient" aria-hidden="true"></div>
 
-<!-- ─── Navbar ─────────────────────────────────────────────────────────────── -->
-<nav class="bg-indigo-700 text-white shadow-lg sticky top-0 z-10">
-    <div class="max-w-screen-2xl mx-auto px-6 py-3 flex justify-between items-center">
-        <div class="flex items-center gap-3">
-            <img src="/logo.png" class="w-8 h-8 rounded shadow" alt="logo">
-            <span class="text-lg font-bold tracking-tight">Narwhal Cloud</span>
+<!-- ── 图标精灵 ───────────────────────────────────────────────────────────── -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="i-grid"><rect x="3" y="3" width="7" height="7" rx="1.6"/><rect x="14" y="3" width="7" height="7" rx="1.6"/><rect x="3" y="14" width="7" height="7" rx="1.6"/><rect x="14" y="14" width="7" height="7" rx="1.6"/></g>
+    <g id="i-box"><path d="M21 8.5v7a2 2 0 0 1-1 1.73l-7 4a2 2 0 0 1-2 0l-7-4A2 2 0 0 1 3 15.5v-7a2 2 0 0 1 1-1.73l7-4a2 2 0 0 1 2 0l7 4A2 2 0 0 1 21 8.5z"/><path d="M3.3 7.5 12 12.5l8.7-5"/><path d="M12 22v-9.5"/></g>
+    <g id="i-shield"><path d="M12 3.2 19 6v6.1c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-2.8z"/></g>
+    <g id="i-sliders"><path d="M3 7h5M12 7h9M3 17h9M16 17h5"/><circle cx="10" cy="7" r="2.1"/><circle cx="14" cy="17" r="2.1"/></g>
+    <g id="i-cpu"><rect x="7" y="7" width="10" height="10" rx="2.2"/><path d="M10 3.2v2.4M14 3.2v2.4M10 18.4v2.4M14 18.4v2.4M3.2 10h2.4M3.2 14h2.4M18.4 10h2.4M18.4 14h2.4"/></g>
+    <g id="i-mem"><rect x="3" y="7" width="18" height="9" rx="2"/><path d="M7 16v3M12 16v3M17 16v3"/></g>
+    <g id="i-disk"><rect x="3" y="4.5" width="18" height="6" rx="2"/><rect x="3" y="13.5" width="18" height="6" rx="2"/><circle cx="7" cy="7.5" r=".55"/><circle cx="7" cy="16.5" r=".55"/></g>
+    <g id="i-net"><path d="M7 17.5V6.5m0 0L4 9.5m3-3 3 3"/><path d="M17 6.5v11m0 0 3-3m-3 3-3-3"/></g>
+    <g id="i-plus"><path d="M12 5v14M5 12h14"/></g>
+    <g id="i-refresh"><path d="M20.5 12a8.5 8.5 0 1 1-2.49-6.01"/><path d="M20.5 4v4.2h-4.2"/></g>
+    <g id="i-search"><circle cx="11" cy="11" r="6.6"/><path d="m20 20-3.6-3.6"/></g>
+    <g id="i-terminal"><rect x="3" y="4" width="18" height="16" rx="2.6"/><path d="m7.5 9.5 3 2.7-3 2.7M13.5 15h3.5"/></g>
+    <g id="i-chart"><path d="M4 19.5V4.5M4 19.5h16"/><path d="m7 15 3.6-4.2 3 2.6L20 7"/></g>
+    <g id="i-swap"><path d="M4 9h13m0 0-3.2-3.2M17 9l-3.2 3.2"/><path d="M20 15H7m0 0 3.2-3.2M7 15l3.2 3.2"/></g>
+    <g id="i-lock"><rect x="4.6" y="10.4" width="14.8" height="10" rx="2.6"/><path d="M8.2 10.4V8a3.8 3.8 0 0 1 7.6 0v2.4"/></g>
+    <g id="i-gear"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.4M12 18.6V21M21 12h-2.4M5.4 12H3M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7M18.4 18.4l-1.7-1.7M7.3 7.3 5.6 5.6"/></g>
+    <g id="i-x"><path d="M6 6l12 12M18 6 6 18"/></g>
+    <g id="i-check"><path d="M5 12.5 9.5 17 19 7"/></g>
+    <g id="i-chev-down"><path d="m6 9.5 6 6 6-6"/></g>
+    <g id="i-chev-right"><path d="m9.5 6 6 6-6 6"/></g>
+    <g id="i-arrow-right"><path d="M4 12h15m0 0-5-5m5 5-5 5"/></g>
+    <g id="i-trash"><path d="M4 7h16M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7M6.2 7l.9 12.2A1.6 1.6 0 0 0 8.7 21h6.6a1.6 1.6 0 0 0 1.6-1.8L17.8 7"/></g>
+    <g id="i-power"><path d="M12 4v7.5"/><path d="M7.6 6.6a7.4 7.4 0 1 0 8.8 0"/></g>
+    <g id="i-key"><circle cx="8.2" cy="15.8" r="3.6"/><path d="m10.8 13.2 7.4-7.4M16.2 5.8l2.6 2.6M14.4 7.6l2.6 2.6"/></g>
+    <g id="i-globe"><circle cx="12" cy="12" r="8.8"/><path d="M3.2 12h17.6M12 3.2c2.4 2.6 3.6 5.6 3.6 8.8S14.4 18.2 12 20.8c-2.4-2.6-3.6-5.6-3.6-8.8S9.6 5.8 12 3.2z"/></g>
+    <g id="i-info"><circle cx="12" cy="12" r="8.8"/><path d="M12 11.2v5.2M12 8h.01"/></g>
+    <g id="i-warn"><path d="M12 4.2 3.4 19.6h17.2L12 4.2z"/><path d="M12 10v4.2M12 17.4h.01"/></g>
+    <g id="i-clock"><circle cx="12" cy="12" r="8.8"/><path d="M12 7.4V12l3.2 2"/></g>
+    <g id="i-copy"><rect x="9" y="9" width="11" height="11" rx="2.2"/><path d="M15 5.6A2.6 2.6 0 0 0 12.4 3H5.6A2.6 2.6 0 0 0 3 5.6v6.8A2.6 2.6 0 0 0 5.6 15"/></g>
+    <g id="i-play"><path d="M8.5 5.6v12.8L19 12 8.5 5.6z"/></g>
+    <g id="i-stop"><rect x="6" y="6" width="12" height="12" rx="2.4"/></g>
+    <g id="i-sun"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.4v2M12 19.6v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.4 12h2M19.6 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></g>
+    <g id="i-moon"><path d="M20.4 14.6A8.8 8.8 0 0 1 9.4 3.6a8.8 8.8 0 1 0 11 11z"/></g>
+    <g id="i-image"><rect x="3" y="4.4" width="18" height="15.2" rx="2.4"/><circle cx="8.6" cy="9.8" r="1.5"/><path d="m4.2 17.4 4.8-4.8 3.4 3.4 2.6-2.6 4.8 4.8"/></g>
+    <g id="i-filter"><path d="M4 6.5h16M7 12h10M10 17.5h4"/></g>
+    <g id="i-external"><path d="M14 4h6v6M20 4l-8.5 8.5"/><path d="M18 14.5V19a1.8 1.8 0 0 1-1.8 1.8H5.2A1.8 1.8 0 0 1 3.4 19V8a1.8 1.8 0 0 1 1.8-1.8h4.4"/></g>
+    <g id="i-pause"><path d="M8.5 5v14M15.5 5v14"/></g>
+    <g id="i-sliders2"><path d="M5 8h14M5 16h14"/><circle cx="9" cy="8" r="2.2"/><circle cx="15" cy="16" r="2.2"/></g>
+  </defs>
+</svg>
+
+<!-- ── 顶栏 ───────────────────────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#" data-goto="overview" title="回到概览">
+      <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <rect x="2.2" y="2.2" width="27.6" height="27.6" rx="9" stroke="currentColor" stroke-width="2.1"/>
+        <path d="M10 22V10.6h7.1a4.1 4.1 0 0 1 0 8.2H13" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="21.4" cy="22.2" r="1.6" fill="currentColor"/>
+      </svg>
+      <span class="brand-name" id="brandName">Run</span>
+    </a>
+
+    <nav class="segmented" id="nav" role="tablist" aria-label="主导航">
+      <span class="seg-thumb" id="segThumb" aria-hidden="true"></span>
+      <button class="seg" role="tab" data-view="overview" aria-selected="true">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-grid"/></svg>
+        概览
+      </button>
+      <button class="seg" role="tab" data-view="vms" aria-selected="false">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
+        虚拟机
+      </button>
+      <button class="seg" role="tab" data-view="firewall" aria-selected="false">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg>
+        防火墙
+      </button>
+      <button class="seg" role="tab" data-view="settings" aria-selected="false">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-sliders"/></svg>
+        设置
+      </button>
+    </nav>
+
+    <div class="status-cluster">
+      <button class="pill pill-quiet" id="connPill" title="平台连接状态">
+        <span class="dot"></span><span id="connText">未配置</span>
+      </button>
+      <span class="pill pill-quiet hide-sm" id="virtPill" title="虚拟化类型">VIRT —</span>
+      <button class="pill pill-quiet mono" id="versionPill" title="查看版本与更新">v—</button>
+      <button class="icon-btn" id="themeBtn" title="切换外观" aria-label="切换外观">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-moon"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- ═══════════════════════════════ 概览 ═══════════════════════════════════ -->
+  <section class="view" id="view-overview">
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">概览</h1>
+        <div class="page-sub">
+          <span id="ovHost">—</span>
+          <span class="sep"></span>
+          <span id="ovOs">—</span>
+          <span class="sep"></span>
+          <span>已运行 <b id="ovUptime" class="tnum">—</b></span>
         </div>
-        <div class="flex items-center gap-3 text-sm">
-            <span id="server-badge" class="bg-red-500 px-3 py-1 rounded text-xs font-bold uppercase tracking-widest flex items-center gap-1" title="Click to configure">
-                <span class="w-2 h-2 bg-current rounded-full"></span>
-                <span id="server-status">Not Configured</span>
+      </div>
+      <div class="page-actions">
+        <span class="badge badge-quiet" id="ovUpdated">刚刚</span>
+        <button class="btn btn-ghost" id="ovRefresh">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
+          刷新
+        </button>
+        <button class="btn btn-primary" data-goto="vms">
+          管理虚拟机
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-arrow-right"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="grid grid-4">
+      <div class="card metric">
+        <div class="metric-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cpu"/></svg>
+          CPU
+        </div>
+        <div class="metric-value"><span class="num" id="mCpuNum">0</span><span class="unit">%</span></div>
+        <div class="track"><i id="mCpuBar" style="width:0%"></i></div>
+        <div class="metric-meta">
+          <span><b id="mCpuCores">—</b> 核</span>
+          <span>负载 <b id="mLoad">—</b></span>
+        </div>
+      </div>
+
+      <div class="card metric">
+        <div class="metric-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-mem"/></svg>
+          内存
+        </div>
+        <div class="metric-value">
+          <span class="num" id="mMemNum">0</span>
+          <span class="of" id="mMemOf">/ 0 GB</span>
+        </div>
+        <div class="track"><i id="mMemBar" class="tone-blue" style="width:0%"></i></div>
+        <div class="metric-meta"><span id="mMemMeta">—</span></div>
+      </div>
+
+      <div class="card metric">
+        <div class="metric-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-disk"/></svg>
+          磁盘
+        </div>
+        <div class="metric-value">
+          <span class="num" id="mDiskNum">0</span>
+          <span class="of" id="mDiskOf">/ 0 GB</span>
+        </div>
+        <div class="track"><i id="mDiskBar" style="width:0%"></i></div>
+        <div class="metric-meta"><span id="mDiskMeta">挂载点 /</span></div>
+      </div>
+
+      <div class="card metric">
+        <div class="metric-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-net"/></svg>
+          网络
+        </div>
+        <div class="metric-value" style="gap:14px">
+          <span class="row" style="gap:5px"><span class="unit" style="color:var(--green)">↑</span><span class="num" style="font-size:22px" id="mNetOut">0</span></span>
+          <span class="row" style="gap:5px"><span class="unit" style="color:var(--blue)">↓</span><span class="num" style="font-size:22px" id="mNetIn">0</span></span>
+        </div>
+        <div class="metric-meta" style="margin-top:16px">
+          <span>带宽 <b id="mNetBw">—</b></span>
+          <span id="mNetMeta" class="mono"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid grid-overview mt-16">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+            主机
+          </span>
+          <span class="card-note" id="ovVirt">—</span>
+        </div>
+        <div class="card-body">
+          <dl class="kv" id="hostKv"></dl>
+          <div class="divider"></div>
+          <div class="row between small push-bottom">
+            <span class="muted">出口地址</span>
+            <span class="row" style="gap:6px">
+              <span class="mono" id="ovHostAddr">—</span>
+              <button class="act" id="ovCopyHost" title="复制">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-copy"/></svg>
+              </button>
             </span>
-            <span id="virt-badge" class="bg-indigo-500 px-3 py-1 rounded text-xs font-bold uppercase tracking-widest">VIRT: -</span>
-            <button id="version-badge" onclick="openVersionModal()" class="bg-slate-600 hover:bg-slate-700 px-3 py-1 rounded text-xs font-bold uppercase tracking-widest cursor-pointer transition-colors" title="Click to check updates">
-                <span id="version-text">v-</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
+            虚拟机
+          </span>
+          <button class="btn btn-quiet btn-sm" data-goto="vms">全部
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev-right"/></svg>
+          </button>
+        </div>
+        <div class="card-body">
+          <div class="summary-num">
+            <span class="num" id="vmRunNum">0</span>
+            <span class="unit">/ <span id="vmAllNum">0</span> 运行中</span>
+          </div>
+          <div class="stack-bar" id="vmStack"></div>
+          <div class="legend">
+            <span><i class="run"></i>运行 <b id="lgRun">0</b></span>
+            <span><i class="stop"></i>停止 <b id="lgStop">0</b></span>
+            <span><i class="err"></i>异常 <b id="lgErr">0</b></span>
+          </div>
+          <div class="mini-list" id="vmMiniList"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chart"/></svg>
+            本月流量
+          </span>
+          <span class="card-note" id="flowReset">—</span>
+        </div>
+        <div class="card-body">
+          <div class="summary-num">
+            <span class="num" id="flowTotal">0</span>
+            <span class="unit">GB</span>
+          </div>
+          <div class="flow">
+            <div class="flow-row">
+              <span class="k">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="color:var(--green)"><use href="#i-net"/></svg>
+                上行
+              </span>
+              <span class="v" id="flowOut">0</span>
+              <span class="bar"><i id="flowOutBar" style="width:0%"></i></span>
+            </div>
+            <div class="flow-row">
+              <span class="k">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="color:var(--blue)"><use href="#i-net"/></svg>
+                下行
+              </span>
+              <span class="v" id="flowIn">0</span>
+              <span class="bar"><i id="flowInBar" style="width:0%"></i></span>
+            </div>
+          </div>
+          <div class="metric-meta" style="margin-top:16px"><span id="flowNote">按 VM 月度累计汇总</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════ 虚拟机 ═════════════════════════════════ -->
+  <section class="view" id="view-vms" hidden>
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">虚拟机</h1>
+        <div class="page-sub">
+          <span id="vmSubCount">0 台</span>
+          <span class="sep"></span>
+          <span id="vmSubState">—</span>
+        </div>
+      </div>
+      <div class="page-actions">
+        <div class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-search"/></svg>
+          <input class="input" id="vmSearch" placeholder="搜索名称或 IP" autocomplete="off">
+        </div>
+        <div class="chips" id="vmFilter" role="group" aria-label="状态筛选">
+          <button class="chip" data-filter="all" aria-pressed="true">全部 <span class="count" id="cAll">0</span></button>
+          <button class="chip" data-filter="run" aria-pressed="false">运行 <span class="count" id="cRun">0</span></button>
+          <button class="chip" data-filter="stop" aria-pressed="false">停止 <span class="count" id="cStop">0</span></button>
+        </div>
+        <button class="icon-btn" id="vmRefresh" title="刷新">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
+        </button>
+        <button class="btn btn-ghost" id="btnImages">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-image"/></svg>
+          镜像
+        </button>
+        <button class="btn btn-primary" id="btnCreate">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-plus"/></svg>
+          创建虚拟机
+        </button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table class="data" id="vmTable">
+          <thead>
+            <tr>
+              <th>虚拟机</th>
+              <th>状态</th>
+              <th><button class="sort-btn" data-sort="cpu_pct">CPU
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></svg>
+              </button></th>
+              <th><button class="sort-btn" data-sort="ram_used_mb">内存
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></svg>
+              </button></th>
+              <th><button class="sort-btn" data-sort="net_in_bps">实时速率
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></svg>
+              </button></th>
+              <th><button class="sort-btn" data-sort="monthly_traffic_in">本月流量
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></svg>
+              </button></th>
+              <th>创建</th>
+              <th style="text-align:right">操作</th>
+            </tr>
+          </thead>
+          <tbody id="vmTbody"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="vmEmpty" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
+        <span class="empty-title">还没有虚拟机</span>
+        <span class="empty-sub">创建第一台虚拟机，它会自动获得一条随机端口到 22 的 SSH 转发。</span>
+        <button class="btn btn-primary" onclick="openCreate()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px"><use href="#i-plus"/></svg>
+          创建虚拟机
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════ 防火墙 ═════════════════════════════════ -->
+  <section class="view" id="view-firewall" hidden>
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">防火墙</h1>
+        <div class="page-sub">
+          <span>RFW</span><span class="sep"></span>
+          <span id="rfwSub">检测中…</span>
+        </div>
+      </div>
+      <div class="page-actions">
+        <span class="badge badge-quiet" id="rfwBadge"><span class="dot"></span>检测中</span>
+        <button class="icon-btn" id="rfwRefresh" title="刷新规则">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
+        </button>
+        <button class="btn btn-primary" id="btnNewRule">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-plus"/></svg>
+          新建规则
+        </button>
+      </div>
+    </div>
+
+    <div class="card" id="rfwOnline">
+      <div class="grid grid-3" style="gap:0">
+        <div style="padding:16px 20px;border-right:1px solid var(--hairline)">
+          <div class="metric-label">接口</div>
+          <div class="mono" style="margin-top:7px;font-size:13px;font-weight:600" id="rfwIface">—</div>
+        </div>
+        <div style="padding:16px 20px;border-right:1px solid var(--hairline)">
+          <div class="metric-label">规则数</div>
+          <div class="tnum" style="margin-top:7px;font-size:13px;font-weight:600" id="rfwRuleCount">—</div>
+        </div>
+        <div style="padding:16px 20px">
+          <div class="metric-label">API 版本</div>
+          <div class="mono" style="margin-top:7px;font-size:13px;font-weight:600" id="rfwApiVer">—</div>
+        </div>
+      </div>
+      <div class="table-wrap" style="border-top:1px solid var(--hairline)">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>优先级</th>
+              <th>状态</th>
+              <th>方向</th>
+              <th>协议</th>
+              <th>端口</th>
+              <th>来源</th>
+              <th>动作</th>
+              <th style="text-align:right"></th>
+            </tr>
+          </thead>
+          <tbody id="rfwTbody"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="rfwEmpty" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg>
+        <span class="empty-title">没有任何规则</span>
+        <span class="empty-sub">RFW 正在运行，但还没有下发任何规则 —— 所有流量按默认策略处理。</span>
+      </div>
+    </div>
+
+    <div class="card" id="rfwOffline" hidden>
+      <div class="empty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg>
+        <span class="empty-title">RFW 未运行</span>
+        <span class="empty-sub">面板没有检测到本机的 RFW 服务。规则管理需要 RFW 在运行，请先在主机上启动它。</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════ 设置 ═══════════════════════════════════ -->
+  <section class="view" id="view-settings" hidden>
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">设置</h1>
+        <div class="page-sub">改动保存在 config.json，立即生效</div>
+      </div>
+      <div class="page-actions">
+        <button class="btn btn-quiet" id="btnReloadConf">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5A8.5 8.5 0 1 1 5.06 15"/><path d="M4 4.5v6h6"/></svg>
+          放弃改动
+        </button>
+        <button class="btn btn-primary" id="btnSaveConf">保存全部</button>
+      </div>
+    </div>
+
+    <form id="configForm" autocomplete="off">
+      <div class="settings-rows">
+
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">面板</span>
+            <span class="card-note">品牌名 + HTTP Basic Auth</span>
+          </div>
+          <div class="card-body form-grid">
+            <div class="form-grid cols-3">
+              <div class="field">
+                <label for="siteName">站点名称 <span class="hint">最多 24 字符</span></label>
+                <input class="input" id="siteName" maxlength="24" placeholder="Run">
+              </div>
+              <div class="field">
+                <label for="webUser">用户名</label>
+                <input class="input" id="webUser" placeholder="未启用认证">
+              </div>
+              <div class="field">
+                <label for="webPass">密码 <span class="hint">留空不改</span></label>
+                <input class="input" type="password" id="webPass" placeholder="保持当前">
+              </div>
+            </div>
+            <div class="note">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+              <span>站点名称显示在顶栏与浏览器标题。改凭据后当前会话不会立即失效，下一次请求开始生效。</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">监控</span>
+              <span class="card-note">主机指标采集目标</span>
+            </div>
+            <div class="card-body form-grid">
+              <div class="form-grid cols-2">
+                <div class="field">
+                  <label for="monitorNIC">网卡</label>
+                  <select class="input" id="monitorNIC"></select>
+                </div>
+                <div class="field">
+                  <label for="monitorDisk">磁盘</label>
+                  <select class="input" id="monitorDisk"></select>
+                </div>
+              </div>
+              <div class="note">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+                <span>改采集对象后概览页的实时指标会立刻切换；历史数据不会迁移。</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">转发与流量</span>
+              <span class="card-note">每台 VM 的上限</span>
+            </div>
+            <div class="card-body form-grid">
+              <div class="form-grid cols-2">
+                <div class="field">
+                  <label for="maxPortForward">端口转发数</label>
+                  <input class="input tnum" type="number" id="maxPortForward" min="1" max="1000">
+                </div>
+                <div class="field">
+                  <label for="maxForwardIPs">唯一来源 IP <span class="hint">0 = 不限</span></label>
+                  <input class="input tnum" type="number" id="maxForwardIPs" min="0" max="100000">
+                </div>
+              </div>
+              <div class="field" style="max-width:calc(50% - 7px)">
+                <label for="trafficResetDay">流量重置日 <span class="hint">1–28</span></label>
+                <input class="input tnum" type="number" id="trafficResetDay" min="1" max="28">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">平台接入</span>
+              <span class="card-note">gRPC</span>
+            </div>
+            <div class="card-body form-grid">
+              <div class="field">
+                <label for="token">API Token</label>
+                <input class="input mono" type="password" id="token" placeholder="未配置">
+              </div>
+              <div class="field">
+                <label for="platformAddr">平台地址</label>
+                <input class="input mono" id="platformAddr" placeholder="hosting.example.com:443">
+              </div>
+              <div class="field">
+                <label for="entryHost">入口域名 <span class="hint">留空 = 自动探测公网 IP</span></label>
+                <input class="input mono" id="entryHost" placeholder="myhost.ddns.net">
+              </div>
+              <label class="check"><input type="checkbox" id="platformInsecure"> 跳过平台 TLS 证书校验</label>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <span class="card-title">更新源</span>
+              <span class="card-note">留空走 GitHub</span>
+            </div>
+            <div class="card-body form-grid">
+              <div class="field">
+                <label for="updateRepo">仓库 <span class="hint">owner/repo</span></label>
+                <input class="input mono" id="updateRepo" placeholder="narwhal-cloud/runman-agent">
+              </div>
+              <div class="field">
+                <label for="updateBase">下载基址</label>
+                <input class="input mono" id="updateBase" placeholder="https://…/releases/download">
+              </div>
+              <div class="field">
+                <label for="updateApi">版本查询基址</label>
+                <input class="input mono" id="updateApi" placeholder="https://api.github.com">
+              </div>
+              <div class="field">
+                <label for="netavarkBase">Netavark 下载基址 <span class="hint">Podman 后端</span></label>
+                <input class="input mono" id="netavarkBase" placeholder="https://…/releases/latest/download">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">关于</span>
+            <span class="card-note" id="aboutVirt">—</span>
+          </div>
+          <div class="card-body row between" style="flex-wrap:wrap;gap:16px">
+            <div class="kv" style="grid-template-columns:auto auto auto auto;gap:8px 20px">
+              <dt>面板版本</dt><dd class="mono" id="aboutVersion">—</dd>
+              <dt>更新来源</dt><dd class="mono" id="aboutRepo">—</dd>
+            </div>
+            <button type="button" class="btn btn-ghost" id="btnVersion">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
+              检查更新
             </button>
-            <span class="w-2.5 h-2.5 bg-green-400 rounded-full pulse"></span>
-        </div>
-    </div>
-</nav>
-
-<!-- ─── Main ───────────────────────────────────────────────────────────────── -->
-<main class="max-w-screen-2xl mx-auto px-6 py-6 space-y-6">
-
-    <!-- Stats row -->
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">CPU Usage</p>
-            <h3 id="cpu-pct" class="text-3xl font-bold text-indigo-600">0%</h3>
-            <div class="w-full bg-slate-100 h-1.5 rounded-full mt-3">
-                <div id="cpu-bar" class="bg-indigo-500 h-1.5 rounded-full transition-all duration-500" style="width:0%"></div>
-            </div>
-            <p class="text-[10px] text-slate-400 mt-2">Cores: <span id="cpu-cores">-</span> &nbsp;|&nbsp; Load: <span id="load-avg">-</span></p>
-        </div>
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Memory</p>
-            <div class="flex items-baseline gap-1">
-                <h3 id="ram-used" class="text-3xl font-bold text-emerald-600">0</h3>
-                <span class="text-slate-400 text-sm">/ <span id="ram-total">0</span> MB</span>
-            </div>
-            <div class="w-full bg-slate-100 h-1.5 rounded-full mt-3">
-                <div id="ram-bar" class="bg-emerald-500 h-1.5 rounded-full transition-all duration-500" style="width:0%"></div>
-            </div>
-        </div>
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Disk</p>
-            <div class="flex items-baseline gap-1">
-                <h3 id="disk-used" class="text-3xl font-bold text-blue-600">0</h3>
-                <span class="text-slate-400 text-sm">/ <span id="disk-total">0</span> GB</span>
-            </div>
-            <div class="w-full bg-slate-100 h-1.5 rounded-full mt-3">
-                <div id="disk-bar" class="bg-blue-500 h-1.5 rounded-full transition-all duration-500" style="width:0%"></div>
-            </div>
-            <p class="text-[10px] text-slate-400 mt-2 italic" id="disk-label">Partition: /</p>
-        </div>
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Network I/O</p>
-            <div class="space-y-1 mt-1">
-                <div class="text-sm font-bold text-indigo-500">↑ <span id="net-out-rate">0 bps</span></div>
-                <div class="text-sm font-bold text-sky-500">↓ <span id="net-in-rate">0 bps</span></div>
-            </div>
-            <div class="flex gap-4 mt-2 text-[10px] font-mono text-slate-400">
-                <span title="Monthly Outbound">MTD ↑ <span id="net-out-month">0 B</span></span>
-                <span title="Monthly Inbound">↓ <span id="net-in-month">0 B</span></span>
-            </div>
-            <p class="text-[10px] text-slate-400 mt-1">BW: <span id="bandwidth">--</span> Mbps &nbsp;|&nbsp; Up: <span id="uptime">--</span></p>
-        </div>
-    </div>
-
-    <!-- Content grid: VMs + Config -->
-    <div class="grid grid-cols-1 gap-6">
-
-        <!-- VM Panel -->
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-            <div class="px-6 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-                <div class="flex items-center gap-3">
-                    <h2 class="font-bold text-slate-700 uppercase tracking-tight text-sm">Virtual Machines</h2>
-                    <span id="vm-count" class="text-xs bg-indigo-100 text-indigo-600 px-2 py-0.5 rounded-full font-bold">0</span>
-                </div>
-                <div class="flex items-center gap-3">
-                    <button onclick="openImagesConfig()" class="flex items-center gap-1.5 bg-slate-600 hover:bg-slate-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                        OS Config
-                    </button>
-                    <button onclick="openCreateVM()" class="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/></svg>
-                        Create VM
-                    </button>
-                </div>
-            </div>
-            <div class="overflow-x-auto">
-                <table class="w-full text-left min-w-[800px]">
-                    <thead class="bg-slate-50 text-[10px] text-slate-500 uppercase font-bold tracking-widest">
-                        <tr>
-                            <th class="px-4 py-3">VM / IP</th>
-                            <th class="px-4 py-3">Status</th>
-                            <th class="px-4 py-3 space-y-1">
-                                <div>Resources</div>
-                                <div class="flex flex-wrap gap-2 text-xs font-normal normal-case">
-                                    <span class="sort-btn cursor-pointer px-2 py-0.5 rounded hover:bg-slate-200 transition-colors" data-field="cpu_pct" onclick="setSort('cpu_pct')">CPU <span class="sort-arrow">⇅</span></span>
-                                    <span class="sort-btn cursor-pointer px-2 py-0.5 rounded hover:bg-slate-200 transition-colors" data-field="ram_used_mb" onclick="setSort('ram_used_mb')">RAM <span class="sort-arrow">⇅</span></span>
-                                </div>
-                            </th>
-                            <th class="px-4 py-3 space-y-1">
-                                <div>Traffic</div>
-                                <div class="flex flex-wrap gap-2 text-xs font-normal normal-case">
-                                    <span class="sort-btn cursor-pointer px-2 py-0.5 rounded hover:bg-slate-200 transition-colors" data-field="monthly_traffic_in" onclick="setSort('monthly_traffic_in')">Month ↓ <span class="sort-arrow">⇅</span></span>
-                                    <span class="sort-btn cursor-pointer px-2 py-0.5 rounded hover:bg-slate-200 transition-colors" data-field="monthly_traffic_out" onclick="setSort('monthly_traffic_out')">Month ↑ <span class="sort-arrow">⇅</span></span>
-                                    <span class="sort-btn cursor-pointer px-2 py-0.5 rounded hover:bg-slate-200 transition-colors" data-field="net_in_bps" onclick="setSort('net_in_bps')">Speed <span class="sort-arrow">⇅</span></span>
-                                </div>
-                            </th>
-                            <th class="px-4 py-3 text-right pr-8">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="vm-table-body" class="divide-y divide-slate-100 text-sm"></tbody>
-                </table>
-                <div id="vm-empty" class="hidden text-center py-12 text-slate-400 text-sm">No virtual machines found.</div>
-            </div>
+          </div>
         </div>
 
-        <!-- Firewall (RFW) Panel -->
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-            <div class="px-6 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-                <div class="flex items-center gap-3">
-                    <svg class="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
-                    <h2 class="font-bold text-slate-700 uppercase tracking-tight text-sm">Firewall (RFW)</h2>
-                    <span id="rfw-status-badge" class="text-xs px-2 py-0.5 rounded-full font-bold bg-slate-100 text-slate-500">Checking…</span>
-                </div>
-                <div class="flex items-center gap-2">
-                    <button onclick="rfwRefreshRules()" class="text-xs border border-slate-200 hover:border-indigo-400 text-slate-500 hover:text-indigo-600 px-3 py-1.5 rounded-lg transition-colors">↺ Refresh</button>
-                </div>
-            </div>
-
-            <!-- rfw offline -->
-            <div id="rfw-offline-panel" class="hidden">
-                <div class="text-center py-8 text-slate-400 text-sm">RFW is not running.</div>
-            </div>
-
-            <!-- rfw online: stats + rules -->
-            <div id="rfw-online-panel" class="hidden">
-                <div class="grid grid-cols-3 border-b border-slate-100">
-                    <div class="px-6 py-3 border-r border-slate-100">
-                        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Interface</p>
-                        <p id="rfw-iface" class="text-sm font-bold text-slate-700 mt-0.5">—</p>
-                    </div>
-                    <div class="px-6 py-3 border-r border-slate-100">
-                        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Rules</p>
-                        <p id="rfw-rule-count" class="text-sm font-bold text-emerald-600 mt-0.5">0</p>
-                    </div>
-                    <div class="px-6 py-3">
-                        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">API Version</p>
-                        <p id="rfw-api-version" class="text-sm font-bold text-slate-700 mt-0.5">—</p>
-                    </div>
-                </div>
-
-                <!-- Rules table -->
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left min-w-[700px]">
-                        <thead class="bg-slate-50 text-[10px] text-slate-500 uppercase font-bold tracking-widest">
-                            <tr>
-                                <th class="px-4 py-3">ID</th>
-                                <th class="px-4 py-3">Priority</th>
-                                <th class="px-4 py-3">State</th>
-                                <th class="px-4 py-3">Direction</th>
-                                <th class="px-4 py-3">Protocol</th>
-                                <th class="px-4 py-3">Port</th>
-                                <th class="px-4 py-3">IP Range</th>
-                                <th class="px-4 py-3">Action</th>
-                                <th class="px-4 py-3 text-right pr-6"></th>
-                            </tr>
-                        </thead>
-                        <tbody id="rfw-rules-body" class="divide-y divide-slate-100 text-sm"></tbody>
-                    </table>
-                    <div id="rfw-rules-empty" class="hidden text-center py-8 text-slate-400 text-sm">No firewall rules.</div>
-                </div>
-
-                <!-- Create rule form -->
-                <div class="border-t border-slate-100 px-6 py-5">
-                    <h3 class="text-xs font-bold text-slate-600 uppercase tracking-widest mb-4 flex items-center gap-2">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/></svg>
-                        Add Rule
-                    </h3>
-                    <form id="rfw-create-form" onsubmit="rfwCreateRule(event)" class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-5 gap-3">
-                        <div>
-                            <label class="label">Priority</label>
-                            <input type="number" name="priority" value="100" min="0" class="input" required>
-                        </div>
-                        <div>
-                            <label class="label">Direction</label>
-                            <select name="direction" class="input" onchange="rfwOnDirectionChange(this.value)">
-                                <option value="in">in — Inbound</option>
-                                <option value="out">out — Outbound</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="label">Protocol</label>
-                            <select name="protocol" id="rfw-protocol" class="input">
-                                <option value="all">all</option>
-                                <option value="tcp">tcp</option>
-                                <option value="udp">udp</option>
-                                <option value="http">http</option>
-                                <option value="tls">tls</option>
-                                <option value="socks">socks (v4/v5)</option>
-                                <option value="ssh">ssh</option>
-                                <option value="fet">fet (encrypted)</option>
-                                <option value="wireguard">wireguard</option>
-                                <option value="openvpn">openvpn</option>
-                                <option value="quic">quic</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="label">Action</label>
-                            <select name="action" class="input">
-                                <option value="block">block</option>
-                                <option value="pass">pass</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="label">Enabled</label>
-                            <select name="enabled" class="input">
-                                <option value="true">Yes</option>
-                                <option value="false">No</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="label">Port Start</label>
-                            <input type="number" name="port_start" value="0" min="0" max="65535" class="input" required>
-                        </div>
-                        <div>
-                            <label class="label">Port End (opt.)</label>
-                            <input type="number" name="port_end" min="0" max="65535" class="input" placeholder="= start">
-                        </div>
-                        <div>
-                            <label class="label">IP Type</label>
-                            <select name="ip_type" class="input" onchange="rfwOnIpType(this.value)">
-                                <option value="any">any</option>
-                                <option value="cidr">cidr</option>
-                                <option value="geoip">geoip</option>
-                            </select>
-                        </div>
-                        <div id="rfw-cidr-field" class="hidden">
-                            <label class="label">CIDR</label>
-                            <input type="text" name="ip" class="input" placeholder="1.2.3.4/32">
-                        </div>
-                        <div id="rfw-geoip-field" class="hidden">
-                            <label class="label">Countries (comma-sep)</label>
-                            <input type="text" name="countries" class="input" placeholder="CN,US">
-                        </div>
-                        <div class="col-span-2 md:col-span-4 xl:col-span-5 flex items-center gap-3">
-                            <button type="submit" id="rfw-submit-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-lg transition-colors">+ Add Rule</button>
-                            <span id="rfw-form-msg" class="text-xs"></span>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </div>
-
-        <!-- Agent Config row -->
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-            <h2 class="font-bold text-slate-700 mb-5 uppercase text-xs tracking-widest flex items-center gap-2">
-                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
-                Agent Config
-            </h2>
-            <form id="configForm" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                <div class="space-y-3">
-                    <div>
-                        <label class="label">API Token</label>
-                        <input type="password" id="token" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm">
-                    </div>
-                    <div class="grid grid-cols-2 gap-3">
-                        <div>
-                            <label class="label">Monitor NIC</label>
-                            <select id="monitorNIC" class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500"></select>
-                        </div>
-                        <div>
-                            <label class="label">Monitor Disk</label>
-                            <select id="monitorDisk" class="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500"></select>
-                        </div>
-                    </div>
-                </div>
-                <div class="space-y-3">
-                    <div class="grid grid-cols-2 gap-3">
-                        <div>
-                            <label class="label">Max Port Forward (Per VM)</label>
-                            <input type="number" id="maxPortForward" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" min="1" max="1000">
-                        </div>
-                        <div>
-                            <label class="label">Max Conn IPs (Per VM, 0 = ∞)</label>
-                            <input type="number" id="maxForwardIPs" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" min="0" max="100000" placeholder="0 = unlimited">
-                        </div>
-                    </div>
-                    <div>
-                        <label class="label">Entry Host (optional, for DDNS)</label>
-                        <input type="text" id="entryHost" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="e.g. myserver.ddns.net — leave empty to use auto-detected IP">
-                    </div>
-                    <div>
-                        <label class="label">Traffic Reset Day (1-28)</label>
-                        <input type="number" id="trafficResetDay" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" min="1" max="28" value="1">
-                    </div>
-                    <div class="grid grid-cols-2 gap-3">
-                        <div>
-                            <label class="label">Web Username</label>
-                            <input type="text" id="webUser" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="e.g. admin">
-                        </div>
-                        <div>
-                            <label class="label">Web Password</label>
-                            <input type="password" id="webPass" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="Keep current">
-                        </div>
-                    </div>
-                </div>
-                <div class="flex flex-col justify-end pb-1">
-                    <div id="config-err" class="hidden text-red-500 text-xs bg-red-50 p-2 rounded mb-2"></div>
-                    <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 rounded-lg transition-colors text-xs uppercase tracking-widest">
-                        Save Configuration
-                    </button>
-                </div>
-                <div class="md:col-span-2 xl:col-span-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 pt-4 border-t border-slate-200">
-                    <div>
-                        <label class="label">Platform Address (gRPC)</label>
-                        <input type="text" id="platformAddr" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="hosting.fuckip.me:443">
-                        <label class="mt-2 flex items-center gap-2 text-xs text-slate-500 cursor-pointer">
-                            <input type="checkbox" id="platformInsecure" class="rounded border-slate-300">
-                            Skip TLS verification
-                        </label>
-                    </div>
-                    <div>
-                        <label class="label">Update Repo (owner/repo)</label>
-                        <input type="text" id="updateRepo" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="narwhal-cloud/runman-agent">
-                    </div>
-                    <div>
-                        <label class="label">Update Download Base</label>
-                        <input type="text" id="updateBase" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="empty = GitHub releases">
-                    </div>
-                    <div>
-                        <label class="label">Update API Base</label>
-                        <input type="text" id="updateApi" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="empty = api.github.com">
-                    </div>
-                </div>
-            </form>
-        </div>
-    </div>
+      </div>
+    </form>
+  </section>
 </main>
 
-<!-- ═══════════════════════════════════════════════════════════════════════════
-     MODALS
-═══════════════════════════════════════════════════════════════════════════ -->
-
-<!-- ─── Create VM ─────────────────────────────────────────────────────────── -->
-<div id="modal-create" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg">
-        <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
-            <h3 class="font-bold text-slate-800">Create Virtual Machine</h3>
-            <button onclick="closeModal('modal-create')" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
-        </div>
-        <form id="form-create" class="p-6 space-y-4">
-            <div>
-                <label class="label">OS Image</label>
-                <select id="c-image" class="input" required></select>
-            </div>
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="label">CPU Cores</label>
-                    <input type="number" id="c-cpu" class="input" min="1" value="1" required>
-                </div>
-                <div>
-                    <label class="label">RAM (MB)</label>
-                    <input type="number" id="c-ram" class="input" min="64" value="256" required>
-                </div>
-            </div>
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="label">Disk (GB)</label>
-                    <input type="number" id="c-disk" class="input" min="1" value="3" required>
-                </div>
-                <div>
-                    <label class="label">Bandwidth (Mbps, 0=∞)</label>
-                    <input type="number" id="c-bw" class="input" min="0" value="0">
-                </div>
-            </div>
-            <div>
-                <label class="label">Root Password</label>
-                <input type="text" id="c-pwd" class="input" required placeholder="initial root password">
-            </div>
-            <div>
-                <label class="label">VM ID (optional, auto if empty)</label>
-                <input type="text" id="c-vmid" class="input" placeholder="leave blank to auto-generate">
-            </div>
-            <div id="create-err" class="hidden text-red-500 text-xs bg-red-50 p-2 rounded"></div>
-            <div class="flex gap-3 pt-2">
-                <button type="button" onclick="closeModal('modal-create')" class="flex-1 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50">Cancel</button>
-                <button type="submit" class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold">Create</button>
-            </div>
-        </form>
+<!-- ── VM 详情抽屉 ─────────────────────────────────────────────────────────── -->
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" aria-hidden="true" aria-label="虚拟机详情">
+  <div class="drawer-head">
+    <div class="drawer-title-row">
+      <div style="min-width:0">
+        <div class="drawer-title truncate" id="dwName">—</div>
+        <div class="drawer-sub truncate" id="dwIp">—</div>
+      </div>
+      <span class="spacer"></span>
+      <span id="dwStatus"></span>
+      <button class="icon-btn" id="dwClose" title="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg>
+      </button>
     </div>
+    <div class="drawer-tabs" role="tablist" id="dwTabs">
+      <button class="tab" role="tab" data-dtab="monitor" aria-selected="true">监控</button>
+      <button class="tab" role="tab" data-dtab="ports" aria-selected="false">端口转发</button>
+      <button class="tab" role="tab" data-dtab="wg" aria-selected="false">WireGuard</button>
+      <button class="tab" role="tab" data-dtab="manage" aria-selected="false">管理</button>
+    </div>
+  </div>
+
+  <div class="drawer-body">
+    <!-- 监控 -->
+    <div class="dtab" id="dtab-monitor">
+      <div class="chart-card">
+        <div class="chart-head">
+          <span class="chart-title">CPU / 内存</span>
+          <span class="chart-legend">
+            <span><i style="background:var(--ink-0)"></i>CPU <b id="lgCpu">0%</b></span>
+            <span><i style="background:var(--blue)"></i>内存 <b id="lgMem">0%</b></span>
+          </span>
+        </div>
+        <div class="chart-box"><svg id="chartCpu" preserveAspectRatio="none"></svg></div>
+      </div>
+      <div class="chart-card mt-16">
+        <div class="chart-head">
+          <span class="chart-title">网络</span>
+          <span class="chart-legend">
+            <span><i style="background:var(--blue)"></i>RX <b id="lgRx">0</b></span>
+            <span><i style="background:var(--green)"></i>TX <b id="lgTx">0</b></span>
+          </span>
+        </div>
+        <div class="chart-box"><svg id="chartNet" preserveAspectRatio="none"></svg></div>
+      </div>
+      <div class="grid grid-3 mt-16" style="gap:12px">
+        <div class="card" style="border-radius:14px"><div class="card-body tight">
+          <div class="metric-label">CPU</div>
+          <div class="metric-value" style="margin-top:6px"><span class="num" style="font-size:20px" id="dwCpu">0</span><span class="unit">%</span></div>
+        </div></div>
+        <div class="card" style="border-radius:14px"><div class="card-body tight">
+          <div class="metric-label">内存</div>
+          <div class="metric-value" style="margin-top:6px"><span class="num" style="font-size:20px" id="dwRam">0</span><span class="unit" id="dwRamUnit">MB</span></div>
+        </div></div>
+        <div class="card" style="border-radius:14px"><div class="card-body tight">
+          <div class="metric-label">本月流量</div>
+          <div class="metric-value" style="margin-top:6px"><span class="num" style="font-size:20px" id="dwTraffic">0</span><span class="unit" id="dwTrafficUnit"></span></div>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- 端口转发 -->
+    <div class="dtab" id="dtab-ports" hidden>
+      <div class="card" style="border-radius:14px">
+        <div class="card-head">
+          <span class="card-title">新增规则</span>
+          <span class="card-note mono" id="pfSummary"></span>
+        </div>
+        <div class="card-body">
+          <div class="form-grid cols-3">
+            <div class="field">
+              <label>协议</label>
+              <select class="input" id="pfProto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+            </div>
+            <div class="field">
+              <label>宿主端口</label>
+              <input class="input tnum" type="number" id="pfHost" min="1" max="65535" placeholder="2222">
+            </div>
+            <div class="field">
+              <label>VM 端口</label>
+              <input class="input tnum" type="number" id="pfGuest" min="1" max="65535" placeholder="22">
+            </div>
+          </div>
+          <button class="btn btn-primary btn-block" style="margin-top:12px" id="pfAdd">添加转发</button>
+          <div class="err" id="pfErr" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <div class="card" style="border-radius:14px;margin-top:14px">
+        <div class="card-head">
+          <span class="card-title">连接来源限制</span>
+          <span class="card-note mono" id="ipLimitStatus"></span>
+        </div>
+        <div class="card-body">
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <input class="input tnum" type="number" id="ipLimitValue" min="0" max="100000" placeholder="使用全局" style="flex:1;min-width:120px">
+            <button class="btn btn-ghost" id="ipLimitSet">设置</button>
+            <button class="btn btn-quiet" id="ipLimitGlobal">用全局</button>
+          </div>
+          <div class="metric-meta" style="margin-top:10px">
+            <span>已在线的 IP 不受限；新 IP 在唯一 IP 数达到上限后被拒绝。</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="border-radius:14px;margin-top:14px">
+        <div class="card-head"><span class="card-title">转发规则</span></div>
+        <div id="pfList" style="padding:6px 8px"></div>
+        <div class="empty" id="pfEmpty" hidden style="padding:28px 20px">
+          <span class="empty-sub">还没有端口转发规则</span>
+        </div>
+        <div class="err" id="pfErr2" style="margin:0 16px 14px"></div>
+      </div>
+    </div>
+
+    <!-- WireGuard -->
+    <div class="dtab" id="dtab-wg" hidden>
+      <div class="note" style="margin-bottom:14px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+        <span>纯用户态 WireGuard：隧道地址收到的全部 TCP/UDP 按<strong>原端口</strong>转发到 VM 内网 IPv4，ping 由 Agent 应答。不加载内核模块、不改 iptables，<strong>仅入站</strong>。填 Endpoint = 主动连对端；留空 = 被动等待，需指定 Listen Port。</span>
+      </div>
+
+      <div class="card" style="border-radius:14px">
+        <div class="card-head">
+          <span class="card-title" id="wgFormTitle">新增绑定</span>
+          <button class="btn btn-quiet btn-sm" id="wgCancelEdit" hidden>取消编辑</button>
+        </div>
+        <div class="card-body form-grid">
+          <div class="form-grid cols-2">
+            <div class="field"><label>名称</label><input class="input" id="wgName" placeholder="tunnel-hk"></div>
+            <div class="field"><label>隧道地址 *</label><input class="input mono" id="wgAddress" placeholder="10.7.0.5 或 2001:db8::5"></div>
+          </div>
+          <div class="field">
+            <label>私钥 * <span class="hint" id="wgKeyHint"></span></label>
+            <div class="row" style="gap:8px">
+              <input class="input mono" id="wgPriv" placeholder="base64, 44 chars" style="flex:1">
+              <button type="button" class="btn btn-ghost" id="wgGenKey">生成</button>
+            </div>
+            <p class="mono small" id="wgPubHint" style="display:none;color:var(--green-ink);word-break:break-all"></p>
+          </div>
+          <div class="field"><label>对端公钥 *</label><input class="input mono" id="wgPeer" placeholder="服务商提供的 PublicKey"></div>
+          <div class="form-grid cols-2">
+            <div class="field"><label>Endpoint</label><input class="input mono" id="wgEndpoint" placeholder="1.2.3.4:51820"></div>
+            <div class="field"><label>Listen Port</label><input class="input tnum" type="number" id="wgPort" min="0" max="65535" placeholder="0 = 随机"></div>
+          </div>
+          <details>
+            <summary class="small muted" style="cursor:pointer;font-weight:600">高级</summary>
+            <div class="form-grid" style="margin-top:12px">
+              <div class="field"><label>Preshared Key</label><input class="input mono" id="wgPsk" placeholder="可选"></div>
+              <div class="field"><label>Allowed IPs</label><input class="input mono" id="wgAllowed" placeholder="0.0.0.0/0, ::/0"></div>
+              <div class="form-grid cols-2">
+                <div class="field"><label>MTU</label><input class="input tnum" type="number" id="wgMtu" min="576" max="9000" placeholder="1420"></div>
+                <div class="field"><label>Keepalive (s)</label><input class="input tnum" type="number" id="wgKeepalive" min="0" max="65535" placeholder="留空 = 25"></div>
+              </div>
+            </div>
+          </details>
+          <label class="check"><input type="checkbox" id="wgEnabled" checked> 启用</label>
+          <button class="btn btn-primary btn-block" id="wgSubmit">添加绑定</button>
+          <div class="err" id="wgErr"></div>
+        </div>
+      </div>
+
+      <div class="card" style="border-radius:14px;margin-top:14px">
+        <div class="card-head">
+          <span class="card-title">绑定</span>
+          <span class="card-note mono" id="wgSummary"></span>
+        </div>
+        <div id="wgList" style="padding:6px 8px"></div>
+        <div class="empty" id="wgEmpty" hidden style="padding:28px 20px"><span class="empty-sub">还没有 WireGuard 绑定</span></div>
+      </div>
+    </div>
+
+    <!-- 管理 -->
+    <div class="dtab" id="dtab-manage" hidden>
+      <div class="card" style="border-radius:14px">
+        <div class="card-head"><span class="card-title">电源</span></div>
+        <div class="card-body row" style="gap:8px;flex-wrap:wrap">
+          <button class="btn btn-ghost" id="mgStart">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-play"/></svg>
+            启动
+          </button>
+          <button class="btn btn-ghost" id="mgStop">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-stop"/></svg>
+            停止
+          </button>
+          <button class="btn btn-ghost" id="mgRestart">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
+            重启
+          </button>
+          <button class="btn btn-ghost" id="mgConsole">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-terminal"/></svg>
+            打开控制台
+          </button>
+        </div>
+      </div>
+
+      <div class="card" style="border-radius:14px;margin-top:14px">
+        <div class="card-head"><span class="card-title">重置 root 密码</span></div>
+        <div class="card-body">
+          <div class="row" style="gap:8px">
+            <input class="input mono" id="mgPwd" placeholder="新密码" style="flex:1">
+            <button class="btn btn-ghost" id="mgPwdBtn">重置</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="border-radius:14px;margin-top:14px">
+        <div class="card-head"><span class="card-title">重装系统</span></div>
+        <div class="card-body form-grid cols-2">
+          <div class="field"><label>镜像</label><select class="input" id="mgImage"></select></div>
+          <div class="field"><label>root 密码</label><input class="input mono" id="mgRePwd" placeholder="新密码"></div>
+          <button class="btn btn-ghost span-2" id="mgReinstall">重装（会清空数据）</button>
+        </div>
+      </div>
+
+      <div class="danger-zone" style="margin-top:14px">
+        <div class="dz-title">危险操作</div>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <button class="btn btn-ghost" id="mgResetTraffic">重置流量统计</button>
+          <button class="btn btn-danger-soft" id="mgDelete">删除虚拟机</button>
+        </div>
+        <div class="err" id="mgErr"></div>
+      </div>
+    </div>
+  </div>
+</aside>
+
+<!-- ── 弹窗：创建虚拟机 ────────────────────────────────────────────────────── -->
+<div class="modal" id="modalCreate" hidden>
+  <div class="modal-scrim" data-close="modalCreate"></div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="createTitle">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title" id="createTitle">创建虚拟机</div>
+        <div class="modal-sub">创建后自动生成一条 SSH 端口转发</div>
+      </div>
+      <button class="icon-btn" data-close="modalCreate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg></button>
+    </div>
+    <form id="formCreate">
+      <div class="modal-body">
+        <div class="field"><label>系统镜像</label><select class="input" id="cImage" required></select></div>
+        <div class="form-grid cols-2">
+          <div class="field"><label>CPU 核数</label><input class="input tnum" type="number" id="cCpu" min="1" max="64" value="1" required></div>
+          <div class="field"><label>内存 (MB)</label><input class="input tnum" type="number" id="cRam" min="64" value="512" required></div>
+        </div>
+        <div class="form-grid cols-2">
+          <div class="field"><label>磁盘 (GB)</label><input class="input tnum" type="number" id="cDisk" min="1" value="5" required></div>
+          <div class="field"><label>带宽 (Mbps) <span class="hint">0 = 不限</span></label><input class="input tnum" type="number" id="cBw" min="0" value="0"></div>
+        </div>
+        <div class="field"><label>root 密码</label><input class="input mono" id="cPwd" placeholder="初始密码" required></div>
+        <div class="field"><label>虚拟机 ID <span class="hint">留空自动生成</span></label><input class="input mono" id="cVmid" placeholder="可选"></div>
+        <div class="err" id="createErr"></div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-quiet" data-close="modalCreate">取消</button>
+        <button type="submit" class="btn btn-primary" id="createSubmit">创建</button>
+      </div>
+    </form>
+  </div>
 </div>
 
-<!-- ─── Manage VM ─────────────────────────────────────────────────────────── -->
-<div id="modal-manage" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg">
-        <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
-            <div>
-                <h3 class="font-bold text-slate-800">Manage VM</h3>
-                <p id="manage-vmid" class="text-xs text-slate-400 font-mono mt-0.5"></p>
-            </div>
-            <button onclick="closeModal('modal-manage')" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
-        </div>
-        <div class="p-6 space-y-5">
-            <!-- Reset password -->
-            <div>
-                <h4 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">Reset Root Password</h4>
-                <div class="flex gap-2">
-                    <input type="text" id="u-pwd" class="input flex-1" placeholder="new password">
-                    <button onclick="doResetPwd()" class="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-lg">Reset</button>
-                </div>
-            </div>
-            <hr class="border-slate-100">
-            <!-- Reinstall -->
-            <div>
-                <h4 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">Reinstall OS</h4>
-                <div class="grid grid-cols-2 gap-3">
-                    <div>
-                        <label class="label">OS Image</label>
-                        <select id="r-image" class="input"></select>
-                    </div>
-                    <div>
-                        <label class="label">Root Password</label>
-                        <input type="text" id="r-pwd" class="input" placeholder="new password">
-                    </div>
-                </div>
-                <button onclick="doReinstall()" class="mt-3 w-full py-2 bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold rounded-lg">Reinstall (destructive)</button>
-            </div>
-            <hr class="border-slate-100">
-            <!-- Danger zone -->
-            <div>
-                <h4 class="text-xs font-bold text-red-400 uppercase tracking-widest mb-3">Danger Zone</h4>
-                <div class="grid grid-cols-2 gap-3 mb-3">
-                    <button onclick="doStop(false)" class="py-2 bg-yellow-500 hover:bg-yellow-600 text-white text-xs font-bold rounded-lg border border-yellow-600">Stop</button>
-                    <button onclick="doStop(true)" class="py-2 bg-red-400 hover:bg-red-500 text-white text-xs font-bold rounded-lg border border-red-500">Force Stop</button>
-                </div>
-                <div class="grid grid-cols-2 gap-3">
-                    <button onclick="doResetTraffic()" class="py-2 bg-rose-100 text-rose-700 hover:bg-rose-200 text-xs font-bold rounded-lg border border-rose-200">Reset Traffic</button>
-                    <button onclick="doDelete()" class="py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg border border-red-700">Delete VM</button>
-                </div>
-            </div>
-            <div id="manage-err" class="hidden text-red-500 text-xs bg-red-50 p-2 rounded"></div>
-        </div>
+<!-- ── 弹窗：OS 镜像配置 ───────────────────────────────────────────────────── -->
+<div class="modal" id="modalImages" hidden>
+  <div class="modal-scrim" data-close="modalImages"></div>
+  <div class="modal-card wide" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title">系统镜像</div>
+        <div class="modal-sub">勾选启用的镜像，并调整在创建列表中的顺序</div>
+      </div>
+      <button class="icon-btn" data-close="modalImages"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg></button>
     </div>
+    <div class="modal-body">
+      <div id="imagesList" class="grid" style="gap:2px"></div>
+      <div id="customImagesWrap" hidden>
+        <div class="divider"></div>
+        <div class="row between" style="margin-bottom:8px">
+          <span class="card-title">自定义镜像</span>
+          <span class="card-note">需内含 init/sshd/bash，后台拉取</span>
+        </div>
+        <div id="customImagesList" class="grid" style="gap:2px"></div>
+        <div class="form-grid cols-2" style="margin-top:10px">
+          <input class="input mono" id="ciRef" placeholder="docker.io/user/image:tag">
+          <div class="row" style="gap:8px">
+            <input class="input" id="ciName" placeholder="显示名称（可选）">
+            <button type="button" class="btn btn-ghost" id="ciAdd">添加</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-quiet" data-close="modalImages">取消</button>
+      <button class="btn btn-primary" id="imagesSave">保存</button>
+    </div>
+  </div>
 </div>
 
-<!-- ─── Port Forwards ─────────────────────────────────────────────────────── -->
-<div id="modal-ports" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl">
-        <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-            <div>
-                <div class="flex items-center gap-2">
-                    <h3 class="font-bold text-slate-800">Port Forwards</h3>
-                    <span id="pf-live-dot" class="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                        <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full pulse"></span> LIVE
-                    </span>
-                </div>
-                <p id="ports-vmid" class="text-xs text-slate-400 font-mono mt-0.5"></p>
-            </div>
-            <button onclick="closePortFwdsModal()" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
-        </div>
-        <div class="p-6 space-y-4">
-            <!-- Add rule -->
-            <div class="bg-slate-50 rounded-xl p-4 space-y-3">
-                <p class="text-xs font-bold text-slate-500 uppercase tracking-widest">Add Rule</p>
-                <div class="grid grid-cols-3 gap-3">
-                    <div>
-                        <label class="label">Protocol</label>
-                        <select id="pf-proto" class="input">
-                            <option value="tcp">TCP</option>
-                            <option value="udp">UDP</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="label">Host Port</label>
-                        <input type="number" id="pf-hport" class="input" min="1" max="65535" placeholder="2222">
-                    </div>
-                    <div>
-                        <label class="label">VM Port</label>
-                        <input type="number" id="pf-gport" class="input" min="1" max="65535" placeholder="22">
-                    </div>
-                </div>
-                <button onclick="doAddPortFwd()" class="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg">Add Forward Rule</button>
-            </div>
-            <!-- Unique IP limit -->
-            <div class="bg-slate-50 rounded-xl p-4 space-y-3">
-                <div class="flex items-center justify-between">
-                    <p class="text-xs font-bold text-slate-500 uppercase tracking-widest">Connection IP Limit</p>
-                    <span id="iplimit-status" class="text-[10px] font-mono text-slate-400"></span>
-                </div>
-                <div class="flex items-end gap-3">
-                    <div class="flex-1">
-                        <label class="label">Max Unique IPs (empty = global, 0 = unlimited)</label>
-                        <input type="number" id="iplimit-value" class="input" min="0" max="100000" placeholder="use global">
-                    </div>
-                    <button onclick="doSetIPLimit(false)" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg">Set</button>
-                    <button onclick="doSetIPLimit(true)" class="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-600 text-xs font-bold rounded-lg">Use Global</button>
-                </div>
-                <p class="text-[10px] text-slate-400">New connections from an IP already connected are always allowed; connections from a new IP are rejected once the unique-IP count reaches the limit.</p>
-            </div>
-            <!-- List -->
-            <div>
-                <div class="flex items-center justify-between mb-2">
-                    <p class="text-xs font-bold text-slate-500 uppercase tracking-widest">Active Rules</p>
-                    <div id="pf-summary" class="hidden text-[10px] font-mono text-slate-400"></div>
-                </div>
-                <div id="pf-list" class="space-y-2 max-h-[420px] overflow-y-auto"></div>
-                <div id="pf-empty" class="hidden text-center text-slate-400 text-xs py-4">No port forward rules.</div>
-            </div>
-            <div id="ports-err" class="hidden text-red-500 text-xs bg-red-50 p-2 rounded"></div>
-        </div>
+<!-- ── 弹窗：新建防火墙规则 ────────────────────────────────────────────────── -->
+<div class="modal" id="modalRule" hidden>
+  <div class="modal-scrim" data-close="modalRule"></div>
+  <div class="modal-card wide" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title">新建防火墙规则</div>
+        <div class="modal-sub">按优先级从小到大匹配</div>
+      </div>
+      <button class="icon-btn" data-close="modalRule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg></button>
     </div>
+    <form id="formRule">
+      <div class="modal-body">
+        <div class="form-grid cols-3">
+          <div class="field"><label>优先级</label><input class="input tnum" type="number" name="priority" value="100" min="0" required></div>
+          <div class="field"><label>方向</label>
+            <select class="input" name="direction" id="rDirection"><option value="in">入站</option><option value="out">出站</option></select>
+          </div>
+          <div class="field"><label>动作</label>
+            <select class="input" name="action"><option value="block">block</option><option value="pass">pass</option></select>
+          </div>
+        </div>
+        <div class="form-grid cols-2">
+          <div class="field"><label>协议</label>
+            <select class="input" name="protocol" id="rProtocol">
+              <option value="all">all</option><option value="tcp">tcp</option><option value="udp">udp</option>
+              <option value="http">http</option><option value="tls">tls</option><option value="socks">socks</option>
+              <option value="ssh">ssh</option><option value="fet">fet</option><option value="wireguard">wireguard</option>
+              <option value="openvpn">openvpn</option><option value="quic">quic</option>
+            </select>
+          </div>
+          <div class="field"><label>启用</label>
+            <select class="input" name="enabled"><option value="true">是</option><option value="false">否</option></select>
+          </div>
+        </div>
+        <div class="form-grid cols-2">
+          <div class="field"><label>起始端口</label><input class="input tnum" type="number" name="port_start" value="0" min="0" max="65535" required></div>
+          <div class="field"><label>结束端口 <span class="hint">留空 = 等于起始</span></label><input class="input tnum" type="number" name="port_end" min="0" max="65535" placeholder="= 起始"></div>
+        </div>
+        <div class="form-grid cols-2">
+          <div class="field"><label>来源类型</label>
+            <select class="input" name="ip_type" id="rIpType"><option value="any">any</option><option value="cidr">cidr</option><option value="geoip">geoip</option></select>
+          </div>
+          <div class="field" id="rCidrField" hidden><label>CIDR</label><input class="input mono" name="ip" placeholder="1.2.3.4/32"></div>
+          <div class="field" id="rGeoField" hidden><label>国家代码 <span class="hint">逗号分隔</span></label><input class="input mono" name="countries" placeholder="CN,US"></div>
+        </div>
+        <div class="err" id="ruleErr"></div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-quiet" data-close="modalRule">取消</button>
+        <button type="submit" class="btn btn-primary" id="ruleSubmit">创建规则</button>
+      </div>
+    </form>
+  </div>
 </div>
 
-<!-- ─── WireGuard Bindings ────────────────────────────────────────────────── -->
-<div id="modal-wg" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col">
-        <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
-            <div>
-                <div class="flex items-center gap-2">
-                    <h3 class="font-bold text-slate-800">WireGuard Bindings</h3>
-                    <span class="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                        <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full pulse"></span> LIVE
-                    </span>
-                </div>
-                <p id="wg-vmid" class="text-xs text-slate-400 font-mono mt-0.5"></p>
-            </div>
-            <button onclick="closeWGModal()" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
-        </div>
-
-        <div class="p-6 space-y-4 overflow-y-auto">
-            <p class="text-[11px] text-slate-500 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
-                纯用户态 WireGuard。隧道地址（IPv4 或 IPv6）上收到的<b>全部 TCP/UDP 流量按原端口</b>转发到该 VM 的内网 IPv4；
-                发往隧道地址的 ping 由 Agent 直接应答。不加载内核 wg 模块、不改 iptables。
-                <b>仅入站方向</b>——VM 主动发出的连接仍走母鸡默认出口。<br>
-                填了 <b>Endpoint</b> = 由本机主动连对端（keepalive 默认 25s，握手靠它发起，别设成 0）；
-                留空 = 被动等对端连入，此时必须指定 Listen Port。
-            </p>
-
-            <!-- Add / Edit -->
-            <div class="bg-slate-50 rounded-xl p-4 space-y-3">
-                <div class="flex items-center justify-between">
-                    <p id="wg-form-title" class="text-xs font-bold text-slate-500 uppercase tracking-widest">Add Binding</p>
-                    <button id="wg-cancel-edit" onclick="wgResetForm()" class="hidden text-[10px] font-bold text-slate-500 hover:text-slate-700 underline">cancel edit</button>
-                </div>
-
-                <div class="grid grid-cols-2 gap-3">
-                    <div>
-                        <label class="label">Name</label>
-                        <input type="text" id="wg-name" class="input" placeholder="tunnel-hk">
-                    </div>
-                    <div>
-                        <label class="label">Tunnel Address *</label>
-                        <input type="text" id="wg-address" class="input" placeholder="10.7.0.5 或 2001:db8::5">
-                    </div>
-                </div>
-
-                <div>
-                    <label class="label">Private Key * <span id="wg-key-hint" class="text-slate-400 normal-case font-normal"></span></label>
-                    <div class="flex gap-2">
-                        <input type="text" id="wg-privkey" class="input font-mono text-[11px]" placeholder="base64, 44 chars">
-                        <button onclick="wgGenerateKey()" class="px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-600 text-xs font-bold rounded-lg whitespace-nowrap">Generate</button>
-                    </div>
-                    <p id="wg-pubkey-hint" class="hidden mt-1 text-[10px] font-mono text-emerald-700 bg-emerald-50 border border-emerald-100 rounded px-2 py-1 break-all"></p>
-                </div>
-
-                <div>
-                    <label class="label">Peer Public Key *</label>
-                    <input type="text" id="wg-peerkey" class="input font-mono text-[11px]" placeholder="对端（服务商）的公钥">
-                </div>
-
-                <div class="grid grid-cols-2 gap-3">
-                    <div>
-                        <label class="label">Endpoint</label>
-                        <input type="text" id="wg-endpoint" class="input" placeholder="1.2.3.4:51820（留空=被动等待）">
-                    </div>
-                    <div>
-                        <label class="label">Listen Port</label>
-                        <input type="number" id="wg-listenport" class="input" min="0" max="65535" placeholder="0 = 随机">
-                    </div>
-                </div>
-
-                <details class="text-xs">
-                    <summary class="cursor-pointer text-slate-500 font-bold select-none">Advanced</summary>
-                    <div class="mt-3 space-y-3">
-                        <div>
-                            <label class="label">Preshared Key</label>
-                            <input type="text" id="wg-psk" class="input font-mono text-[11px]" placeholder="可选">
-                        </div>
-                        <div>
-                            <label class="label">Allowed IPs</label>
-                            <input type="text" id="wg-allowedips" class="input font-mono text-[11px]" placeholder="0.0.0.0/0, ::/0">
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="label">MTU</label>
-                                <input type="number" id="wg-mtu" class="input" min="576" max="9000" placeholder="1420">
-                            </div>
-                            <div>
-                                <label class="label">Persistent Keepalive (s)</label>
-                                <input type="number" id="wg-keepalive" class="input" min="0" max="65535" placeholder="留空 = 25">
-                            </div>
-                        </div>
-                    </div>
-                </details>
-
-                <label class="flex items-center gap-2 text-xs text-slate-600 font-bold">
-                    <input type="checkbox" id="wg-enabled" checked class="rounded"> Enabled
-                </label>
-
-                <button id="wg-submit" onclick="doSaveWG()" class="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg">Add Binding</button>
-            </div>
-
-            <!-- List -->
-            <div>
-                <div class="flex items-center justify-between mb-2">
-                    <p class="text-xs font-bold text-slate-500 uppercase tracking-widest">Bindings</p>
-                    <div id="wg-summary" class="hidden text-[10px] font-mono text-slate-400"></div>
-                </div>
-                <div id="wg-list" class="space-y-2"></div>
-                <div id="wg-empty" class="hidden text-center text-slate-400 text-xs py-4">No WireGuard bindings.</div>
-            </div>
-
-            <div id="wg-err" class="hidden text-red-500 text-xs bg-red-50 p-2 rounded whitespace-pre-wrap"></div>
-        </div>
+<!-- ── 弹窗：版本 ──────────────────────────────────────────────────────────── -->
+<div class="modal" id="modalVersion" hidden>
+  <div class="modal-scrim" data-close="modalVersion"></div>
+  <div class="modal-card" role="dialog" aria-modal="true" style="max-width:480px">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title">版本</div>
+        <div class="modal-sub">Agent 自更新</div>
+      </div>
+      <button class="icon-btn" data-close="modalVersion"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg></button>
     </div>
+    <div class="modal-body">
+      <div class="row between" style="padding:14px 16px;border-radius:14px;background:var(--fill)">
+        <div>
+          <div class="metric-label">当前版本</div>
+          <div class="mono" style="font-size:19px;font-weight:600;margin-top:4px" id="verCurrent">—</div>
+        </div>
+        <span class="badge badge-quiet" id="verState"><span class="dot"></span>未知</span>
+      </div>
+      <div id="verUpdate" hidden>
+        <div class="note" style="background:var(--amber-soft);color:var(--amber-ink)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-warn"/></svg>
+          <span>发现新版本 <b id="verLatest" class="mono"></b>，升级后服务会自动重启。</span>
+        </div>
+        <button class="btn btn-primary btn-block" style="margin-top:10px" id="verUpgrade">立即升级</button>
+        <div class="small muted" id="verUpgradeNote" style="margin-top:8px;text-align:center" hidden></div>
+      </div>
+      <button class="btn btn-ghost btn-block" id="verCheck">检查更新</button>
+      <div class="err" id="verErr"></div>
+    </div>
+  </div>
 </div>
 
-<!-- ─── Console Terminal ───────────────────────────────────────────────────── -->
-<div id="modal-console" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
-    <div id="console-window" class="bg-gray-950 rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden relative" style="height:70vh; min-height: 300px; min-width: 400px; resize: both;">
-        <div class="px-5 py-3 border-b border-gray-800 flex justify-between items-center shrink-0" id="console-header">
-            <div class="flex items-center gap-3">
-                <div class="flex gap-1.5">
-                    <span class="w-3 h-3 bg-red-500 rounded-full cursor-pointer hover:bg-red-600" onclick="closeConsole()"></span>
-                    <span class="w-3 h-3 bg-yellow-500 rounded-full cursor-pointer hover:bg-yellow-600" onclick="toggleConsoleMaximize()"></span>
-                    <span class="w-3 h-3 bg-green-500 rounded-full cursor-pointer hover:bg-green-600" onclick="toggleConsoleMaximize()"></span>
-                </div>
-                <span class="text-gray-400 text-xs font-mono" id="console-title">console</span>
-            </div>
-            <div class="flex items-center gap-4">
-                <button onclick="toggleConsoleMaximize()" class="text-gray-500 hover:text-gray-300 transition-colors" title="Toggle Fullscreen">
-                    <svg id="maximize-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"/></svg>
-                </button>
-                <button onclick="closeConsole()" class="text-gray-500 hover:text-gray-300 text-xl leading-none">&times;</button>
-            </div>
-        </div>
-        <div id="terminal-container" class="flex-1 overflow-hidden bg-black"></div>
-        <!-- Resize handle for better visibility -->
-        <div class="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize z-10 opacity-30 hover:opacity-100 transition-opacity pointer-events-none">
-            <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M21 15L15 21M21 8L8 21"/></svg>
-        </div>
+<!-- ── 控制台 ──────────────────────────────────────────────────────────────── -->
+<div class="console" id="console" hidden>
+  <div class="modal-scrim" data-close="console"></div>
+  <div class="console-window" id="consoleWindow">
+    <div class="console-bar">
+      <div class="lights">
+        <span class="light r" id="cwClose"></span>
+        <span class="light y" id="cwMin"></span>
+        <span class="light g" id="cwMax"></span>
+      </div>
+      <span class="title" id="consoleTitle">console</span>
+      <div class="right">
+        <button class="icon-btn" id="cwFull" title="最大化">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+        </button>
+      </div>
     </div>
+    <div class="term-host" id="termHost"></div>
+  </div>
 </div>
 
-<!-- ─── Version Management Modal ──────────────────────────────────────────────── -->
-<div id="modal-version" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-        <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-            <h3 class="font-bold text-slate-800">System Version</h3>
-            <button onclick="closeModal('modal-version')" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
-        </div>
-        <div class="p-6 space-y-6">
-            <!-- Current Version -->
-            <div class="bg-slate-50 rounded-xl p-4">
-                <p class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Current Version</p>
-                <div class="flex items-center justify-between">
-                    <span id="current-version" class="text-2xl font-bold text-indigo-600">-</span>
-                    <span id="version-status" class="text-xs font-bold uppercase px-2 py-1 rounded bg-green-100 text-green-700">Latest</span>
-                </div>
-            </div>
-
-            <!-- Update Check Result -->
-            <div id="update-section" class="hidden">
-                <div class="border-t border-slate-100 pt-4">
-                    <p class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">Available Update</p>
-                    <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3">
-                        <div>
-                            <p class="text-[10px] text-slate-400 uppercase tracking-widest">Latest Version</p>
-                            <p id="latest-version" class="text-xl font-bold text-amber-600">-</p>
-                        </div>
-                        <button onclick="doUpgrade()" id="upgrade-btn" class="w-full py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg text-sm transition-colors uppercase tracking-widest">
-                            Upgrade Now
-                        </button>
-                        <p id="upgrade-status" class="text-[10px] text-slate-400 text-center hidden"></p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Check Button -->
-            <div id="check-section">
-                <button onclick="checkForUpdates()" id="check-btn" class="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-sm transition-colors uppercase tracking-widest">
-                    Check for Updates
-                </button>
-            </div>
-
-            <!-- Error Message -->
-            <div id="version-err" class="hidden text-red-500 text-xs bg-red-50 p-3 rounded"></div>
-        </div>
-    </div>
+<div class="savebar" id="savebar">
+  <span class="msg">有<b>未保存</b>的改动</span>
+  <button class="btn btn-quiet btn-sm" id="savebarReset">放弃</button>
+  <button class="btn btn-primary btn-sm" id="savebarSave">保存</button>
 </div>
 
-<!-- ─── Monitor Dashboard Modal ─────────────────────────────────────────────── -->
-<div id="modal-monitor" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden relative" style="height: 75vh;">
-        <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
-            <div>
-                <h3 class="font-bold text-slate-800">Realtime Metrics</h3>
-                <p id="monitor-vmid" class="text-xs text-slate-400 font-mono mt-0.5"></p>
-            </div>
-            <button onclick="closeMonitor();" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
-        </div>
-        <div class="p-6 space-y-6 overflow-y-auto flex-1">
-            <!-- CPU & RAM -->
-            <div class="bg-white border text-sm border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                <div class="px-4 py-2 border-b border-slate-100 bg-slate-50 flex gap-4 font-bold text-xs text-slate-500 uppercase tracking-widest">
-                    <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span> CPU %</span>
-                    <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span> RAM %</span>
-                </div>
-                <div class="p-5 h-56 relative bg-slate-50/50">
-                    <svg id="monitor-cpu-ram" class="w-full h-full overflow-visible" preserveAspectRatio="none"></svg>
-                </div>
-            </div>
-            <!-- Network -->
-            <div class="bg-white border text-sm border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                <div class="px-4 py-2 border-b border-slate-100 bg-slate-50 flex gap-4 font-bold text-xs text-slate-500 uppercase tracking-widest">
-                    <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-sky-500"></span> RX Mbps</span>
-                    <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-purple-500"></span> TX Mbps</span>
-                </div>
-                <div class="p-5 h-56 relative bg-slate-50/50">
-                    <svg id="monitor-net" class="w-full h-full overflow-visible" preserveAspectRatio="none"></svg>
-                </div>
-            </div>
-            <div id="monitor-err" class="hidden text-red-500 text-xs bg-red-50 p-2 rounded"></div>
-        </div>
-    </div>
-    <!-- Shared Tooltip -->
-    <div id="monitor-tooltip" class="absolute hidden z-[60] pointer-events-none bg-slate-900/90 text-white p-2 rounded-lg text-[10px] font-mono shadow-xl border border-slate-700 backdrop-blur-sm"></div>
-</div>
-
-<!-- ─── OS Images Config Modal ──────────────────────────────────────────────── -->
-<div id="modal-images-config" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden relative">
-        <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
-            <div>
-                <h3 class="font-bold text-slate-800">OS Images Configuration</h3>
-                <p class="text-xs text-slate-400 mt-0.5">Toggle active OS and adjust their order in list.</p>
-            </div>
-            <button onclick="closeModal('modal-images-config')" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
-        </div>
-        <div class="max-h-[60vh] overflow-y-auto">
-            <div class="p-6 space-y-4" id="images-config-list">
-                <!-- Rendered dynamically -->
-            </div>
-            <!-- Custom Images (Podman only) -->
-            <div id="custom-images-section" class="px-6 pb-6 hidden">
-                <div class="border-t border-slate-100 pt-4">
-                    <h4 class="text-sm font-bold text-slate-800">Custom Images</h4>
-                    <p class="text-[11px] text-slate-400 mt-0.5 mb-3">Image must include an init system (systemd/openrc), sshd with autostart, and bash. Pulled in background before becoming available.</p>
-                    <div id="custom-images-list" class="space-y-2 mb-3"></div>
-                    <input id="ci-ref" class="input mb-2" placeholder="docker.io/user/image:tag">
-                    <div class="flex gap-2">
-                        <input id="ci-name" class="input flex-1" placeholder="Display name (optional)">
-                        <button type="button" onclick="addCustomImage()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold transition-colors shrink-0">Add</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div class="px-6 py-4 bg-slate-50 border-t border-slate-100 flex gap-3 shrink-0">
-            <button type="button" onclick="closeModal('modal-images-config')" class="flex-1 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50">Cancel</button>
-            <button type="button" onclick="saveImagesConfig()" class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold transition-colors">Save Changes</button>
-        </div>
-    </div>
-</div>
-
-<!-- ─── Shared style for form labels / inputs ─────────────────────────────── -->
-<style>
-    .label { display:block; font-size:.625rem; font-weight:700; color:#94a3b8; text-transform:uppercase; letter-spacing:.08em; margin-bottom:.25rem; }
-    .input { width:100%; padding:.5rem .75rem; border:1px solid #e2e8f0; border-radius:.5rem; font-size:.875rem; outline:none; }
-    .input:focus { ring: 2px; border-color:#6366f1; box-shadow:0 0 0 2px rgba(99,102,241,.2); }
-    select.input { background-color:#fff; }
-    .btn-action { display:inline-flex; align-items:center; justify-content:center; width:1.75rem; height:1.75rem; border-radius:.375rem; font-size:.75rem; transition:background-color .15s; cursor:pointer; }
-    .btn-txt { display:inline-flex; align-items:center; gap:0.2rem; padding:0.2rem 0.45rem; border-radius:.375rem; font-size:.65rem; font-weight:700; letter-spacing:.02em; transition:background-color .15s; cursor:pointer; white-space:nowrap; }
-</style>
-
-<script>
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-const $ = id => document.getElementById(id);
-
-function formatBytes(b, d=1) {
-    if (!b) return '0 B';
-    const k=1024, s=['B','KB','MB','GB','TB'], i=Math.floor(Math.log(b)/Math.log(k));
-    return (b/k**i).toFixed(d)+' '+s[i];
-}
-function formatBps(b) {
-    if (!b) return '0 bps';
-    const k=1000, s=['bps','Kbps','Mbps','Gbps'], i=Math.floor(Math.log(b)/Math.log(k));
-    return (b/k**i).toFixed(1)+' '+s[i];
-}
-function bpsToMbps(v) {
-    return (Number(v||0) * 8) / 1000 / 1000;
-}
-function formatUptime(s) {
-    const d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), m=Math.floor((s%3600)/60);
-    if(d>0) return d+'d '+h+'h';
-    if(h>0) return h+'h '+m+'m';
-    return m+'m';
-}
-function vmStatusLabel(s) {
-    const map = {1:['CREATING','bg-amber-100 text-amber-700'],2:['RUNNING','bg-green-100 text-green-700'],3:['STOPPED','bg-slate-100 text-slate-500'],6:['ERROR','bg-red-100 text-red-600']};
-    const [label,cls] = map[s] || ['UNKNOWN','bg-slate-100 text-slate-400'];
-    return `<span class="px-2 py-0.5 rounded-full text-[9px] font-black tracking-widest uppercase ${cls}">${label}</span>`;
-}
-
-function showErr(id, msg) { $(id).textContent=msg; $(id).classList.remove('hidden'); }
-function hideErr(id) { $(id).classList.add('hidden'); }
-
-// ─── Button state management ──────────────────────────────────────────
-const buttonStates = new Map();
-
-function setButtonLoading(btn, loading) {
-    if (!btn) return;
-    if (loading) {
-        buttonStates.set(btn, { disabled: btn.disabled, innerText: btn.innerText });
-        btn.disabled = true;
-        btn.style.opacity = '0.6';
-        btn.style.cursor = 'not-allowed';
-    } else {
-        const state = buttonStates.get(btn);
-        if (state) {
-            btn.disabled = state.disabled;
-            btn.innerText = state.innerText;
-            btn.style.opacity = '';
-            btn.style.cursor = '';
-            buttonStates.delete(btn);
-        }
-    }
-}
-
-function disableAllButtons(disabled) {
-    document.querySelectorAll('button').forEach(btn => {
-        if (disabled) {
-            setButtonLoading(btn, true);
-        } else {
-            setButtonLoading(btn, false);
-        }
-    });
-}
-
-async function api(method, path, body) {
-    const opts = { method, headers: {'Content-Type':'application/json'} };
-    if (body) opts.body = JSON.stringify(body);
-    const res = await fetch(path, opts);
-    if (!res.ok) throw new Error(await res.text());
-    if (res.status === 204) return null;
-    return res.json().catch(()=>null);
-}
-
-function openModal(id) { $(id).classList.remove('hidden'); }
-function closeModal(id) { $(id).classList.add('hidden'); }
-
-// ─── State ────────────────────────────────────────────────────────────────────
-let images = [];
-let activeVmId = null;
-let term = null, termWs = null, fitAddon = null;
-
-// ─── Stats ────────────────────────────────────────────────────────────────────
-async function refreshStatus() {
-    try {
-        const d = await api('GET','/api/status');
-        if (!d) return;
-        $('cpu-pct').textContent = (d.cpu_pct||0).toFixed(1)+'%';
-        $('cpu-bar').style.width = Math.min(d.cpu_pct||0,100)+'%';
-        $('cpu-cores').textContent = d.cpus||'-';
-        $('load-avg').textContent = [(d.load1||0).toFixed(1),(d.load5||0).toFixed(1),(d.load15||0).toFixed(1)].join(' / ');
-        $('ram-used').textContent = d.ram_used_mb||0;
-        $('ram-total').textContent = d.ram_total_mb||0;
-        if (d.ram_total_mb) $('ram-bar').style.width = (d.ram_used_mb/d.ram_total_mb*100)+'%';
-        $('disk-used').textContent = d.disk_used_gb||0;
-        $('disk-total').textContent = d.disk_total_gb||0;
-        if (d.disk_total_gb) $('disk-bar').style.width = (d.disk_used_gb/d.disk_total_gb*100)+'%';
-        $('net-out-rate').textContent = formatBps((d.net_out_bps||0)*8);
-        $('net-in-rate').textContent  = formatBps((d.net_in_bps||0)*8);
-        $('net-out-month').textContent = formatBytes(d.month_out_total||0);
-        $('net-in-month').textContent  = formatBytes(d.month_in_total||0);
-        $('bandwidth').textContent = d.bandwidth_mbps||'--';
-        $('uptime').textContent = d.uptime ? formatUptime(d.uptime) : '--';
-    } catch(e){}
-}
-
-// ─── VMs ──────────────────────────────────────────────────────────────────────
-// Sort state
-let sortBy = '';      // 当前排序字段，空=不排序
-let sortOrder = 'desc'; // 'asc' 或 'desc'
-
-// Sort the VMs array based on current sortBy and sortOrder
-function sortVMs(vms) {
-    if (!sortBy) return vms;
-    const sorted = [...vms].sort((a, b) => {
-        const av = a[sortBy] ?? 0;
-        const bv = b[sortBy] ?? 0;
-        // For numeric fields, compare as numbers
-        const diff = Number(bv) - Number(av);
-        return sortOrder === 'desc' ? diff : -diff;
-    });
-    return sorted;
-}
-
-// Update UI to show current sort state
-function updateSortUI() {
-    document.querySelectorAll('.sort-btn').forEach(btn => {
-        const field = btn.dataset.field;
-        const arrow = btn.querySelector('.sort-arrow');
-        if (field === sortBy) {
-            // Active button: highlight and show direction
-            btn.classList.add('bg-indigo-100', 'text-indigo-600', 'font-bold');
-            btn.classList.remove('hover:bg-slate-200');
-            arrow.textContent = sortOrder === 'desc' ? '▼' : '▲';
-        } else {
-            // Inactive button: default style
-            btn.classList.remove('bg-indigo-100', 'text-indigo-600', 'font-bold');
-            btn.classList.add('hover:bg-slate-200');
-            arrow.textContent = '⇅';
-        }
-    });
-}
-
-// Set sort field and order
-function setSort(field) {
-    if (sortBy === field) {
-        // Toggle order if same field
-        sortOrder = sortOrder === 'desc' ? 'asc' : 'desc';
-    } else {
-        // Set new field with default desc order
-        sortBy = field;
-        sortOrder = 'desc';
-    }
-    updateSortUI();
-    refreshVMs();
-}
-
-async function refreshVMs() {
-    try {
-        const vms = (await api('GET','/api/vms')) || [];
-        $('vm-count').textContent = vms.length;
-        const running = vms.filter(v=>v.status===2).length;
-        $('vm-count').textContent = `${running} running / ${vms.length} total`;
-
-        const tbody = $('vm-table-body');
-        if (!vms.length) {
-            tbody.innerHTML = '';
-            $('vm-empty').classList.remove('hidden');
-            return;
-        }
-        $('vm-empty').classList.add('hidden');
-
-        // Sort VMs before rendering
-        const sorted = sortVMs(vms);
-        tbody.innerHTML = sorted.map(vm => `
-        <tr class="hover:bg-slate-50 transition-colors">
-            <td class="px-4 py-3">
-                <div class="font-mono text-xs font-semibold text-slate-700 truncate max-w-[180px]" title="${vm.vm_id}">${vm.vm_id}</div>
-                <div class="text-[10px] text-slate-400 mt-0.5">${(vm.ips && vm.ips.length) ? vm.ips.join(', ') : '—'}</div>
-            </td>
-            <td class="px-4 py-3">${vmStatusLabel(vm.status)}</td>
-            <td class="px-4 py-3 text-xs space-y-0.5 whitespace-nowrap">
-                <div class="text-slate-500"><span class="text-[9px] font-bold uppercase w-8 inline-block">CPU</span> ${(vm.cpu_pct||0).toFixed(1)}%</div>
-                <div class="text-slate-500"><span class="text-[9px] font-bold uppercase w-8 inline-block">RAM</span> ${vm.ram_used_mb||0}/${vm.ram_total_mb||'?'} MB</div>
-            </td>
-            <td class="px-4 py-3 font-mono text-[10px] text-slate-400 space-y-0.5 whitespace-nowrap">
-                <div class="flex flex-col mb-1 border-b border-slate-100 pb-1">
-                    <span class="text-sky-500 font-bold">↓ ${formatBps((vm.net_in_bps||0)*8)}</span>
-                    <span class="text-indigo-500 font-bold">↑ ${formatBps((vm.net_out_bps||0)*8)}</span>
-                </div>
-                <div class="text-indigo-400 font-bold" title="Monthly Traffic">
-                    📅 ↓ ${formatBytes(vm.monthly_traffic_in||0)} / ↑ ${formatBytes(vm.monthly_traffic_out||0)}
-                </div>
-            </td>
-            <td class="px-4 py-3 text-right pr-4">
-                <div class="flex items-center justify-end gap-1 flex-nowrap">
-                    ${vm.status===2
-                        ? `<button class="btn-txt bg-yellow-100 text-yellow-700 hover:bg-yellow-200" onclick="quickStop('${vm.vm_id}')">⏹ Stop</button>
-                           <button class="btn-txt bg-sky-100 text-sky-700 hover:bg-sky-200" onclick="quickAction('${vm.vm_id}','restart')">↺ Restart</button>`
-                        : `<button class="btn-txt bg-green-100 text-green-700 hover:bg-green-200" onclick="quickAction('${vm.vm_id}','start')">▶ Start</button>`
-                    }
-                    <button class="btn-txt bg-emerald-100 text-emerald-700 hover:bg-emerald-200" onclick="openMonitor('${vm.vm_id}')">📈 Monitor</button>
-                    <button class="btn-txt bg-purple-100 text-purple-700 hover:bg-purple-200" onclick="openPortFwds('${vm.vm_id}')">⇄ Port Fwds</button>
-                    <button class="btn-txt bg-teal-100 text-teal-700 hover:bg-teal-200" onclick="openWG('${vm.vm_id}')">🔒 WireGuard</button>
-                    <button class="btn-txt bg-gray-800 text-green-400 hover:bg-gray-700" onclick="openConsole('${vm.vm_id}')">⊞ Console</button>
-                    <button class="btn-txt bg-indigo-100 text-indigo-700 hover:bg-indigo-200" onclick="openManage('${vm.vm_id}')">⚙ Manage</button>
-                </div>
-            </td>
-        </tr>`).join('');
-    } catch(e){ console.error(e); }
-}
-
-// ─── Quick actions ────────────────────────────────────────────────────────────
-async function quickAction(vmId, action) {
-    disableAllButtons(true);
-    try {
-        await api('POST', `/api/vms/${vmId}/${action}`);
-        await refreshVMs();
-    } catch(e){ alert('Error: '+e.message); }
-    finally { disableAllButtons(false); }
-}
-
-async function quickStop(vmId) {
-    disableAllButtons(true);
-    try {
-        await api('POST', `/api/vms/${vmId}/stop`, {force: false});
-        await refreshVMs();
-    } catch(e){ alert('Error: '+e.message); }
-    finally { disableAllButtons(false); }
-}
-
-// ─── Create VM ────────────────────────────────────────────────────────────────
-function openCreateVM() {
-    hideErr('create-err');
-    populateImageSelect('c-image');
-    openModal('modal-create');
-}
-
-$('form-create').onsubmit = async (e) => {
-    e.preventDefault();
-    hideErr('create-err');
-    disableAllButtons(true);
-    const body = {
-        vm_id:         $('c-vmid').value.trim() || undefined,
-        cpu:           parseInt($('c-cpu').value),
-        ram_mb:        parseInt($('c-ram').value),
-        disk_gb:       parseInt($('c-disk').value),
-        bandwidth_mbps:parseInt($('c-bw').value)||0,
-        os_image:      $('c-image').value,
-        root_password: $('c-pwd').value,
-    };
-    try {
-        const res = await api('POST', '/api/vms', body);
-        closeModal('modal-create');
-        $('form-create').reset();
-        await refreshVMs();
-        alert(`VM created: ${res.vm_id}`);
-    } catch(e){ showErr('create-err', e.message); }
-    finally { disableAllButtons(false); }
-};
-
-// ─── Manage VM ────────────────────────────────────────────────────────────────
-function openManage(vmId) {
-    activeVmId = vmId;
-    $('manage-vmid').textContent = vmId;
-    $('u-pwd').value=''; $('r-pwd').value='';
-    hideErr('manage-err');
-    populateImageSelect('r-image');
-    openModal('modal-manage');
-}
-
-async function doResetPwd() {
-    hideErr('manage-err');
-    const pwd = $('u-pwd').value.trim();
-    if (!pwd) { showErr('manage-err','Password cannot be empty.'); return; }
-    disableAllButtons(true);
-    try {
-        await api('POST', `/api/vms/${activeVmId}/reset-password`, {password: pwd});
-        closeModal('modal-manage');
-        alert('Password reset.');
-    } catch(e){ showErr('manage-err', e.message); }
-    finally { disableAllButtons(false); }
-}
-
-async function doReinstall() {
-    hideErr('manage-err');
-    const img=$('r-image').value, pwd=$('r-pwd').value.trim();
-    if (!img||!pwd) { showErr('manage-err','Image and password required.'); return; }
-    if (!confirm(`Reinstall VM ${activeVmId}? ALL DATA WILL BE LOST.`)) return;
-    disableAllButtons(true);
-    try {
-        await api('POST', `/api/vms/${activeVmId}/reinstall`, {os_image:img, root_password:pwd});
-        closeModal('modal-manage');
-        await refreshVMs();
-    } catch(e){ showErr('manage-err', e.message); }
-    finally { disableAllButtons(false); }
-}
-
-async function doStop(force) {
-    hideErr('manage-err');
-    disableAllButtons(true);
-    try {
-        await api('POST', `/api/vms/${activeVmId}/stop`, {force});
-        closeModal('modal-manage');
-        await refreshVMs();
-    } catch(e){ showErr('manage-err', e.message); }
-    finally { disableAllButtons(false); }
-}
-
-async function doResetTraffic() {
-    if (!confirm(`Reset monthly traffic statistics for ${activeVmId}?`)) return;
-    disableAllButtons(true);
-    try {
-        await api('POST', `/api/vms/${activeVmId}/reset-traffic`);
-        alert('Monthly traffic reset.');
-        closeModal('modal-manage');
-        await refreshVMs();
-    } catch(e){ alert('Error: ' + e.message); }
-    finally { disableAllButtons(false); }
-}
-
-async function doDelete() {
-    hideErr('manage-err');
-    if (!confirm(`Delete VM ${activeVmId}? This is irreversible.`)) return;
-    disableAllButtons(true);
-    try {
-        await api('DELETE', `/api/vms/${activeVmId}`);
-        closeModal('modal-manage');
-        await refreshVMs();
-    } catch(e){ showErr('manage-err', e.message); }
-    finally { disableAllButtons(false); }
-}
-
-// ─── Port Forwards ────────────────────────────────────────────────────────────
-let pfRefreshInterval = null;
-
-async function openPortFwds(vmId) {
-    activeVmId = vmId;
-    $('ports-vmid').textContent = vmId;
-    hideErr('ports-err');
-    $('pf-hport').value=''; $('pf-gport').value='';
-    $('pf-summary').classList.add('hidden');
-    $('iplimit-value').value=''; $('iplimit-status').textContent='';
-    await refreshPortFwds();
-    await loadIPLimit(true);
-    openModal('modal-ports');
-    clearInterval(pfRefreshInterval);
-    pfRefreshInterval = setInterval(() => { refreshPortFwds(); loadIPLimit(false); }, 3000);
-}
-
-function closePortFwdsModal() {
-    clearInterval(pfRefreshInterval);
-    pfRefreshInterval = null;
-    closeModal('modal-ports');
-}
-
-async function refreshPortFwds() {
-    try {
-        const rules = (await api('GET', `/api/vms/${activeVmId}/portfwds`)) || [];
-        const list = $('pf-list');
-        if (!rules.length) {
-            list.innerHTML='';
-            $('pf-empty').classList.remove('hidden');
-            $('pf-summary').classList.add('hidden');
-            return;
-        }
-        $('pf-empty').classList.add('hidden');
-
-        // 汇总统计
-        const totalActive = rules.reduce((s, r) => s + (r.active_conns || 0), 0);
-        const totalAll    = rules.reduce((s, r) => s + (r.total_conns || 0), 0);
-        const sumEl = $('pf-summary');
-        sumEl.textContent = `${rules.length} rules · ${totalActive} active · ${totalAll} total`;
-        sumEl.classList.remove('hidden');
-
-        list.innerHTML = rules.map(r => {
-            const active = r.active_conns || 0;
-            const total  = r.total_conns  || 0;
-            const topIPs = r.top_ips || [];
-            const activeCls = active > 0
-                ? 'bg-green-100 text-green-700 border-green-200'
-                : 'bg-slate-100 text-slate-400 border-slate-200';
-            const ipBadges = topIPs.map(ip => {
-                const hasActive = ip.active_count > 0;
-                const cls = hasActive
-                    ? 'bg-green-50 text-green-700 border-green-200'
-                    : 'bg-indigo-50 text-indigo-600 border-indigo-100';
-                const activeStr = hasActive
-                    ? `<span class="text-green-500 font-black">●${ip.active_count}</span><span class="text-slate-300">·</span>`
-                    : '';
-                return `<span class="inline-flex items-center gap-1 font-mono text-[10px] border px-1.5 py-0.5 rounded ${cls}">
-                    ${activeStr}${esc(ip.ip)}<span class="opacity-40">·</span><span class="opacity-60">${ip.count}</span>
-                </span>`;
-            }).join('');
-
-            return `
-            <div class="bg-slate-50 rounded-xl border border-slate-100 px-4 py-3 space-y-2">
-                <div class="flex items-center justify-between gap-2">
-                    <div class="flex items-center gap-2 font-mono text-xs min-w-0">
-                        <span class="font-black text-indigo-600 uppercase shrink-0">${r.protocol}</span>
-                        <span class="text-slate-700 shrink-0">:${r.host_port}</span>
-                        <span class="text-slate-300">→</span>
-                        <span class="text-slate-600 truncate">${esc(r.target_addr || ':' + r.guest_port)}</span>
-                        ${r.description ? `<span class="text-slate-400 truncate">${esc(r.description)}</span>` : ''}
-                    </div>
-                    <div class="flex items-center gap-1.5 shrink-0">
-                        <span class="text-[10px] font-bold px-2 py-0.5 rounded-full border ${activeCls}">
-                            ● ${active} active
-                        </span>
-                        <span class="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200">
-                            ${total} total
-                        </span>
-                        <button onclick="doDelPortFwd('${r.protocol}',${r.host_port})" class="text-red-400 hover:text-red-600 text-xs font-bold w-6 h-6 flex items-center justify-center hover:bg-red-50 rounded-full transition-colors">✕</button>
-                    </div>
-                </div>
-                ${topIPs.length ? `<div class="flex flex-wrap gap-1">${ipBadges}</div>` : ''}
-            </div>`;
-        }).join('');
-    } catch(e){ showErr('ports-err', e.message); }
-}
-
-// ─── WireGuard Bindings ───────────────────────────────────────────────────────
-let wgRefreshInterval = null;
-let wgEditId = null;   // 非 null 表示正在编辑该 binding
-
-async function openWG(vmId) {
-    activeVmId = vmId;
-    $('wg-vmid').textContent = vmId;
-    hideErr('wg-err');
-    wgResetForm();
-    await refreshWG();
-    openModal('modal-wg');
-    clearInterval(wgRefreshInterval);
-    wgRefreshInterval = setInterval(refreshWG, 3000);
-}
-
-function closeWGModal() {
-    clearInterval(wgRefreshInterval);
-    wgRefreshInterval = null;
-    closeModal('modal-wg');
-}
-
-function wgResetForm() {
-    wgEditId = null;
-    ['wg-name','wg-address','wg-privkey','wg-peerkey','wg-endpoint',
-     'wg-listenport','wg-psk','wg-allowedips','wg-mtu','wg-keepalive'].forEach(id => $(id).value = '');
-    $('wg-enabled').checked = true;
-    $('wg-form-title').textContent = 'Add Binding';
-    $('wg-submit').textContent = 'Add Binding';
-    $('wg-cancel-edit').classList.add('hidden');
-    $('wg-pubkey-hint').classList.add('hidden');
-    $('wg-key-hint').textContent = '';
-    $('wg-privkey').placeholder = 'base64, 44 chars';
-}
-
-// 编辑已有绑定。私钥永不回显（后端也不返回），留空即沿用原私钥。
-function wgEdit(id) {
-    const b = (wgCache || []).find(x => x.id === id);
-    if (!b) return;
-    wgEditId = id;
-    $('wg-name').value = b.name || '';
-    $('wg-address').value = b.address || '';
-    $('wg-privkey').value = '';
-    $('wg-privkey').placeholder = '留空 = 沿用当前私钥';
-    $('wg-peerkey').value = b.peer_public_key || '';
-    $('wg-endpoint').value = b.endpoint || '';
-    $('wg-listenport').value = b.listen_port || '';
-    $('wg-psk').value = '';
-    $('wg-allowedips').value = b.allowed_ips || '';
-    $('wg-mtu').value = b.mtu || '';
-    $('wg-keepalive').value = b.keepalive || '';
-    $('wg-enabled').checked = !!b.enabled;
-    $('wg-form-title').textContent = 'Edit Binding';
-    $('wg-submit').textContent = 'Save Changes';
-    $('wg-cancel-edit').classList.remove('hidden');
-    $('wg-key-hint').textContent = b.has_psk ? '· PSK 已设置（留空保留）' : '';
-    $('wg-pubkey-hint').textContent = 'local public key: ' + (b.public_key || '?');
-    $('wg-pubkey-hint').classList.remove('hidden');
-    $('modal-wg').querySelector('.overflow-y-auto').scrollTop = 0;
-}
-
-async function wgGenerateKey() {
-    hideErr('wg-err');
-    try {
-        const kp = await api('POST', '/api/wg/keypair', {});
-        $('wg-privkey').value = kp.private_key;
-        $('wg-pubkey-hint').textContent = 'local public key: ' + kp.public_key + '  ← 把这个填到对端的 [Peer] PublicKey';
-        $('wg-pubkey-hint').classList.remove('hidden');
-    } catch(e) { showErr('wg-err', e.message); }
-}
-
-function wgNum(id) { const v = $(id).value.trim(); return v === '' ? 0 : parseInt(v, 10); }
-
-async function doSaveWG() {
-    hideErr('wg-err');
-    const body = {
-        name:            $('wg-name').value.trim(),
-        address:         $('wg-address').value.trim(),
-        private_key:     $('wg-privkey').value.trim(),
-        peer_public_key: $('wg-peerkey').value.trim(),
-        endpoint:        $('wg-endpoint').value.trim(),
-        listen_port:     wgNum('wg-listenport'),
-        allowed_ips:     $('wg-allowedips').value.trim(),
-        mtu:             wgNum('wg-mtu'),
-        keepalive:       wgNum('wg-keepalive'),
-        enabled:         $('wg-enabled').checked,
-    };
-    // preshared_key 用 null 表示"不改动"，编辑时留空就保留原值
-    const psk = $('wg-psk').value.trim();
-    if (!wgEditId || psk !== '') body.preshared_key = psk;
-
-    if (!body.address)         { showErr('wg-err', 'Tunnel Address is required'); return; }
-    if (!body.peer_public_key) { showErr('wg-err', 'Peer Public Key is required'); return; }
-    if (!wgEditId && !body.private_key) { showErr('wg-err', 'Private Key is required (点 Generate 可生成一对)'); return; }
-
-    try {
-        const res = wgEditId
-            ? await api('PUT',  `/api/vms/${activeVmId}/wg/${wgEditId}`, body)
-            : await api('POST', `/api/vms/${activeVmId}/wg`, body);
-        // 记录已保存但隧道没起来（端口占用等），提示但不当作失败
-        if (res && res.error) showErr('wg-err', 'Saved, but the tunnel failed to start:\n' + res.error);
-        else wgResetForm();
-        await refreshWG();
-    } catch(e) { showErr('wg-err', e.message); }
-}
-
-async function doDelWG(id, label) {
-    if (!confirm(`Delete WireGuard binding ${label}?`)) return;
-    hideErr('wg-err');
-    try {
-        await api('DELETE', `/api/vms/${activeVmId}/wg/${id}`);
-        if (wgEditId === id) wgResetForm();
-        await refreshWG();
-    } catch(e) { showErr('wg-err', e.message); }
-}
-
-async function doToggleWG(id, enable) {
-    hideErr('wg-err');
-    try {
-        const res = await api('PUT', `/api/vms/${activeVmId}/wg/${id}`, {enabled: enable});
-        if (res && res.error) showErr('wg-err', res.error);
-        await refreshWG();
-    } catch(e) { showErr('wg-err', e.message); }
-}
-
-function wgAgo(unixSec) {
-    if (!unixSec) return 'never';
-    const d = Math.max(0, Math.floor(Date.now()/1000) - unixSec);
-    if (d < 60)   return d + 's ago';
-    if (d < 3600) return Math.floor(d/60) + 'm ago';
-    return Math.floor(d/3600) + 'h ago';
-}
-
-let wgCache = [];
-
-async function refreshWG() {
-    try {
-        const list = (await api('GET', `/api/vms/${activeVmId}/wg`)) || [];
-        wgCache = list;
-        const el = $('wg-list');
-        if (!list.length) {
-            el.innerHTML = '';
-            $('wg-empty').classList.remove('hidden');
-            $('wg-summary').classList.add('hidden');
-            return;
-        }
-        $('wg-empty').classList.add('hidden');
-
-        const running = list.filter(b => b.state === 'running').length;
-        const active  = list.reduce((s, b) => s + (b.active_conns || 0), 0);
-        const sum = $('wg-summary');
-        sum.textContent = `${list.length} bindings · ${running} running · ${active} active conns`;
-        sum.classList.remove('hidden');
-
-        el.innerHTML = list.map(b => {
-            const stateCls = {
-                running: 'bg-green-100 text-green-700 border-green-200',
-                stopped: 'bg-slate-100 text-slate-500 border-slate-200',
-                error:   'bg-red-100 text-red-700 border-red-200',
-            }[b.state] || 'bg-slate-100 text-slate-500 border-slate-200';
-
-            // 隧道有没有真正通：看最近一次握手
-            const hs = b.last_handshake || 0;
-            const hsFresh = hs > 0 && (Date.now()/1000 - hs) < 180;
-            const hsCls = hsFresh ? 'text-green-600' : (hs ? 'text-amber-600' : 'text-slate-400');
-
-            const ipBadges = (b.top_ips || []).map(ip => {
-                const cls = ip.active_count > 0
-                    ? 'bg-green-50 text-green-700 border-green-200'
-                    : 'bg-indigo-50 text-indigo-600 border-indigo-100';
-                const a = ip.active_count > 0
-                    ? `<span class="text-green-500 font-black">●${ip.active_count}</span><span class="text-slate-300">·</span>` : '';
-                return `<span class="inline-flex items-center gap-1 font-mono text-[10px] border px-1.5 py-0.5 rounded ${cls}">
-                    ${a}${esc(ip.ip)}<span class="opacity-40">·</span><span class="opacity-60">${ip.count}</span></span>`;
-            }).join('');
-
-            const problem = b.error || b.last_dial_err;
-
-            return `
-            <div class="bg-slate-50 rounded-xl border border-slate-100 px-4 py-3 space-y-2">
-                <div class="flex items-start justify-between gap-2">
-                    <div class="min-w-0 space-y-1">
-                        <div class="flex items-center gap-2 flex-wrap">
-                            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase ${stateCls}">${esc(b.state)}</span>
-                            <span class="font-mono text-xs font-black text-indigo-600">${esc(b.address)}</span>
-                            <span class="text-slate-300 text-xs">→</span>
-                            <span class="font-mono text-xs text-slate-600">${esc(b.target_ip || 'VM')} :同端口</span>
-                            ${b.name ? `<span class="text-[10px] text-slate-400">${esc(b.name)}</span>` : ''}
-                        </div>
-                        <div class="flex items-center gap-3 flex-wrap text-[10px] font-mono text-slate-500">
-                            <span>udp :${b.actual_port || b.listen_port || '?'}</span>
-                            <span>peer ${esc(b.peer_endpoint || b.endpoint || 'passive')}</span>
-                            <span class="${hsCls} font-bold">handshake ${wgAgo(hs)}</span>
-                            <span>↓ ${formatBytes(b.rx_bytes||0)} / ↑ ${formatBytes(b.tx_bytes||0)}</span>
-                            <span>mtu ${b.mtu}</span>
-                        </div>
-                    </div>
-                    <div class="flex items-center gap-1.5 shrink-0">
-                        <span class="text-[10px] font-bold px-2 py-0.5 rounded-full border ${(b.active_conns||0) > 0 ? 'bg-green-100 text-green-700 border-green-200' : 'bg-slate-100 text-slate-400 border-slate-200'}">● ${b.active_conns||0} active</span>
-                        <span class="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-slate-100 text-slate-500 border-slate-200">${b.total_conns||0} total</span>
-                        <button onclick="doToggleWG('${b.id}',${!b.enabled})" title="${b.enabled ? 'Disable' : 'Enable'}" class="text-slate-400 hover:text-indigo-600 text-xs font-bold w-6 h-6 flex items-center justify-center hover:bg-indigo-50 rounded-full">${b.enabled ? '⏸' : '▶'}</button>
-                        <button onclick="wgEdit('${b.id}')" title="Edit" class="text-slate-400 hover:text-indigo-600 text-xs font-bold w-6 h-6 flex items-center justify-center hover:bg-indigo-50 rounded-full">✎</button>
-                        <button onclick="doDelWG('${b.id}','${esc(b.address)}')" title="Delete" class="text-red-400 hover:text-red-600 text-xs font-bold w-6 h-6 flex items-center justify-center hover:bg-red-50 rounded-full">✕</button>
-                    </div>
-                </div>
-                <div class="font-mono text-[10px] text-slate-400 break-all">local pubkey ${esc(b.public_key || '?')}</div>
-                ${ipBadges ? `<div class="flex flex-wrap gap-1">${ipBadges}</div>` : ''}
-                ${problem ? `<div class="text-[10px] text-red-500 bg-red-50 border border-red-100 rounded px-2 py-1 break-all">${esc(problem)}</div>` : ''}
-            </div>`;
-        }).join('');
-    } catch(e) { showErr('wg-err', e.message); }
-}
-
-// fillInput=true 时把覆盖值填入输入框（仅打开弹窗时），刷新时只更新状态文字
-async function loadIPLimit(fillInput) {
-    try {
-        const info = await api('GET', `/api/vms/${activeVmId}/iplimit`);
-        if (fillInput) $('iplimit-value').value = info.override === null ? '' : info.override;
-        const eff = info.effective > 0 ? info.effective : '∞';
-        const src = info.override === null ? `global(${info.global > 0 ? info.global : '∞'})` : 'override';
-        $('iplimit-status').textContent = `${info.active_ips} active IPs / limit ${eff} · ${src}`;
-    } catch(e) { /* 静默：旧 agent 无此接口 */ }
-}
-
-async function doSetIPLimit(useGlobal) {
-    hideErr('ports-err');
-    let limit = null;
-    if (!useGlobal) {
-        const v = $('iplimit-value').value.trim();
-        if (v === '') { useGlobal = true; }
-        else {
-            limit = parseInt(v);
-            if (isNaN(limit) || limit < 0) { showErr('ports-err','IP limit must be a number >= 0.'); return; }
-        }
-    }
-    disableAllButtons(true);
-    try {
-        await api('PUT', `/api/vms/${activeVmId}/iplimit`, {limit: useGlobal ? null : limit});
-        await loadIPLimit(true);
-    } catch(e){ showErr('ports-err', e.message); }
-    finally { disableAllButtons(false); }
-}
-
-async function doAddPortFwd() {
-    hideErr('ports-err');
-    const proto=$('pf-proto').value, hp=parseInt($('pf-hport').value), gp=parseInt($('pf-gport').value);
-    if (!hp||!gp) { showErr('ports-err','Host port and VM port required.'); return; }
-    disableAllButtons(true);
-    try {
-        await api('POST', `/api/vms/${activeVmId}/portfwds`, {protocol:proto, host_port:hp, guest_port:gp});
-        $('pf-hport').value=''; $('pf-gport').value='';
-        await refreshPortFwds();
-    } catch(e){ showErr('ports-err', e.message); }
-    finally { disableAllButtons(false); }
-}
-
-async function doDelPortFwd(proto, hostPort) {
-    disableAllButtons(true);
-    try {
-        await api('DELETE', `/api/vms/${activeVmId}/portfwds/${proto}/${hostPort}`);
-        await refreshPortFwds();
-    } catch(e){ showErr('ports-err', e.message); }
-    finally { disableAllButtons(false); }
-}
-
-// ─── Monitor Visuals ──────────────────────────────────────────────────────────
-let monitorInterval = null;
-let monitorHistoryData = []; // Store currently viewed history
-
-async function fetchMonitorData(vmid) {
-    try {
-        const data = await api('GET', `/api/monitor/history?vm_id=${encodeURIComponent(vmid)}`);
-        monitorHistoryData = data || [];
-        const recent = monitorHistoryData.slice(-80);
-        
-        const svg1 = $('monitor-cpu-ram');
-        const svg2 = $('monitor-net');
-        
-        if(!recent.length) {
-            svg1.innerHTML = '';
-            svg2.innerHTML = '';
-            return;
-        }
-        
-        const cpuVals = recent.map(x => Number(x.cpu_pct||0));
-        const memVals = recent.map(x => x.ram_total_mb ? (Number(x.ram_used_mb||0) / Number(x.ram_total_mb) * 100) : 0);
-        const rxVals  = recent.map(x => bpsToMbps(Number(x.net_in_bps||0)));
-        const txVals  = recent.map(x => bpsToMbps(Number(x.net_out_bps||0)));
-        
-        // Use a 20px padding for labels
-        const pSize = 25;
-        const w1 = svg1.clientWidth || 800, h1 = (svg1.clientHeight || 200) - pSize;
-        const w2 = svg2.clientWidth || 800, h2 = (svg2.clientHeight || 200) - pSize;
-        
-        svg1.innerHTML = drawBeautifulAxes(w1, h1, 100, true, recent) + 
-            `<polyline fill="none" stroke="#6366f1" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" points="${buildLinePts(cpuVals, 100, w1, h1)}" style="filter: drop-shadow(0 4px 6px rgba(99,102,241,0.2))" />
-             <polyline fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" points="${buildLinePts(memVals, 100, w1, h1)}" style="filter: drop-shadow(0 4px 6px rgba(16,185,129,0.2))" />
-             <line id="hover-line-1" x1="0" y1="0" x2="0" y2="${h1}" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4" style="display:none" />`;
-             
-        const maxBw = Math.max(1, ...rxVals, ...txVals) * 1.15; 
-        svg2.innerHTML = drawBeautifulAxes(w2, h2, maxBw, false, recent) +
-            `<polyline fill="none" stroke="#0ea5e9" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" points="${buildLinePts(rxVals, maxBw, w2, h2)}" style="filter: drop-shadow(0 4px 6px rgba(14,165,233,0.2))" />
-             <polyline fill="none" stroke="#a855f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" points="${buildLinePts(txVals, maxBw, w2, h2)}" style="filter: drop-shadow(0 4px 6px rgba(168,85,247,0.2))" />
-             <line id="hover-line-2" x1="0" y1="0" x2="0" y2="${h2}" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4" style="display:none" />`;
-             
-    } catch(e) {
-        showErr('monitor-err', e.message);
-    }
-}
-
-function drawBeautifulAxes(w, h, maxVal, isPercent, data) {
-    let html = '';
-    const steps = 4;
-    // Horizontal grid lines
-    for(let i=0; i<=steps; i++) {
-        const y = h - (i * (h / steps));
-        html += `<line x1="0" y1="${y}" x2="${w}" y2="${y}" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="4" opacity="0.4" />`;
-        
-        const labelVal = isPercent ? `${(maxVal / steps * i).toFixed(0)}%` : `${(maxVal / steps * i).toFixed(1)}M`;
-        if (i !== 0) {
-            html += `<text x="4" y="${y-6}" fill="#94a3b8" font-size="10" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="600">${labelVal}</text>`;
-        }
-    }
-
-    // X-Axis (Time) labels
-    if (data && data.length > 1) {
-        const numLabels = 5;
-        const pts = data.slice(-80);
-        for (let i = 0; i < numLabels; i++) {
-            const idx = Math.floor(i * (pts.length - 1) / (numLabels - 1));
-            const x = (idx / (pts.length - 1)) * w;
-            const item = pts[idx];
-            if (!item || !item.created_at) continue;
-
-            const date = new Date(item.created_at);
-            const labelTime = date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
-            const anchor = i === 0 ? 'start' : (i === numLabels - 1 ? 'end' : 'middle');
-            
-            html += `<text x="${x}" y="${h + 18}" fill="#94a3b8" font-size="9" text-anchor="${anchor}">${labelTime}</text>`;
-        }
-    }
-    return html;
-}
-
-// Optimized hover handler
-function setupMonitorHover() {
-    [$('monitor-cpu-ram'), $('monitor-net')].forEach((svg, idx) => {
-        svg.onmousemove = (e) => {
-            if (!monitorHistoryData || !monitorHistoryData.length) return;
-            const rect = svg.getBoundingClientRect();
-            const mouseX = e.clientX - rect.left;
-            const w = svg.clientWidth;
-            const h = svg.clientHeight - 25;
-            
-            const recent = monitorHistoryData.slice(-80);
-            const index = Math.round((mouseX / w) * (recent.length - 1));
-            const safeIdx = Math.max(0, Math.min(index, recent.length - 1));
-            const item = recent[safeIdx];
-            
-            const posX = (safeIdx / (recent.length - 1)) * w;
-            const hLine = $(`hover-line-${idx + 1}`);
-            if (hLine) {
-                hLine.setAttribute('x1', posX);
-                hLine.setAttribute('x2', posX);
-                hLine.style.display = 'block';
-            }
-            
-            // Tooltip
-            const tt = $('monitor-tooltip');
-            tt.classList.remove('hidden');
-            tt.style.display = 'block';
-            tt.style.left = (e.clientX + 15) + 'px';
-            tt.style.top = (e.clientY - 40) + 'px';
-            
-            const timeStr = new Date(item.created_at).toLocaleTimeString();
-            let content = `<div class="font-bold border-b border-slate-700 pb-1 mb-1 text-indigo-400 text-[11px]">${timeStr}</div>`;
-            if (idx === 0) {
-                const ramPct = item.ram_total_mb ? (item.ram_used_mb / item.ram_total_mb * 100).toFixed(1) : 0;
-                content += `<div class="flex justify-between gap-4"><span>CPU</span> <span class="text-white font-bold">${item.cpu_pct.toFixed(2)}%</span></div>`;
-                content += `<div class="flex justify-between gap-4"><span>RAM</span> <span class="text-white font-bold">${item.ram_used_mb}MB (${ramPct}%)</span></div>`;
-            } else {
-                content += `<div class="flex justify-between gap-4"><span>Inbound</span> <span class="text-sky-400 font-bold">${bpsToMbps(item.net_in_bps).toFixed(2)} Mbps</span></div>`;
-                content += `<div class="flex justify-between gap-4"><span>Outbound</span> <span class="text-purple-400 font-bold">${bpsToMbps(item.net_out_bps).toFixed(2)} Mbps</span></div>`;
-            }
-            tt.innerHTML = content;
-        };
-        svg.onmouseleave = () => {
-            const hLine = $(`hover-line-${idx + 1}`);
-            if(hLine) hLine.style.display = 'none';
-            $('monitor-tooltip').style.display = 'none';
-        };
-    });
-}
-
-function buildLinePts(vals, maxv, w, h) {
-    if(vals.length === 0) return '';
-    const useMax = Math.max(0.1, maxv);
-    const step = w / Math.max(1, vals.length - 1);
-    return vals.map((v, i) => {
-        let x = i * step;
-        let y = Math.max(0, h - ((v / useMax) * h));
-        return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(' ');
-}
-
-function openMonitor(vmId) {
-    activeVmId = vmId;
-    $('monitor-vmid').textContent = vmId;
-    hideErr('monitor-err');
-    openModal('modal-monitor');
-    
-    // Slight delay to ensure modal is visible before measuring SVG constraints
-    setTimeout(() => {
-        setupMonitorHover();
-        fetchMonitorData(vmId);
-        clearInterval(monitorInterval);
-        monitorInterval = setInterval(() => fetchMonitorData(vmId), 5000);
-    }, 50);
-}
-
-function closeMonitor() {
-    clearInterval(monitorInterval);
-    monitorInterval = null;
-    closeModal('modal-monitor');
-}
-
-// ─── Console TTY ──────────────────────────────────────────────────────────────
-function connectWS(vmId) {
-    const proto = location.protocol==='https:' ? 'wss' : 'ws';
-    termWs = new WebSocket(`${proto}://${location.host}/api/vms/${vmId}/tty`);
-    termWs.binaryType = 'arraybuffer';
-
-    termWs.onopen = () => {
-        term.write('\r\n\x1b[32m[connected]\x1b[0m\r\n');
-        // Send initial terminal size
-        termWs.send(JSON.stringify({type:'resize', cols:term.cols, rows:term.rows}));
-    };
-
-    termWs.onmessage = (e) => {
-        if (e.data instanceof ArrayBuffer) {
-            term.write(new Uint8Array(e.data));
-        } else {
-            term.write(e.data);
-        }
-    };
-
-    termWs.onclose = () => term && term.write('\r\n\x1b[31m[disconnected]\x1b[0m\r\n');
-    termWs.onerror = () => term && term.write('\r\n\x1b[31m[connection error]\x1b[0m\r\n');
-
-    term.onData(data => {
-        if (termWs && termWs.readyState===WebSocket.OPEN) {
-            termWs.send(new TextEncoder().encode(data));
-        }
-    });
-
-    term.onResize(({cols, rows}) => {
-        if (termWs && termWs.readyState===WebSocket.OPEN) {
-            termWs.send(JSON.stringify({type:'resize', cols, rows}));
-        }
-    });
-}
-
-function onTermResize() {
-    if (fitAddon) fitAddon.fit();
-}
-
-let isMaximized = false;
-
-function toggleConsoleMaximize() {
-    const win = $('console-window');
-    const icon = $('maximize-icon');
-    if (!isMaximized) {
-        win.classList.add('console-maximized');
-        icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>';
-        isMaximized = true;
-    } else {
-        win.classList.remove('console-maximized');
-        icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"/>';
-        isMaximized = false;
-    }
-    setTimeout(onTermResize, 50);
-}
-
-function closeConsole() {
-    window.removeEventListener('resize', onTermResize);
-    if (consoleResizeObserver) {
-        consoleResizeObserver.disconnect();
-        consoleResizeObserver = null;
-    }
-    if (termWs) { termWs.close(); termWs=null; }
-    if (term)   { term.dispose(); term=null; }
-    isMaximized = false;
-    closeModal('modal-console');
-}
-
-let consoleResizeObserver = null;
-
-function openConsole(vmId) {
-    activeVmId = vmId;
-    $('console-title').textContent = `console — ${vmId}`;
-    openModal('modal-console');
-
-    const win = $('console-window');
-
-    // Clean up previous session
-    if (termWs) { termWs.close(); termWs=null; }
-    if (term)   { term.dispose(); term=null; }
-    if (consoleResizeObserver) { consoleResizeObserver.disconnect(); consoleResizeObserver = null; }
-
-    const container = $('terminal-container');
-    container.innerHTML = '';
-
-    term = new Terminal({
-        cursorBlink: true,
-        fontSize: 14,
-        fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-        theme: { background:'#000000', foreground:'#e5e7eb', cursor:'#6366f1' },
-        convertEol: true,
-    });
-    fitAddon = new FitAddon.FitAddon();
-    term.loadAddon(fitAddon);
-    term.open(container);
-
-    // Use ResizeObserver for manual drag-resizing
-    consoleResizeObserver = new ResizeObserver(() => {
-        if (fitAddon) fitAddon.fit();
-    });
-    consoleResizeObserver.observe(win);
-
-    setTimeout(() => { fitAddon.fit(); connectWS(vmId); }, 100);
-
-    window.addEventListener('resize', onTermResize);
-}
-
-// Close modal on background click (excluding console)
-['modal-create','modal-manage','modal-version','modal-images-config'].forEach(id => {
-    $(id).addEventListener('click', e => { if(e.target===e.currentTarget) closeModal(id); });
-});
-$('modal-monitor').addEventListener('click', e => { if(e.target===e.currentTarget) closeMonitor(); });
-$('modal-ports').addEventListener('click', e => { if(e.target===e.currentTarget) closePortFwdsModal(); });
-// Disabled background click for console to prevent accidental closure
-// $('modal-console').addEventListener('click', e => { if(e.target===e.currentTarget) closeConsole(); });
-
-// ─── Images ───────────────────────────────────────────────────────────────────
-function populateImageSelect(selectId) {
-    const sel = $(selectId);
-    sel.innerHTML = images.map(img => `<option value="${img.id}">${img.name}</option>`).join('');
-}
-
-// ─── Config ───────────────────────────────────────────────────────────────────
-$('configForm').onsubmit = async (e) => {
-    e.preventDefault();
-    hideErr('config-err');
-    disableAllButtons(true);
-    try {
-        const newConf = {
-            token:            $('token').value,
-            monitor_nic:      $('monitorNIC').value,
-            monitor_disk:     $('monitorDisk').value,
-            max_port_forward: parseInt($('maxPortForward').value) || 20,
-            max_forward_ips:  Math.max(0, parseInt($('maxForwardIPs').value) || 0),
-            traffic_reset_day: parseInt($('trafficResetDay').value) || 1,
-            host:             $('entryHost').value,
-            web_user:         $('webUser').value,
-            web_pass:         $('webPass').value,
-            platform_addr:    $('platformAddr').value.trim(),
-            update_repo:      $('updateRepo').value.trim(),
-            update_base_url:  $('updateBase').value.trim(),
-            update_api_url:   $('updateApi').value.trim(),
-            platform_insecure: $('platformInsecure').checked,
-        };
-        await api('POST', '/api/config', newConf);
-        currentConf = newConf;
-        updateServerStatus(newConf, null);
-        alert('Saved successfully. If you changed Web Authentication, you may need to re-login.');
-        $('webPass').value = ''; // clear password field after save
-    } catch(e) {
-        showErr('config-err', e.message);
-    } finally {
-        disableAllButtons(false);
-    }
-};
-
-// ─── Server Status ────────────────────────────────────────────────────────────
-function updateServerStatus(conf, connStatus) {
-    const badge = $('server-badge');
-    const status = $('server-status');
-
-    if (!conf.token) {
-        badge.className = 'bg-yellow-500 px-3 py-1 rounded text-xs font-bold uppercase tracking-widest flex items-center gap-1';
-        status.textContent = 'No Token';
-        status.title = 'Please set your API token';
-    } else if (connStatus && connStatus.connected) {
-        badge.className = 'bg-green-500 px-3 py-1 rounded text-xs font-bold uppercase tracking-widest flex items-center gap-1';
-        status.textContent = 'Connected';
-        status.title = 'Connected to NarwhalCloud';
-    } else {
-        badge.className = 'bg-orange-500 px-3 py-1 rounded text-xs font-bold uppercase tracking-widest flex items-center gap-1';
-        status.textContent = 'Connecting...';
-        status.title = (connStatus && connStatus.error) ? 'Error: ' + connStatus.error : 'Attempting to connect...';
-    }
-}
-
-// 定期检测连接状态
-async function refreshConnectionStatus(conf) {
-    try {
-        const connStatus = await api('GET', '/api/connection');
-        updateServerStatus(conf, connStatus);
-    } catch(e) {
-        // 如果API调用失败，显示连接中的状态
-        const badge = $('server-badge');
-        const status = $('server-status');
-        badge.className = 'bg-orange-500 px-3 py-1 rounded text-xs font-bold uppercase tracking-widest flex items-center gap-1';
-        status.textContent = 'Connecting...';
-    }
-}
-
-// ─── Version Management ───────────────────────────────────────────────────────
-async function openVersionModal() {
-    openModal('modal-version');
-    // Load current version
-    try {
-        const versionData = await api('GET', '/api/version');
-        $('current-version').textContent = versionData.current || 'unknown';
-        $('version-text').textContent = versionData.current || 'v-';
-    } catch(e) {
-        showErr('version-err', 'Failed to load version: ' + e.message);
-    }
-}
-
-async function checkForUpdates() {
-    hideErr('version-err');
-    const btn = $('check-btn');
-    setButtonLoading(btn, true);
-
-    try {
-        const data = await api('GET', '/api/update-check');
-        $('current-version').textContent = data.current || 'unknown';
-
-        if (data.error) {
-            showErr('version-err', 'Check failed: ' + data.error);
-            return;
-        }
-
-        if (data.has_update) {
-            $('latest-version').textContent = data.latest;
-            $('update-section').classList.remove('hidden');
-            $('version-status').className = 'text-xs font-bold uppercase px-2 py-1 rounded bg-amber-100 text-amber-700';
-            $('version-status').textContent = 'Update Available';
-        } else {
-            $('update-section').classList.add('hidden');
-            $('version-status').className = 'text-xs font-bold uppercase px-2 py-1 rounded bg-green-100 text-green-700';
-            $('version-status').textContent = 'Latest';
-            alert('You are already running the latest version!');
-        }
-    } catch(e) {
-        showErr('version-err', 'Update check failed: ' + e.message);
-    } finally {
-        setButtonLoading(btn, false);
-    }
-}
-
-async function doUpgrade() {
-    if (!confirm('Upgrade the agent? The service will restart after upgrade.')) {
-        return
-    }
-
-    hideErr('version-err');
-    const btn = $('upgrade-btn');
-    const statusEl = $('upgrade-status');
-
-    setButtonLoading(btn, true);
-    statusEl.classList.remove('hidden');
-    statusEl.textContent = 'Executing upgrade script...';
-
-    try {
-        const result = await api('POST', '/api/upgrade', {});
-
-        if (result.success) {
-            statusEl.textContent = 'Upgrade script started! Service will restart in 10s...';
-            statusEl.className = 'text-[10px] text-green-600 text-center';
-
-            // Wait a bit before closing
-            setTimeout(() => {
-                closeModal('modal-version');
-                alert('Agent upgrade process started! The web panel will be available again once the service restarts.');
-                // Refresh page after a longer delay to connect to new version
-                setTimeout(() => location.reload(), 12000);
-            }, 2000);
-        } else {
-            showErr('version-err', 'Upgrade failed: ' + result.message);
-        }
-    } catch(e) {
-        showErr('version-err', 'Upgrade failed: ' + e.message);
-    } finally {
-        setButtonLoading(btn, false);
-    }
-}
-
-// ─── RFW 防火墙 ───────────────────────────────────────────────────────────────
-
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-
-function rfwTag(cls, text) {
-    return `<span class="inline-block px-2 py-0.5 rounded text-[11px] font-semibold ${cls}">${esc(text)}</span>`;
-}
-
-const RFW_PROTO_DPI = new Set(['http','tls','socks','socks5','ssh','fet','wireguard','openvpn','quic']);
-
-function rfwProtoTag(protocol) {
-    if (protocol === 'all')                  return rfwTag('bg-slate-100 text-slate-600', protocol);
-    if (RFW_PROTO_DPI.has(protocol))         return rfwTag('bg-purple-100 text-purple-700', protocol);
-    return rfwTag('bg-blue-100 text-blue-700', protocol); // tcp / udp
-}
-
-function rfwIpCell(rule) {
-    if (rule.ip_type === 'any') return '<span class="text-slate-400 text-xs">any</span>';
-    if (rule.ip_type === 'cidr') return `<code class="text-xs bg-slate-100 px-1 rounded">${esc(rule.ip)}</code>`;
-    if (rule.ip_type === 'geoip') {
-        return (rule.countries || []).map(c => rfwTag('bg-indigo-100 text-indigo-700', c)).join(' ');
-    }
-    return '—';
-}
-
-async function rfwCheckStatus() {
-    try {
-        const d = await api('GET', '/api/rfw/online');
-        const badge = $('rfw-status-badge');
-        if (d.online) {
-            badge.className = 'text-xs px-2 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-700';
-            badge.textContent = 'Online';
-            $('rfw-offline-panel').classList.add('hidden');
-            $('rfw-online-panel').classList.remove('hidden');
-            if (d.status) {
-                $('rfw-iface').textContent = d.status.iface || '—';
-                $('rfw-rule-count').textContent = d.status.rule_count ?? '—';
-                $('rfw-api-version').textContent = d.status.api_version || '—';
-            }
-        } else {
-            badge.className = 'text-xs px-2 py-0.5 rounded-full font-bold bg-red-100 text-red-600';
-            badge.textContent = 'Offline';
-            $('rfw-online-panel').classList.add('hidden');
-            $('rfw-offline-panel').classList.remove('hidden');
-        }
-    } catch(_) {}
-}
-
-async function rfwRefreshRules() {
-    const tbody = $('rfw-rules-body');
-    const empty = $('rfw-rules-empty');
-    try {
-        const rules = await api('GET', '/rfw/api/rules');
-        if (!rules || !rules.length) {
-            tbody.innerHTML = '';
-            empty.classList.remove('hidden');
-            return;
-        }
-        empty.classList.add('hidden');
-        tbody.innerHTML = rules.map(r => {
-            const dirCls = r.direction === 'in' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700';
-            const actCls = r.action === 'block' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700';
-            const port = r.port_start === r.port_end ? r.port_start : `${r.port_start}–${r.port_end}`;
-            return `<tr class="hover:bg-slate-50">
-                <td class="px-4 py-2.5 font-mono text-xs text-slate-500">#${r.id}</td>
-                <td class="px-4 py-2.5 text-xs">${r.priority}</td>
-                <td class="px-4 py-2.5">${rfwTag(r.enabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500', r.enabled ? 'on' : 'off')}</td>
-                <td class="px-4 py-2.5">${rfwTag(dirCls, r.direction)}</td>
-                <td class="px-4 py-2.5">${rfwProtoTag(r.protocol)}</td>
-                <td class="px-4 py-2.5 text-xs font-mono">${port}</td>
-                <td class="px-4 py-2.5">${rfwIpCell(r)}</td>
-                <td class="px-4 py-2.5">${rfwTag(actCls, r.action)}</td>
-                <td class="px-4 py-2.5 text-right pr-6">
-                    <button onclick="rfwDeleteRule(${r.id}, this)" class="text-xs text-red-500 hover:text-red-700 border border-red-200 hover:border-red-400 px-2 py-1 rounded transition-colors">Delete</button>
-                </td>
-            </tr>`;
-        }).join('');
-    } catch(e) {
-        tbody.innerHTML = `<tr><td colspan="9" class="text-center py-6 text-red-400 text-xs">Failed to load rules: ${esc(e.message)}</td></tr>`;
-    }
-    rfwCheckStatus();
-}
-
-async function rfwDeleteRule(id, btn) {
-    if (!confirm(`Delete firewall rule #${id}?`)) return;
-    btn.disabled = true;
-    try {
-        const r = await fetch(`/rfw/api/rules/${id}`, { method: 'DELETE' });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        rfwRefreshRules();
-    } catch(e) {
-        alert('Delete failed: ' + e.message);
-        btn.disabled = false;
-    }
-}
-
-async function rfwCreateRule(e) {
-    e.preventDefault();
-    const form = e.target;
-    const fd = new FormData(form);
-    const msg = $('rfw-form-msg');
-    const btn = $('rfw-submit-btn');
-    const portEnd = fd.get('port_end');
-
-    const body = {
-        priority:   parseInt(fd.get('priority')),
-        direction:  fd.get('direction'),
-        protocol:   fd.get('protocol'),
-        action:     fd.get('action'),
-        port_start: parseInt(fd.get('port_start')),
-        enabled:    fd.get('enabled') === 'true',
-        ip_type:    fd.get('ip_type'),
-    };
-    if (portEnd !== '') body.port_end = parseInt(portEnd);
-    if (body.ip_type === 'cidr')  body.ip = fd.get('ip');
-    if (body.ip_type === 'geoip') body.countries = fd.get('countries').split(',').map(s => s.trim()).filter(Boolean);
-
-    btn.disabled = true;
-    msg.textContent = '';
-    msg.className = 'text-xs';
-    try {
-        const r = await fetch('/rfw/api/rules', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-        const d = await r.json();
-        if (r.ok) {
-            msg.textContent = `Rule #${d.id} created`;
-            msg.className = 'text-xs text-emerald-600';
-            form.reset();
-            rfwOnIpType('any');
-            rfwOnDirectionChange('in');
-            rfwRefreshRules();
-        } else {
-            msg.textContent = 'Error: ' + (d.error || JSON.stringify(d));
-            msg.className = 'text-xs text-red-500';
-        }
-    } catch(ex) {
-        msg.textContent = 'Network error: ' + ex.message;
-        msg.className = 'text-xs text-red-500';
-    }
-    btn.disabled = false;
-}
-
-function rfwOnIpType(val) {
-    $('rfw-cidr-field').classList.toggle('hidden', val !== 'cidr');
-    $('rfw-geoip-field').classList.toggle('hidden', val !== 'geoip');
-}
-
-function rfwOnDirectionChange(val) {
-    const protoSel = $('rfw-protocol');
-    const options = protoSel.options;
-    // DPI 协议仅支持 in 方向；tcp / udp / all 支持双向
-    const allowedOut = ['tcp', 'udp', 'all'];
-    
-    for (let i = 0; i < options.length; i++) {
-        const opt = options[i];
-        if (val === 'out') {
-            const isAllowed = allowedOut.includes(opt.value);
-            opt.hidden = !isAllowed;
-            opt.disabled = !isAllowed;
-        } else {
-            opt.hidden = false;
-            opt.disabled = false;
-        }
-    }
-    
-    // Default to 'tcp' if currently selected option becomes disabled
-    if (protoSel.selectedOptions.length > 0 && protoSel.selectedOptions[0].disabled) {
-        protoSel.value = 'tcp';
-    }
-}
-
-
-// ─── Init ─────────────────────────────────────────────────────────────────────
-let currentConf = null;
-
-async function init() {
-    const [sys, conf, imgs, version] = await Promise.all([
-        api('GET','/api/system/info'),
-        api('GET','/api/config'),
-        api('GET','/api/images').catch(()=>[]),
-        api('GET','/api/version').catch(()=>({current:'unknown'})),
-    ]);
-
-    images = imgs || [];
-    currentConf = conf;
-
-    // Load version
-    if (version && version.current) {
-        $('version-text').textContent = version.current;
-        $('current-version').textContent = version.current;
-    }
-
-    const nicSel = $('monitorNIC');
-    nicSel.innerHTML = '<option value="">All Interfaces</option>' + sys.nics.map(n=>`<option value="${n}">${n}</option>`).join('');
-    $('monitorDisk').innerHTML = sys.disks.map(d=>`<option value="${d}">${d}</option>`).join('');
-
-    $('token').value          = conf.token           || '';
-    $('monitorNIC').value     = conf.monitor_nic     || '';
-    $('monitorDisk').value    = conf.monitor_disk    || '';
-    $('maxPortForward').value = conf.max_port_forward  || 20;
-    $('maxForwardIPs').value  = conf.max_forward_ips   || 0;
-    $('trafficResetDay').value = conf.traffic_reset_day || 1;
-    $('entryHost').value      = conf.host             || '';
-    $('webUser').value        = conf.web_user        || '';
-    $('platformAddr').value   = conf.platform_addr   || '';
-    $('updateRepo').value     = conf.update_repo     || '';
-    $('updateBase').value     = conf.update_base_url || '';
-    $('updateApi').value      = conf.update_api_url  || '';
-    $('platformInsecure').checked = !!conf.platform_insecure;
-    $('virt-badge').textContent = 'VIRT: '+(conf.virt_type||'?').toUpperCase();
-    $('disk-label').textContent = 'Disk: '+(conf.monitor_disk||'/');
-
-    // Set RAM limit based on virtualization type
-    const ramInput = $('c-ram');
-    if (conf.virt_type === 'podman') {
-        ramInput.min = 64;
-        ramInput.value = 64;
-        ramInput.defaultValue = 64;
-    } else if (conf.virt_type === 'incus') {
-        ramInput.min = 128;
-        ramInput.value = 128;
-        ramInput.defaultValue = 128;
-    } else {
-        ramInput.min = 256;
-        ramInput.value = 512;
-        ramInput.defaultValue = 512;
-    }
-
-    refreshConnectionStatus(conf);
-}
-
-let tempConfigList = [];
-let allConfigList = [];
-
-async function openImagesConfig() {
-    try {
-        const res = await api('GET', '/api/images/config');
-        allConfigList = res.all || ["debian", "alpine"];
-        const configItems = res.config || ["debian", "alpine"];
-        
-        tempConfigList = [...configItems];
-        allConfigList.forEach(item => {
-            if (!tempConfigList.includes(item)) {
-                tempConfigList.push(item);
-            }
-        });
-        
-        openModal('modal-images-config');
-        renderImagesConfigList(configItems);
-
-        // 自定义镜像仅 podman 母鸡支持
-        const isPodman = currentConf && currentConf.virt_type === 'podman';
-        document.getElementById('custom-images-section').classList.toggle('hidden', !isPodman);
-        if (isPodman) refreshCustomImages();
-    } catch (e) {
-        alert('Failed to load OS images config: ' + e.message);
-    }
-}
-
-// ─── Custom Images (Podman) ──────────────────────────────────────────────────
-
-const CI_STATUS_BADGE = {
-    pulling: '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">PULLING</span>',
-    ready:   '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">READY</span>',
-    error:   '<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">ERROR</span>',
-};
-
-let customImagesCache = [];
-let ciWasPulling = false;
-
-async function refreshCustomImages() {
-    let list = [];
-    try { list = await api('GET', '/api/images/custom') || []; } catch (e) { return; }
-    customImagesCache = list;
-
-    const container = document.getElementById('custom-images-list');
-    if (!list.length) {
-        container.innerHTML = '<p class="text-xs text-slate-400 italic">No custom images.</p>';
-    } else {
-        container.innerHTML = list.map((img, idx) => `
-            <div class="p-2.5 bg-slate-50 rounded-lg border border-slate-200">
-                <div class="flex items-center justify-between gap-2">
-                    <div class="min-w-0">
-                        <div class="flex items-center gap-2">
-                            <span class="text-sm font-medium text-slate-700 truncate">${escHtml(img.name)}</span>
-                            ${CI_STATUS_BADGE[img.status] || ''}
-                        </div>
-                        <div class="text-[11px] text-slate-400 font-mono truncate">${escHtml(img.id)}</div>
-                        ${img.status === 'error' ? `<div class="text-[11px] text-rose-500 mt-0.5 break-all">${escHtml(img.error || 'pull failed')}</div>` : ''}
-                    </div>
-                    <div class="flex items-center gap-1 shrink-0">
-                        ${img.status === 'error' ? `<button onclick="retryCustomImage(${idx})" class="text-indigo-600 hover:bg-slate-100 rounded px-1.5 py-1 text-xs font-medium">Retry</button>` : ''}
-                        <button onclick="deleteCustomImage(${idx})" class="text-rose-500 hover:bg-rose-50 rounded px-1.5 py-1 text-xs font-medium">Delete</button>
-                    </div>
-                </div>
-            </div>
-        `).join('');
-    }
-
-    const pulling = list.some(img => img.status === 'pulling');
-    // 拉取全部结束时刷新创建/重装下拉（新就绪的镜像会出现在列表中）
-    if (ciWasPulling && !pulling) refreshImageDropdowns();
-    ciWasPulling = pulling;
-
-    // 有镜像在拉取中且弹窗仍打开时，轮询刷新状态
-    const modalOpen = !document.getElementById('modal-images-config').classList.contains('hidden');
-    if (modalOpen && pulling) {
-        setTimeout(refreshCustomImages, 3000);
-    }
-}
-
-function escHtml(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-async function refreshImageDropdowns() {
-    const imgs = await api('GET', '/api/images').catch(() => null);
-    if (imgs) { images = imgs; populateImageSelect('c-image'); populateImageSelect('r-image'); }
-}
-
-async function addCustomImage() {
-    const ref = document.getElementById('ci-ref').value.trim();
-    const name = document.getElementById('ci-name').value.trim();
-    if (!ref) { alert('Image reference is required'); return; }
-    try {
-        await api('POST', '/api/images/custom', { id: ref, name });
-        document.getElementById('ci-ref').value = '';
-        document.getElementById('ci-name').value = '';
-        refreshCustomImages();
-    } catch (e) {
-        alert('Failed to add custom image: ' + e.message);
-    }
-}
-
-async function retryCustomImage(idx) {
-    const img = customImagesCache[idx];
-    if (!img) return;
-    try {
-        await api('POST', '/api/images/custom', { id: img.id, name: img.name });
-        refreshCustomImages();
-    } catch (e) {
-        alert('Failed to retry: ' + e.message);
-    }
-}
-
-async function deleteCustomImage(idx) {
-    const img = customImagesCache[idx];
-    if (!img) return;
-    if (!confirm('Remove custom image "' + img.name + '" from the list?')) return;
-    try {
-        await api('DELETE', '/api/images/custom?id=' + encodeURIComponent(img.id));
-        refreshCustomImages();
-        refreshImageDropdowns();
-    } catch (e) {
-        alert('Failed to delete: ' + e.message);
-    }
-}
-
-function renderImagesConfigList(activeItems) {
-    const container = document.getElementById('images-config-list');
-    container.innerHTML = tempConfigList.map((item, idx) => {
-        const enabled = activeItems.includes(item);
-        return `
-            <div class="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-200">
-                <div class="flex items-center gap-3">
-                    <input type="checkbox" id="img-chk-${item}" ${enabled ? 'checked' : ''} class="w-4 h-4 text-indigo-600 border-slate-300 rounded focus:ring-indigo-500">
-                    <span class="font-medium text-slate-700 capitalize">${item}</span>
-                </div>
-                <div class="flex items-center gap-1.5 flex-row">
-                    <button onclick="moveImageConfig(${idx}, -1)" ${idx === 0 ? 'disabled class="opacity-30 cursor-not-allowed text-slate-400 p-1"' : 'class="text-indigo-600 hover:bg-slate-100 rounded p-1"'} title="Move Up">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
-                    </button>
-                    <button onclick="moveImageConfig(${idx}, 1)" ${idx === tempConfigList.length - 1 ? 'disabled class="opacity-30 cursor-not-allowed text-slate-400 p-1"' : 'class="text-indigo-600 hover:bg-slate-100 rounded p-1"'} title="Move Down">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-                    </button>
-                </div>
-            </div>
-        `;
-    }).join('');
-}
-
-function moveImageConfig(idx, direction) {
-    const targetIdx = idx + direction;
-    if (targetIdx < 0 || targetIdx >= tempConfigList.length) return;
-    
-    const temp = tempConfigList[idx];
-    tempConfigList[idx] = tempConfigList[targetIdx];
-    tempConfigList[targetIdx] = temp;
-    
-    const currentActive = [];
-    tempConfigList.forEach(item => {
-        const chk = document.getElementById(`img-chk-${item}`);
-        if (chk && chk.checked) {
-            currentActive.push(item);
-        }
-    });
-    
-    renderImagesConfigList(currentActive);
-}
-
-function saveImagesConfig() {
-    const result = [];
-    tempConfigList.forEach(item => {
-        const chk = document.getElementById(`img-chk-${item}`);
-        if (chk && chk.checked) {
-            result.push(item);
-        }
-    });
-
-    api('POST', '/api/images/config', result)
-        .then(() => {
-            closeModal('modal-images-config');
-            return api('GET', '/api/images');
-        })
-        .then(imgs => {
-            images = imgs || [];
-            populateImageSelect('c-image');
-            populateImageSelect('r-image');
-            alert('OS configuration saved successfully!');
-        })
-        .catch(err => {
-            alert('Failed to save configuration: ' + err.message);
-        });
-}
-
-init().then(() => {
-    refreshStatus();
-    refreshVMs();
-    setInterval(refreshStatus, 2000);
-    setInterval(refreshVMs, 5000);
-    setInterval(() => refreshConnectionStatus(currentConf), 3000);
-
-    // rfw 防火墙初始化
-    rfwCheckStatus();
-    rfwRefreshRules();
-    setInterval(rfwCheckStatus, 10000);
-});
-</script>
+<div class="toasts" id="toasts"></div>
+
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+<script src="/app.js"></script>
 </body>
 </html>
