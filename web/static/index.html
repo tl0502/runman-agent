@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="/app.css">
 <link rel="stylesheet" href="/vendor/xterm.css">
 </head>
-<body>
+<body class="logged-out">
 <div class="ambient" aria-hidden="true"></div>
 
 <!-- ── 图标精灵 ───────────────────────────────────────────────────────────── -->
@@ -85,6 +85,10 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg>
         防火墙
       </button>
+      <button class="seg" role="tab" data-view="security" aria-selected="false">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-lock"/></svg>
+        安全
+      </button>
       <button class="seg" role="tab" data-view="settings" aria-selected="false">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-sliders"/></svg>
         设置
@@ -100,11 +104,46 @@
       <button class="icon-btn" id="themeBtn" title="切换外观" aria-label="切换外观">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-moon"/></svg>
       </button>
+      <button class="icon-btn" id="logoutBtn" title="登出" aria-label="登出">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-power"/></svg>
+      </button>
     </div>
   </div>
 </header>
 
 <main>
+  <!-- ═══════════════════════════════ 登录 ═══════════════════════════════════ -->
+  <!-- HTML 静态默认是"未登录挡板态"：登录页可见、body 带挡板 class。
+       服务端 GET / 会按 session cookie 注入已登录态（去挡板 + 本节 hidden），
+       JS 的 session 探测与 401 处理仍作为兜底。 -->
+  <section class="view" id="view-login">
+    <div class="login-wrap">
+      <form class="card login-card" id="formLogin">
+        <div class="login-brand">
+          <span class="brand-mark" id="loginBrandMark">
+            <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <rect x="2.2" y="2.2" width="27.6" height="27.6" rx="9" stroke="currentColor" stroke-width="2.1"/>
+              <path d="M10 22V10.6h7.1a4.1 4.1 0 0 1 0 8.2H13" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="21.4" cy="22.2" r="1.6" fill="currentColor"/>
+            </svg>
+            <img id="loginBrandImg" alt="" hidden>
+          </span>
+          <span class="brand-name" id="loginTitle" style="font-size:18px">Run</span>
+        </div>
+        <div class="field">
+          <label for="loginUser">用户名</label>
+          <input class="input" id="loginUser" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label for="loginPass">密码</label>
+          <input class="input" id="loginPass" type="password" autocomplete="current-password" required>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" id="loginSubmit">登录</button>
+        <div class="login-err" id="loginErr" role="alert" hidden></div>
+      </form>
+    </div>
+  </section>
+
   <!-- ═══════════════════════════════ 概览 ═══════════════════════════════════ -->
   <section class="view" id="view-overview">
     <div class="page-head">
@@ -405,6 +444,96 @@
     </div>
   </section>
 
+  <!-- ═══════════════════════════════ 安全 ═══════════════════════════════════ -->
+  <section class="view" id="view-security" hidden>
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">安全</h1>
+      </div>
+      <div class="page-actions">
+        <button class="icon-btn" id="secRefresh" title="刷新">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">手动封禁</span>
+        </div>
+        <div class="ban-form">
+          <input class="input" id="banIp" placeholder="IP 地址" autocomplete="off" spellcheck="false">
+          <div class="ban-hours" id="banHours">
+            <button type="button" class="btn" data-h="1">1 小时</button>
+            <button type="button" class="btn" data-h="24">24 小时</button>
+            <button type="button" class="btn" data-h="168">7 天</button>
+            <button type="button" class="btn active" data-h="0">永久</button>
+          </div>
+          <input class="input" id="banReason" placeholder="原因（可选）" autocomplete="off">
+          <button class="btn btn-bad" id="btnBan">封禁</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">当前封禁</span>
+          <span class="badge badge-quiet" id="banCount">0</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>IP</th>
+                <th>来源</th>
+                <th>原因</th>
+                <th>到期</th>
+                <th style="text-align:right"></th>
+              </tr>
+            </thead>
+            <tbody id="banTbody"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="banEmpty" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-lock"/></svg>
+          <span class="empty-title">没有封禁中的 IP</span>
+          <span class="empty-sub">登录失败 5 次会自动锁定 10 分钟，也可手动封禁。</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">登录事件</span>
+          <select class="input" id="logFilter">
+            <option value="">全部</option>
+            <option value="ok">成功</option>
+            <option value="fail">失败</option>
+            <option value="ban">封禁相关</option>
+          </select>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>类型</th>
+                <th>IP</th>
+                <th>用户名</th>
+                <th>详情</th>
+              </tr>
+            </thead>
+            <tbody id="logTbody"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="logEmpty" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-clock"/></svg>
+          <span class="empty-title">暂无事件</span>
+          <span class="empty-sub">登录成功、失败与封禁操作都会记录在这里。</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ═══════════════════════════════ 设置 ═══════════════════════════════════ -->
   <section class="view" id="view-settings" hidden>
     <div class="page-head">
@@ -556,6 +685,12 @@
               <div class="field">
                 <label for="netavarkBase">Netavark 下载基址 <span class="hint">Podman 后端</span></label>
                 <input class="input mono" id="netavarkBase" placeholder="https://…/releases/latest/download">
+              </div>
+              <div class="field">
+                <label class="check"><input type="checkbox" id="allowInsecureDownload"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 允许明文 http</label>
+              </div>
+              <div class="field">
+                <label class="check"><input type="checkbox" id="allowInternalDownload"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 允许内网地址</label>
               </div>
             </div>
           </div>

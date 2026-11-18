@@ -109,6 +109,28 @@ type System struct {
 	UpdatedAt time.Time
 }
 
+// LoginLog 登录安全事件时间线（统一事件流）。Action 取值：
+// login_ok / login_fail / auto_ban / login_blocked / manual_ban / unban。
+// Detail 存补充信息（如封禁时长、触发原因），可为空。
+type LoginLog struct {
+	ID     int64     `gorm:"primaryKey;autoIncrement" json:"id"`
+	TS     time.Time `gorm:"index" json:"ts"`
+	Action string    `gorm:"index" json:"action"`
+	IP     string    `gorm:"index" json:"ip"`
+	User   string    `json:"user"` // 尝试的用户名（login_fail 时可能是错误值）
+	Detail string    `json:"detail"`
+}
+
+// LoginBan 手动封禁记录（应用层：封禁期间该 IP 的登录请求直接被拒）。
+// Until 为零值表示永久。自动锁定（内存限速）不入此表，由面板合并展示。
+type LoginBan struct {
+	IP        string    `gorm:"primaryKey" json:"ip"`
+	Source    string    `json:"source"` // manual（当前仅手动封禁入库）
+	Until     time.Time `json:"until"`
+	Reason    string    `json:"reason"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type DB struct {
 	orm *gorm.DB
 	// ciMu 序列化自定义镜像列表的读改写，防止并发拉取状态更新互相覆盖
@@ -140,7 +162,7 @@ func Init(path string) (*DB, error) {
 		sqlDB.SetMaxOpenConns(1)
 	}
 
-	if err := db.AutoMigrate(&Traffic{}, &VMConfig{}, &PodmanVMConfig{}, &CloudHVVMConfig{}, &IncusVMConfig{}, &PortForward{}, &VMIPLimit{}, &WGBinding{}, &System{}); err != nil {
+	if err := db.AutoMigrate(&Traffic{}, &VMConfig{}, &PodmanVMConfig{}, &CloudHVVMConfig{}, &IncusVMConfig{}, &PortForward{}, &VMIPLimit{}, &WGBinding{}, &System{}, &LoginLog{}, &LoginBan{}); err != nil {
 		return nil, fmt.Errorf("automigrate: %w", err)
 	}
 
@@ -169,6 +191,61 @@ func (d *DB) GetSystemTime(key string) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return s.UpdatedAt, nil
+}
+
+// 登录安全（事件时间线 + 手动封禁）
+
+const loginLogKeep = 2000 // 事件保留条数，超出自动轮转
+
+// InsertLoginLog 记录一条安全事件并轮转超量历史。
+func (d *DB) InsertLoginLog(action, ip, user, detail string) {
+	d.orm.Create(&LoginLog{TS: time.Now(), Action: action, IP: ip, User: user, Detail: detail})
+	// 轮转：只保留最新 loginLogKeep 条（插入后清理一次，量小成本低）
+	d.orm.Where("id NOT IN (?)",
+		d.orm.Model(&LoginLog{}).Select("id").Order("id DESC").Limit(loginLogKeep),
+	).Delete(&LoginLog{})
+}
+
+// ListLoginLog 返回最近的事件，最新在前。
+func (d *DB) ListLoginLog(limit int) []LoginLog {
+	if limit <= 0 || limit > loginLogKeep {
+		limit = 100
+	}
+	out := []LoginLog{}
+	d.orm.Order("id DESC").Limit(limit).Find(&out)
+	return out
+}
+
+// InsertLoginBan 写入/刷新一条手动封禁。until 为零值表示永久。
+func (d *DB) InsertLoginBan(ip, reason string, until time.Time) error {
+	return d.orm.Save(&LoginBan{
+		IP: ip, Source: "manual", Until: until, Reason: reason, CreatedAt: time.Now(),
+	}).Error
+}
+
+// GetLoginBan 返回该 IP 当前生效的手动封禁（无或已过期返回 false）。
+func (d *DB) GetLoginBan(ip string) (LoginBan, bool) {
+	var b LoginBan
+	if err := d.orm.First(&b, "ip = ?", ip).Error; err != nil {
+		return b, false
+	}
+	if !b.Until.IsZero() && b.Until.Before(time.Now()) {
+		return b, false
+	}
+	return b, true
+}
+
+// DeleteLoginBan 解除手动封禁。
+func (d *DB) DeleteLoginBan(ip string) {
+	d.orm.Delete(&LoginBan{}, "ip = ?", ip)
+}
+
+// ListActiveLoginBans 返回全部未过期的手动封禁。
+func (d *DB) ListActiveLoginBans() []LoginBan {
+	now := time.Now()
+	out := []LoginBan{}
+	d.orm.Where("until IS NULL OR until = ? OR until > ?", time.Time{}, now).Order("created_at DESC").Find(&out)
+	return out
 }
 
 // 自定义镜像（仅 podman 驱动使用），JSON 序列化后存于 System KV

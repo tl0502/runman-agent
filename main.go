@@ -222,7 +222,10 @@ func main() {
 	ws := web.NewServer(database, svc, hostMon, cfg, a.pf, a.wg, a, rawMgr, version, commit, upd)
 	go func() {
 		log.Printf("Starting web server on %s", conf.Web)
-		_ = ws.ListenAndServe(conf.Web)
+		if err := ws.ListenAndServe(conf.Web); err != nil {
+			// 失败不能静默：证书生成/落盘、端口占用都走这里
+			log.Printf("[Web] listen %s failed: %v", conf.Web, err)
+		}
 	}()
 
 	// 启动流量统计服务，定期从驱动获取流量数据并同步到数据库

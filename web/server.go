@@ -3,9 +3,11 @@ package web
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -43,7 +45,12 @@ import (
 var staticFiles embed.FS
 
 var wsUpgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	// 同源校验：浏览器发起的 WS 一定带 Origin；空 Origin 放行非浏览器客户端
+	// （脚本/测试）。未带有效 session cookie 的握手在 authMiddleware 已被 401。
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		return origin == "" || origin == "https://"+r.Host
+	},
 }
 
 type vmNetSnapshot struct {
@@ -61,6 +68,7 @@ type Server struct {
 	pf           *portforward.Manager
 	wg           *wgbind.Manager
 	agent        interface{}
+	sessions     *sessionStore
 	vmSnapshots  map[string]*vmNetSnapshot
 	vmSnapshotMu sync.Mutex
 	version      string
@@ -89,6 +97,7 @@ func NewServer(database *db.DB, mgr manager.VMManager, hostMon *monitor.HostMoni
 		pf:          pf,
 		wg:          wg,
 		agent:       agent,
+		sessions:    newSessionStore(),
 		version:     version,
 		commit:      commit,
 		updater:     upd,
@@ -97,30 +106,52 @@ func NewServer(database *db.DB, mgr manager.VMManager, hostMon *monitor.HostMoni
 	}
 }
 
-// authMiddleware enforces HTTP Basic Auth when WebUser is configured.
-// If no credentials are stored in config the request passes through.
-// /api/vm-status is always public (used by VMs to report status).
+// authMiddleware 校验 cookie session；未登录返回 401（无 WWW-Authenticate，
+// 前端收到 401 后显示登录页）。静态资源（登录页本体）与状态上报端点公开。
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip auth for VM status reporting endpoint (VMs use it)
-		if r.URL.Path == "/api/vm-status" {
+		// 静态资源（index.html/app.js/app.css/vendor）必须公开，否则登录页无法加载；
+		// /rfw 反代是防火墙管理面，需要鉴权。
+		if !strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/rfw/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// 状态上报（VM 用）与登录/登出端点公开
+		// 公开资源：VM 状态上报、登录/登出、品牌信息与图标（登录页也要展示）。
+		// 图标仅放行 GET；POST/DELETE（上传/重置）仍需登录。
+		if r.URL.Path == "/api/vm-status" ||
+			r.URL.Path == "/api/login" ||
+			r.URL.Path == "/api/logout" ||
+			r.URL.Path == "/api/brand" ||
+			(r.URL.Path == "/api/brand/icon" && r.Method == http.MethodGet) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		conf := s.cfg.Get()
 		if conf.WebUser == "" {
+			// 未配置用户名：面板无鉴权模式（保持旧行为）。
+			// 注意：hash 为空但 WebUser 非空属异常态（如配置损坏），此时 bcrypt
+			// 对空 hash 恒失败 → 走下面 401（fail-closed），绝不放行。
 			next.ServeHTTP(w, r)
 			return
 		}
-		user, pass, ok := r.BasicAuth()
-		if !ok || user != conf.WebUser ||
-			bcrypt.CompareHashAndPassword([]byte(conf.WebPassHash), []byte(pass)) != nil {
-			w.Header().Set("WWW-Authenticate", `Basic realm="narwhalcloud"`)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
+
+		c, err := r.Cookie(sessionCookie)
+		if err == nil {
+			if user, ok := s.sessions.validate(c.Value); ok {
+				// 滑动续期：服务端 lastSeen 已在 validate 内更新，这里重发 cookie
+				// 重置浏览器侧的 7 天窗口，活跃用户不会被绝对过期登出。
+				setSessionCookie(w, c.Value, r.TLS != nil)
+				r = r.WithContext(context.WithValue(r.Context(), sessionUserKey, user))
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
-		next.ServeHTTP(w, r)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 	})
 }
 
@@ -128,6 +159,15 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux := http.NewServeMux()
 
 	// 系统
+	mux.HandleFunc("POST /api/login", s.handleLogin)
+	mux.HandleFunc("POST /api/logout", s.handleLogout)
+	mux.HandleFunc("GET /api/session", s.handleSession)
+	mux.HandleFunc("GET /api/brand", s.handleBrandPublic)
+	// 安全：登录日志与封禁
+	mux.HandleFunc("GET /api/security/log", s.handleSecurityLog)
+	mux.HandleFunc("GET /api/security/bans", s.handleSecurityBans)
+	mux.HandleFunc("POST /api/security/ban", s.handleSecurityBanCreate)
+	mux.HandleFunc("DELETE /api/security/ban/{ip}", s.handleSecurityBanDelete)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("GET /api/network/addresses", s.handleNetworkAddresses)
@@ -208,7 +248,18 @@ func (s *Server) ListenAndServe(addr string) error {
 				http.NotFound(w, r)
 				return
 			}
-			w.Header().Set("Content-Type", "text/html")
+			// 首帧按登录态渲染：session 有效则去掉挡板（否则未登录用户会闪登录页、
+			// 已登录用户会闪登录面板——静态 HTML 自己无法知道登录态，由服务端注入）。
+			// HTML 源文件的静态默认是"未登录挡板态"，探测失败时 JS 的 401 逻辑仍兜底。
+			if s.authedFromCookie(r) {
+				data = bytes.Replace(data, []byte(`<body class="logged-out">`), []byte(`<body>`), 1)
+				data = bytes.Replace(data,
+					[]byte(`<section class="view" id="view-login">`),
+					[]byte(`<section class="view" id="view-login" hidden>`), 1)
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			// 首帧内容依赖 cookie 状态，绝不能缓存，否则登出后刷新仍显示内部页。
+			w.Header().Set("Cache-Control", "no-store")
 			if _, err := w.Write(data); err != nil {
 				log.Printf("write response error: %v", err)
 			}
@@ -228,7 +279,232 @@ func (s *Server) ListenAndServe(addr string) error {
 		}
 	})
 
-	return http.ListenAndServe(addr, s.authMiddleware(mux))
+	// TLS：面板原地升级为 HTTPS（自签证书，首次启动自动生成并复用）
+	certPath, keyPath := s.tlsPaths()
+	cert, err := ensureSelfSignedCert(certPath, keyPath)
+	if err != nil {
+		return fmt.Errorf("ensure TLS certificate: %w", err)
+	}
+	ln, err := tls.Listen("tcp", addr, &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	})
+	if err != nil {
+		return err
+	}
+	return http.Serve(ln, s.authMiddleware(mux))
+}
+
+// tlsPaths 返回自签证书的存放路径（与 agent 数据目录同级）。
+func (s *Server) tlsPaths() (string, string) {
+	dir := filepath.Dir(s.cfg.Get().DB)
+	if dir == "" || dir == "." {
+		dir = "/opt/narwhal-agent"
+	}
+	return filepath.Join(dir, "web-cert.pem"), filepath.Join(dir, "web-key.pem")
+}
+
+// ─── 登录会话 ──────────────────────────────────────────────────────────────────
+
+// handleLogin 校验用户名/密码并颁发会话 cookie。
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		User     string `json:"user"`
+		Password string `json:"password"`
+	}
+	// 免鉴权端点必须限制 body 大小，防止解码前的内存放大 DoS
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		jsonErr(w, fmt.Errorf("invalid request body"), http.StatusBadRequest)
+		return
+	}
+
+	ip := clientIP(r)
+
+	// 手动封禁检查（先于限速）：被封 IP 的登录请求直接拒绝并记录事件——
+	// 这是"攻击者被封后仍在活动"的观测点。响应与密码错误一致，不泄漏封禁状态。
+	if _, banned := s.db.GetLoginBan(ip); banned {
+		s.db.InsertLoginLog("login_blocked", ip, req.User, "封禁中的 IP 尝试登录")
+		jsonErr(w, fmt.Errorf("用户名或密码错误"), http.StatusUnauthorized)
+		return
+	}
+
+	if s.sessions.loginLocked(ip) {
+		// 自动锁定中：429 响应但不记事件（爆破工具高频敲击会刷爆时间线），
+		// 锁定状态本身已在封禁列表中可见。
+		jsonErr(w, fmt.Errorf("尝试次数过多，请 %d 分钟后再试", int(lockoutDuration.Minutes())), http.StatusTooManyRequests)
+		return
+	}
+
+	conf := s.cfg.Get()
+	match := req.User == conf.WebUser &&
+		bcrypt.CompareHashAndPassword([]byte(conf.WebPassHash), []byte(req.Password)) == nil
+	if !match {
+		// 用户名不匹配时短路跳过了 bcrypt（~100ms），用固定 dummy hash 补一次，
+		// 拉平"用户名错"与"密码错"的响应耗时，阻断用户名枚举时序侧信道。
+		if req.User != conf.WebUser {
+			_ = bcrypt.CompareHashAndPassword([]byte(dummyBcryptHash), []byte(req.Password))
+		}
+		if until, locked := s.sessions.recordFail(ip); locked {
+			s.db.InsertLoginLog("auto_ban", ip, req.User,
+				fmt.Sprintf("连续 %d 次失败，锁定至 %s", maxLoginFails, until.Format("15:04:05")))
+		} else {
+			s.db.InsertLoginLog("login_fail", ip, req.User, "")
+		}
+		jsonErr(w, fmt.Errorf("用户名或密码错误"), http.StatusUnauthorized)
+		return
+	}
+	s.sessions.recordSuccess(ip)
+	s.db.InsertLoginLog("login_ok", ip, req.User, "")
+
+	token, err := s.sessions.create(req.User)
+	if err != nil {
+		jsonErr(w, err, http.StatusInternalServerError)
+		return
+	}
+	// 复核：bcrypt 期间密码被改（会话已全部被踢），本次颁发的 token 必须作废，
+	// 否则旧密码可在踢人窗口后拿到有效会话。
+	if cur := s.cfg.Get(); cur.WebPassHash != conf.WebPassHash {
+		s.sessions.destroy(token)
+		jsonErr(w, fmt.Errorf("用户名或密码错误"), http.StatusUnauthorized)
+		return
+	}
+	setSessionCookie(w, token, r.TLS != nil)
+	jsonOK(w, map[string]string{"user": req.User})
+}
+
+// dummyBcryptHash 为一串合法但无对应意义的 bcrypt 摘要，仅用于登录时序拉平。
+const dummyBcryptHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
+
+// handleLogout 销毁当前会话（幂等）。
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		s.sessions.destroy(c.Value)
+	}
+	clearSessionCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ─── 安全：登录日志与封禁 ──────────────────────────────────────────────────────
+
+// handleSecurityLog 返回登录安全事件时间线（最新在前）。
+func (s *Server) handleSecurityLog(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	jsonOK(w, s.db.ListLoginLog(limit))
+}
+
+// securityBanView 封禁列表条目：合并 DB 手动封禁与内存自动锁。
+type securityBanView struct {
+	IP     string `json:"ip"`
+	Source string `json:"source"` // manual | auto
+	Until  int64  `json:"until"`  // unix 秒；0 = 永久
+	Reason string `json:"reason"`
+}
+
+// handleSecurityBans 返回当前生效中的全部封禁。
+func (s *Server) handleSecurityBans(w http.ResponseWriter, _ *http.Request) {
+	out := []securityBanView{}
+	for _, b := range s.db.ListActiveLoginBans() {
+		u := int64(0)
+		if !b.Until.IsZero() {
+			u = b.Until.Unix()
+		}
+		out = append(out, securityBanView{IP: b.IP, Source: b.Source, Until: u, Reason: b.Reason})
+	}
+	for _, l := range s.sessions.lockedIPs() {
+		out = append(out, securityBanView{
+			IP: l.IP, Source: "auto", Until: l.Until.Unix(),
+			Reason: fmt.Sprintf("连续 %d 次登录失败", maxLoginFails),
+		})
+	}
+	jsonOK(w, out)
+}
+
+// handleSecurityBanCreate 手动封禁一个 IP（hours<=0 表示永久）。
+func (s *Server) handleSecurityBanCreate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IP     string `json:"ip"`
+		Hours  int    `json:"hours"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
+		jsonErr(w, fmt.Errorf("请求体无法解析"), http.StatusBadRequest)
+		return
+	}
+	p := net.ParseIP(strings.TrimSpace(req.IP))
+	if p == nil {
+		jsonErr(w, fmt.Errorf("IP 格式不正确"), http.StatusBadRequest)
+		return
+	}
+	ip := p.String()
+	// 自锁保护：禁止封禁当前请求的来源 IP（防止把自己挡在面板外）
+	if ip == clientIP(r) {
+		jsonErr(w, fmt.Errorf("不能封禁当前来源 IP"), http.StatusBadRequest)
+		return
+	}
+	var until time.Time
+	if req.Hours > 0 {
+		until = time.Now().Add(time.Duration(req.Hours) * time.Hour)
+	}
+	if err := s.db.InsertLoginBan(ip, strings.TrimSpace(req.Reason), until); err != nil {
+		jsonErr(w, err, http.StatusInternalServerError)
+		return
+	}
+	desc := "永久"
+	if req.Hours > 0 {
+		desc = fmt.Sprintf("%d 小时", req.Hours)
+	}
+	s.db.InsertLoginLog("manual_ban", ip, "", "手动封禁（"+desc+"）")
+	jsonOK(w, map[string]bool{"ok": true})
+}
+
+// handleSecurityBanDelete 解除封禁：同时清掉手动封禁记录与内存自动锁。
+func (s *Server) handleSecurityBanDelete(w http.ResponseWriter, r *http.Request) {
+	ip := r.PathValue("ip")
+	if p := net.ParseIP(ip); p == nil {
+		jsonErr(w, fmt.Errorf("IP 格式不正确"), http.StatusBadRequest)
+		return
+	}
+	s.db.DeleteLoginBan(ip)
+	s.sessions.clearLock(ip)
+	s.db.InsertLoginLog("unban", ip, "", "管理员解封")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSession 返回当前登录用户（请求已经 authMiddleware 校验）。
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	user, _ := r.Context().Value(sessionUserKey).(string)
+	jsonOK(w, map[string]string{"user": user})
+}
+
+// authedFromCookie 判断请求是否携带有效登录会话（供首帧 HTML 渲染分支用）。
+// 未配置登录用户名时面板无鉴权，等同已登录；hash 异常为空时 validate 必然失败 → 未登录。
+func (s *Server) authedFromCookie(r *http.Request) bool {
+	conf := s.cfg.Get()
+	if conf.WebUser == "" {
+		return true
+	}
+	c, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return false
+	}
+	_, ok := s.sessions.validate(c.Value)
+	return ok
+}
+
+// handleBrandPublic 公开返回站点品牌信息（名称 + 图标版本），供登录页在
+// 未登录状态下展示真实品牌。不含任何敏感字段。
+func (s *Server) handleBrandPublic(w http.ResponseWriter, _ *http.Request) {
+	conf := s.cfg.Get()
+	_, iconMtime := s.brandIconFile()
+	jsonOK(w, map[string]any{
+		"site_name": normalizeSiteName(conf.SiteName),
+		"site_icon": iconMtime,
+	})
 }
 
 // ─── 辅助 ──────────────────────────────────────────────────────────────────────
@@ -640,6 +916,9 @@ type configRequest struct {
 	UpdateRepo    *string `json:"update_repo"`
 	UpdateBaseURL *string `json:"update_base_url"`
 	UpdateAPIURL  *string `json:"update_api_url"`
+	// 下载源安全开关：默认关闭，放行明文 http 与内网地址需显式开启。
+	AllowInsecureDownload *bool `json:"allow_insecure_download"`
+	AllowInternalDownload *bool `json:"allow_internal_download"`
 	// nil = 未提交；false = 显式关闭，因此用指针。
 	PlatformInsecure *bool   `json:"platform_insecure"`
 	NetavarkBase     *string `json:"netavark_base"`
@@ -673,6 +952,9 @@ type configResponse struct {
 	NetavarkBase     string `json:"netavark_base"`
 	PublicIPv4       string `json:"public_ipv4"`
 
+	AllowInsecureDownload bool `json:"allow_insecure_download"`
+	AllowInternalDownload bool `json:"allow_internal_download"`
+
 	ContainerIsolate      bool     `json:"container_isolate"`
 	HostAllowPorts        []int    `json:"host_allow_ports"`
 	ContainerAllowSubnets []string `json:"container_allow_subnets"`
@@ -685,8 +967,25 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 400)
 			return
 		}
+		// 密码在改配置前预生成：bcrypt 对超 72 字节密码报错，若在 Update 回调里
+		// 吞掉错误会把空 hash 写进配置 → 面板 fail-open 全裸。这里失败直接 400。
+		var newPassHash string
+		if req.WebPass != "" {
+			if len(req.WebPass) > 72 {
+				jsonErr(w, fmt.Errorf("密码最长 72 个字符"), http.StatusBadRequest)
+				return
+			}
+			h, err := bcrypt.GenerateFromPassword([]byte(req.WebPass), bcrypt.DefaultCost)
+			if err != nil {
+				jsonErr(w, fmt.Errorf("密码无法使用: %v", err), http.StatusBadRequest)
+				return
+			}
+			newPassHash = string(h)
+		}
 		// 原子更新配置文件
-		err := s.cfg.Update(func(cfg *config.Config) {
+		credChanged := false
+		// UpdateChecked：fn 可返回错误，校验失败时不落盘、不改内存值。
+		err := s.cfg.UpdateChecked(func(cfg *config.Config) error {
 			if req.Token != "" {
 				cfg.Token = req.Token
 			}
@@ -704,15 +1003,16 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if req.MaxForwardIPs != nil && *req.MaxForwardIPs >= 0 {
 				cfg.MaxForwardIPs = *req.MaxForwardIPs
 			}
-			if req.WebUser != "" {
+			if req.WebUser != "" && req.WebUser != cfg.WebUser {
 				cfg.WebUser = req.WebUser
+				credChanged = true
 			}
 			if req.SiteName != nil {
 				cfg.SiteName = normalizeSiteName(*req.SiteName)
 			}
-			if req.WebPass != "" {
-				hash, _ := bcrypt.GenerateFromPassword([]byte(req.WebPass), bcrypt.DefaultCost)
-				cfg.WebPassHash = string(hash)
+			if newPassHash != "" {
+				cfg.WebPassHash = newPassHash
+				credChanged = true
 			}
 			if req.TrafficResetDay > 0 && req.TrafficResetDay <= 28 {
 				cfg.TrafficResetDay = req.TrafficResetDay
@@ -723,17 +1023,38 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if req.UpdateRepo != nil {
 				cfg.UpdateRepo = strings.TrimSpace(*req.UpdateRepo)
 			}
+			// 下载源校验：这几个字段指向的内容会以 root 身份执行
+			// （updater 用 systemd-run 跑 install.sh，netavark 二进制直接落地），
+			// 校验失败必须让整个更新失败，不能静默写入。
+			if req.AllowInsecureDownload != nil {
+				cfg.AllowInsecureDownload = *req.AllowInsecureDownload
+			}
+			if req.AllowInternalDownload != nil {
+				cfg.AllowInternalDownload = *req.AllowInternalDownload
+			}
 			if req.UpdateBaseURL != nil {
-				cfg.UpdateBaseURL = strings.TrimSpace(*req.UpdateBaseURL)
+				v := strings.TrimSpace(*req.UpdateBaseURL)
+				if err := config.ValidateDownloadBase(v, cfg.AllowInsecureDownload, cfg.AllowInternalDownload); err != nil {
+					return err
+				}
+				cfg.UpdateBaseURL = v
 			}
 			if req.UpdateAPIURL != nil {
-				cfg.UpdateAPIURL = strings.TrimSpace(*req.UpdateAPIURL)
+				v := strings.TrimSpace(*req.UpdateAPIURL)
+				if err := config.ValidateDownloadBase(v, cfg.AllowInsecureDownload, cfg.AllowInternalDownload); err != nil {
+					return err
+				}
+				cfg.UpdateAPIURL = v
 			}
 			if req.PlatformInsecure != nil {
 				cfg.PlatformInsecure = *req.PlatformInsecure
 			}
 			if req.NetavarkBase != nil {
-				cfg.NetavarkBase = strings.TrimSpace(*req.NetavarkBase)
+				v := strings.TrimSpace(*req.NetavarkBase)
+				if err := config.ValidateDownloadBase(v, cfg.AllowInsecureDownload, cfg.AllowInternalDownload); err != nil {
+					return err
+				}
+				cfg.NetavarkBase = v
 			}
 			if req.PublicIPv4 != nil {
 				cfg.PublicIPv4 = strings.TrimSpace(*req.PublicIPv4)
@@ -747,10 +1068,21 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if req.ContainerAllowSubnets != nil {
 				cfg.ContainerAllowSubnets = config.ParseSubnetList(*req.ContainerAllowSubnets)
 			}
+			return nil
 		})
 		if err != nil {
+			// 下载源校验失败属于请求参数错误（400），不是服务端故障。
+			if errors.Is(err, config.ErrInvalidDownloadBase) {
+				jsonErr(w, err, http.StatusBadRequest)
+				return
+			}
 			http.Error(w, "failed to save config: "+err.Error(), 500)
 			return
+		}
+		// 凭证变更且持久化成功后才踢掉全部已登录会话，强制重新登录；
+		// 放在 Update 之外，避免落盘失败时误踢（内存态可能未生效）。
+		if credChanged {
+			s.sessions.destroyAll()
 		}
 		w.WriteHeader(200)
 		return
@@ -776,6 +1108,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		PlatformInsecure: conf.PlatformInsecure,
 		NetavarkBase:     conf.NetavarkBase,
 		PublicIPv4:       conf.PublicIPv4,
+
+		AllowInsecureDownload: conf.AllowInsecureDownload,
+		AllowInternalDownload: conf.AllowInternalDownload,
 
 		ContainerIsolate:      conf.IsolateEnabled(),
 		HostAllowPorts:        conf.AllowedHostPorts(),
@@ -1609,7 +1944,8 @@ func (s *Server) handleVMStatus(w http.ResponseWriter, r *http.Request) {
 		RamTotalMb int64   `json:"ram_total_mb"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// 免鉴权端点必须限制 body 大小，防止解码前的内存放大 DoS
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}

@@ -609,7 +609,7 @@ write_files:
         PAYLOAD="{\"vm_id\":\"$VMID\",\"cpu_percent\":$CPU_PERCENT,\"ram_used_mb\":$MEM_USED,\"ram_total_mb\":$MEM_TOTAL}"
         echo "Sending: $PAYLOAD"
 
-        curl -s -o /dev/null -X POST http://10.91.0.1:8792/api/vm-status \
+        curl -s -k -o /dev/null -X POST https://10.91.0.1:8792/api/vm-status \
           -H "Content-Type: application/json" -d "$PAYLOAD"
 
         sleep 30

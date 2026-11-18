@@ -64,6 +64,14 @@ async function api(method, path, body) {
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(path, opts);
+  if (res.status === 401) {
+    // 会话失效：除登录自身外，一律切到登录页
+    if (path !== '/api/session' && path !== '/api/login') {
+      showLogin();
+      throw new Error('会话已过期，请重新登录');
+    }
+    throw new Error('用户名或密码错误');
+  }
   if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
   if (res.status === 204) return null;
   return res.json().catch(() => null);
@@ -129,7 +137,7 @@ $('themeBtn').addEventListener('click', () => {
 });
 
 /* ── 视图路由 ─────────────────────────────────────────────────────────────── */
-const VIEWS = ['overview', 'vms', 'firewall', 'settings'];
+const VIEWS = ['login', 'overview', 'vms', 'firewall', 'security', 'settings'];
 
 function setView(name, { push = true } = {}) {
   if (!VIEWS.includes(name)) name = 'overview';
@@ -157,6 +165,7 @@ function setView(name, { push = true } = {}) {
   if (push && location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
   if (name === 'vms') renderVMs();
   if (name === 'firewall') refreshFirewall();
+  if (name === 'security') refreshSecurity();
   if (name === 'settings') syncDirty();
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
@@ -950,6 +959,117 @@ async function refreshRules() {
 }
 $('rfwRefresh').addEventListener('click', (e) => withBusy(e.currentTarget, async () => { await refreshFirewall(); toast('已刷新'); }));
 
+/* ── 安全：登录日志与封禁 ─────────────────────────────────────────────────── */
+let banHours = 0; // 0 = 永久
+let secLogCache = [];
+
+qsa('#banHours .btn').forEach((btn) => btn.addEventListener('click', () => {
+  banHours = Number(btn.dataset.h) || 0;
+  qsa('#banHours .btn').forEach((b) => b.classList.toggle('active', b === btn));
+}));
+
+function banMeta(action) {
+  switch (action) {
+    case 'login_ok':      return { label: '成功', cls: 'badge-ok' };
+    case 'login_fail':    return { label: '失败', cls: 'badge-warn' };
+    case 'auto_ban':      return { label: '自动锁定', cls: 'badge-bad' };
+    case 'login_blocked': return { label: '被封仍访问', cls: 'badge-bad' };
+    case 'manual_ban':    return { label: '手动封禁', cls: 'badge-blue' };
+    case 'unban':         return { label: '解封', cls: 'badge-quiet' };
+    default:              return { label: action, cls: 'badge-quiet' };
+  }
+}
+
+function matchesLogFilter(action, f) {
+  if (!f) return true;
+  if (f === 'ok') return action === 'login_ok';
+  if (f === 'fail') return action === 'login_fail';
+  if (f === 'ban') return action !== 'login_ok' && action !== 'login_fail';
+  return true;
+}
+
+function renderSecLog() {
+  const f = $('logFilter').value;
+  const rows = secLogCache.filter((e) => matchesLogFilter(e.action, f));
+  const tbody = $('logTbody');
+  $('logEmpty').hidden = rows.length > 0;
+  if (!rows.length) { tbody.innerHTML = ''; return; }
+  tbody.innerHTML = rows.map((e) => {
+    const m = banMeta(e.action);
+    const t = new Date(e.ts);
+    return `
+    <tr>
+      <td class="dim small" title="${t.toLocaleString()}">${ago(t.getTime() / 1000)}</td>
+      <td><span class="badge ${m.cls}">${m.label}</span></td>
+      <td class="mono-cell">${esc(e.ip)}</td>
+      <td class="dim">${e.user ? esc(e.user) : '—'}</td>
+      <td class="dim small">${e.detail ? esc(e.detail) : ''}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderBans(bans) {
+  const tbody = $('banTbody');
+  $('banEmpty').hidden = bans.length > 0;
+  $('banCount').textContent = bans.length;
+  if (!bans.length) { tbody.innerHTML = ''; return; }
+  tbody.innerHTML = bans.map((b) => {
+    const until = b.until > 0
+      ? `${ago(b.until)}<div class="dim small" title="${new Date(b.until * 1000).toLocaleString()}">${new Date(b.until * 1000).toLocaleString()}</div>`
+      : '<span class="badge badge-bad">永久</span>';
+    const src = b.source === 'manual'
+      ? '<span class="badge badge-blue">手动</span>'
+      : '<span class="badge badge-warn">自动</span>';
+    return `
+    <tr>
+      <td class="mono-cell">${esc(b.ip)}</td>
+      <td>${src}</td>
+      <td class="dim small">${b.reason ? esc(b.reason) : '—'}</td>
+      <td>${until}</td>
+      <td style="text-align:right">
+        <button class="act danger" data-unban="${esc(b.ip)}" title="解封">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg>
+        </button>
+      </td>
+    </tr>`;
+  }).join('');
+  qsa('[data-unban]').forEach((btn) => btn.addEventListener('click', async () => {
+    if (!confirm(`解封 ${btn.dataset.unban}？`)) return;
+    try {
+      await api('DELETE', `/api/security/ban/${encodeURIComponent(btn.dataset.unban)}`);
+      toast('已解封');
+      refreshSecurity();
+    } catch (e) { toastErr(e); }
+  }));
+}
+
+async function refreshSecurity() {
+  if (state.view !== 'security') return;
+  try {
+    const [bans, log] = await Promise.all([
+      api('GET', '/api/security/bans'),
+      api('GET', '/api/security/log?limit=200'),
+    ]);
+    renderBans(bans || []);
+    secLogCache = log || [];
+    renderSecLog();
+  } catch { /* 会话失效走全局 401 处理 */ }
+}
+
+$('btnBan').addEventListener('click', async (e) => {
+  const ip = $('banIp').value.trim();
+  if (!ip) return toast('请输入 IP 地址', 'bad');
+  await withBusy(e.currentTarget, async () => {
+    await api('POST', '/api/security/ban', { ip, hours: banHours, reason: $('banReason').value.trim() });
+    toast(`已封禁 ${ip}`);
+    $('banIp').value = '';
+    $('banReason').value = '';
+    refreshSecurity();
+  });
+});
+$('logFilter').addEventListener('change', renderSecLog);
+$('secRefresh').addEventListener('click', (e) => withBusy(e.currentTarget, async () => { await refreshSecurity(); toast('已刷新'); }));
+
 $('rIpType').addEventListener('change', (e) => {
   $('rCidrField').hidden = e.target.value !== 'cidr';
   $('rGeoField').hidden = e.target.value !== 'geoip';
@@ -996,6 +1116,8 @@ function confSnapshot() {
   CONF_FIELDS.forEach((id) => { o[id] = $(id).value; });
   o.platformInsecure = $('platformInsecure').checked;
   o.containerIsolate = $('containerIsolate').checked;
+  o.allowInsecureDownload = $('allowInsecureDownload').checked;
+  o.allowInternalDownload = $('allowInternalDownload').checked;
   return JSON.stringify(o);
 }
 
@@ -1021,6 +1143,8 @@ function loadConfigIntoForm(c) {
   $('updateBase').value = c.update_base_url || '';
   $('updateApi').value = c.update_api_url || '';
   $('netavarkBase').value = c.netavark_base || '';
+  $('allowInsecureDownload').checked = !!c.allow_insecure_download;
+  $('allowInternalDownload').checked = !!c.allow_internal_download;
   $('platformInsecure').checked = !!c.platform_insecure;
   $('containerIsolate').checked = c.container_isolate !== false;
   $('hostAllowPorts').value = (c.host_allow_ports || []).join(', ');
@@ -1083,6 +1207,8 @@ async function saveConfig(btn) {
       update_base_url: $('updateBase').value.trim(),
       update_api_url: $('updateApi').value.trim(),
       netavark_base: $('netavarkBase').value.trim(),
+      allow_insecure_download: $('allowInsecureDownload').checked,
+      allow_internal_download: $('allowInternalDownload').checked,
       public_ipv4: $('publicIpv4').value,
       platform_insecure: $('platformInsecure').checked,
       container_isolate: $('containerIsolate').checked,
@@ -1117,6 +1243,7 @@ $('btnReloadConf').addEventListener('click', async (e) => withBusy(e.currentTarg
 function applyBrand(name, iconVersion) {
   const n = (name || 'Run').slice(0, 24);
   $('brandName').textContent = n;
+  $('loginTitle').textContent = n;
   document.title = n;
   if (iconVersion !== undefined) renderBrandIcon(iconVersion);
 }
@@ -1138,6 +1265,22 @@ function renderBrandIcon(version) {
   }
   img.toggleAttribute('hidden', !show);
   svg.toggleAttribute('hidden', show);
+  // 登录页的品牌标识同步
+  const loginImg = $('loginBrandImg');
+  const loginSvg = $('loginBrandMark')?.querySelector('svg');
+  if (loginImg && loginSvg) {
+    if (show) {
+      loginImg.src = img.src;
+      // 图标文件被删/损坏时回落内置标记（与顶栏 brandImg 的 error 兜底一致）
+      loginImg.onerror = () => {
+        loginImg.onerror = null;
+        loginImg.toggleAttribute('hidden', true);
+        loginSvg.toggleAttribute('hidden', false);
+      };
+    }
+    loginImg.toggleAttribute('hidden', !show);
+    loginSvg.toggleAttribute('hidden', show);
+  }
   applyFavicon(state.siteIcon);
   renderIconPreview();
 }
@@ -1480,10 +1623,63 @@ function toggleConsoleMax() {
 }
 
 /* ══════════════════════════════ 启动 ═══════════════════════════════════════ */
-async function init() {
+async function boot() {
   applyTheme(localStorage.getItem('run-theme') || 'light');
   enhanceSelects();
-  setView((location.hash || '#overview').slice(1), { push: false });
+
+  // 品牌是公开端点，登录页也要显示真实名称/图标；与会话探测并行，
+  // 首帧（HTML 静态态）始终是登录页，由这里的结果决定去留。
+  const [brand, authed] = await Promise.all([
+    api('GET', '/api/brand').catch(() => null),
+    api('GET', '/api/session').then(() => true).catch(() => false),
+  ]);
+  if (brand) applyBrand(brand.site_name, brand.site_icon);
+
+  if (authed) {
+    init();
+  } else {
+    showLogin();
+  }
+}
+
+function showLogin() {
+  // 幂等：会话失效后轮询（2s/5s）会反复触发 401→showLogin，
+  // 只有首次进入登录页才抢焦点，避免用户输密码时被反复拽回用户名框。
+  const first = !document.body.classList.contains('logged-out');
+  document.body.classList.add('logged-out');
+  setView('login', { push: false });
+  if (first) $('loginUser')?.focus();
+}
+
+/* ── 登录 / 登出 ───────────────────────────────────────────────────────────── */
+$('formLogin').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = $('loginErr');
+  err.hidden = true;
+  try {
+    await withBusy($('loginSubmit'), () => api('POST', '/api/login', {
+      user: $('loginUser').value.trim(),
+      password: $('loginPass').value,
+    }));
+    location.reload(); // 走完整初始化路径，避免重复轮询
+  } catch (ex) {
+    err.textContent = ex.message;
+    err.hidden = false;
+  }
+});
+
+$('logoutBtn').addEventListener('click', async () => {
+  try { await api('POST', '/api/logout'); } catch { /* 已失效也照常回登录页 */ }
+  location.reload();
+});
+
+async function init() {
+  document.body.classList.remove('logged-out'); // HTML 初始为未登录挡板态
+  applyTheme(localStorage.getItem('run-theme') || 'light');
+  enhanceSelects();
+  // 已登录用户不应停留在登录视图（如手动输入/收藏了 #login）
+  const initial = (location.hash || '#overview').slice(1);
+  setView(initial === 'login' ? 'overview' : initial, { push: false });
 
   try {
     const [sys, conf, imgs, version] = await Promise.all([
@@ -1520,6 +1716,7 @@ async function init() {
 
   if (state.view === 'firewall') refreshFirewall();
   setInterval(() => { if (state.view === 'firewall') checkRfw(); }, 10000);
+  setInterval(() => { if (state.view === 'security') refreshSecurity(); }, 10000);
 }
 
 async function updateConnection() {
@@ -1757,5 +1954,4 @@ document.addEventListener('mousedown', (e) => {
   if (openPick && !e.target.closest('.pick, .pick-menu')) openPick();
 });
 
-
-init();
+boot();

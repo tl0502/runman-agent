@@ -2,6 +2,10 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,9 +56,21 @@ type Config struct {
 	// UpdateBaseURL 可指向镜像/反向代理的 releases 下载基址（含 tag），
 	// UpdateAPIURL 可指向同结构的版本查询接口（JSON: tag_name / target_commitish）。
 	// 后两者为空时按 GitHub 官方地址派生。
+	//
+	// 安全：这两个字段指向的内容会以 root 身份执行（updater 用 systemd-run 跑
+	// install.sh），因此写入时必须通过 ValidateDownloadBase 校验，
+	// 见 web/server.go 的 handleConfig。
 	UpdateRepo    string `json:"update_repo"`
 	UpdateBaseURL string `json:"update_base_url"`
 	UpdateAPIURL  string `json:"update_api_url"`
+
+	// AllowInsecureDownload 允许下载基址使用明文 http://。默认关闭——
+	// 明文传输下中间人可直接替换二进制与安装脚本。仅在明确知晓风险时开启。
+	AllowInsecureDownload bool `json:"allow_insecure_download"`
+
+	// AllowInternalDownload 允许下载基址指向内网/回环地址（如企业内网镜像站）。
+	// 默认关闭——避免把下载指向宿主自身的其它服务或内网元数据服务。
+	AllowInternalDownload bool `json:"allow_internal_download"`
 
 	// PlatformInsecure 为 true 时跳过平台 gRPC 的证书校验，
 	// 仅用于接入使用 IP 地址或自签证书的第三方平台。
@@ -226,6 +242,21 @@ func (m *Manager) Update(fn func(*Config)) error {
 	return m.save()
 }
 
+// UpdateChecked 与 Update 相同，但 fn 可以返回错误；fn 返回错误时不落盘、
+// 不修改内存值。用于下载源这类必须先校验才能写入的字段——校验失败若被
+// 静默忽略，会让面板显示「已保存」而实际未生效，或让非法值短暂落盘。
+func (m *Manager) UpdateChecked(fn func(*Config) error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// 先在副本上试跑，fn 成功后才提交，避免校验中途失败留下半更新状态。
+	next := m.cfg
+	if err := fn(&next); err != nil {
+		return err
+	}
+	m.cfg = next
+	return m.save()
+}
+
 // save 将当前内存配置写回文件（调用方持有写锁）。
 func (m *Manager) save() error {
 	data, err := json.MarshalIndent(m.cfg, "", "    ")
@@ -297,6 +328,79 @@ func (c Config) UpdateDownloadBase() string {
 // UpdateAPIBase 返回版本查询接口的覆盖值；空表示由仓库地址派生。
 func (c Config) UpdateAPIBase() string {
 	return strings.TrimRight(strings.TrimSpace(c.UpdateAPIURL), "/")
+}
+
+// ErrInvalidDownloadBase 表示下载源校验失败。调用方（如 web handler）可用
+// errors.Is 识别并返回 400，而不是笼统的 500。
+var ErrInvalidDownloadBase = errors.New("下载地址校验失败")
+
+// cgnatBlock 是运营商级 NAT 网段（RFC 6598，100.64.0.0/10）。
+// Go 的 net.IP.IsPrivate() 不覆盖这一段，但它在云厂商环境里属于内网，
+// 同样是 SSRF / 劫持的目标，需单独拒绝。
+var cgnatBlock = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
+// isBlockedHost 判断主机是否落在不应作为下载源的地址段。
+func isBlockedHost(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsUnspecified() ||
+		ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		cgnatBlock.Contains(ip)
+}
+
+// ValidateDownloadBase 校验一个下载基址（update_base_url / update_api_url /
+// netavark_base）是否可以安全用于拉取并执行的内容。
+//
+// 背景：这些字段可由面板写入，而下载到的 install.sh 与二进制会以 root 身份执行
+// （updater 用 systemd-run 跑 install.sh）。若允许任意来源，等于把「改配置」
+// 放大成「以 root 执行任意代码」。因此这里做三层限制：
+//
+//  1. 必须是 http/https 绝对 URL——拒绝 file://、ftp:// 等其它 scheme；
+//  2. 默认必须 https——明文 HTTP 会让中间人直接替换二进制；
+//     仅当显式开启 AllowInsecureDownload 时才放行 http://；
+//  3. 目标主机不得是回环/内网地址——避免把下载指向宿主自身的其它服务，
+//     也避免 SSRF 打到内网元数据服务。
+//
+// 内网自建镜像站是合法需求（如企业内网 Nexus），因此第 3 条只在
+// AllowInternalDownload 显式开启时豁免。
+func ValidateDownloadBase(raw string, allowInsecure, allowInternal bool) error {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return nil
+	}
+	u, err := url.Parse(v)
+	if err != nil {
+		return fmt.Errorf("%w: 地址无效: %v", ErrInvalidDownloadBase, err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+	case "http":
+		if !allowInsecure {
+			return fmt.Errorf("%w: 必须使用 https（当前为 http）：%s", ErrInvalidDownloadBase, v)
+		}
+	default:
+		return fmt.Errorf("%w: 只支持 http/https：%s", ErrInvalidDownloadBase, v)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("%w: 缺少主机名：%s", ErrInvalidDownloadBase, v)
+	}
+	if allowInternal {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedHost(ip) {
+			return fmt.Errorf("%w: 指向内网/回环地址，已拒绝：%s", ErrInvalidDownloadBase, host)
+		}
+		return nil
+	}
+	// 主机名：解析一次，若解析到内网 IP 同样拒绝。
+	if addrs, err := net.LookupIP(host); err == nil {
+		for _, a := range addrs {
+			if isBlockedHost(a) {
+				return fmt.Errorf("%w: %s 解析到内网地址，已拒绝", ErrInvalidDownloadBase, host)
+			}
+		}
+	}
+	return nil
 }
 
 // NetavarkDownloadBase 返回实际生效的 netavark 下载基址。
