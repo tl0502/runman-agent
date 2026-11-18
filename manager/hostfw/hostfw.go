@@ -72,10 +72,21 @@ type Applier struct {
 	ticks   int    // 指纹未变的连续调用次数，用于周期性存在性校验
 	lastErr string // 最近一次 Apply 失败原因（空=正常），供面板展示隔离失效状态
 	applied bool   // 是否至少成功应用过一次
+
+	// fwdPorts 返回当前端口转发规则的宿主端口（按协议分组）。
+	// 这些是 NAT 映射端口：容器做代理时需要回环访问宿主公网 IP 上的转发端口，
+	// 即使不在 host_allow_ports 白名单里也应放行。未注入时为 nil，不生成额外规则。
+	fwdPorts func() map[string][]int
 }
 
 func New(cfg *config.Manager) *Applier {
 	return &Applier{cfg: cfg}
+}
+
+// SetForwardPortsProvider 注入端口转发宿主端口来源（NAT 映射端口）。
+// 由 main.go 传入 portforward.Manager.ForwardPorts，随转发规则增删自动同步。
+func (a *Applier) SetForwardPortsProvider(fn func() map[string][]int) {
+	a.fwdPorts = fn
 }
 
 // Healthy 返回隔离规则是否处于已生效状态。
@@ -103,6 +114,12 @@ func (a *Applier) Apply(ctx context.Context) error {
 	subnets := conf.AllowedSubnets()
 	isolate := conf.IsolateEnabled()
 
+	// 端口转发宿主端口（NAT 映射端口）：容器回环访问这些端口也应放行。
+	var fwdPorts map[string][]int
+	if a.fwdPorts != nil {
+		fwdPorts = a.fwdPorts()
+	}
+
 	// 网段从 narwhal-net.json 读（单一真源），而不是硬编码 10.91.0.0/20。
 	// 读不到 IPv4 网段时回落到默认值，保证非标准部署下规则仍能生成。
 	info := readNetworkFile(networkFile)
@@ -124,7 +141,7 @@ func (a *Applier) Apply(ctx context.Context) error {
 			return fmt.Errorf("%s", a.lastErr)
 		}
 	}
-	fp := fingerprint(ports, subnets, isolate, bridge, ipv4, info.ipv6)
+	fp := fingerprint(ports, subnets, isolate, bridge, ipv4, info.ipv6, fwdPorts)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -142,12 +159,12 @@ func (a *Applier) Apply(ctx context.Context) error {
 		a.last = ""
 	}
 
-	if err := a.applyRuleset(ctx, "inet", inetRuleset(ports, subnets, ipv4)); err != nil {
+	if err := a.applyRuleset(ctx, "inet", inetRuleset(ports, subnets, ipv4, fwdPorts)); err != nil {
 		a.setErrLocked(err.Error())
 		return err
 	}
 	if info.ipv6 != "" {
-		if err := a.applyRuleset(ctx, "inet6", inet6Ruleset(ports, subnets, info.ipv6)); err != nil {
+		if err := a.applyRuleset(ctx, "inet6", inet6Ruleset(ports, subnets, info.ipv6, fwdPorts)); err != nil {
 			a.setErrLocked(err.Error())
 			return err
 		}
@@ -212,7 +229,7 @@ func (a *Applier) applyRuleset(ctx context.Context, family, ruleset string) erro
 }
 
 // inetRuleset 生成 inet 家族规则集（INPUT 端口白名单 + FORWARD 内网拦截）。
-func inetRuleset(ports []int, subnets []string, ipv4 string) string {
+func inetRuleset(ports []int, subnets []string, ipv4 string, fwdPorts map[string][]int) string {
 	var b strings.Builder
 	b.WriteString("table inet " + tableName + " {\n")
 
@@ -229,11 +246,15 @@ func inetRuleset(ports []int, subnets []string, ipv4 string) string {
 	b.WriteString("\t\tudp dport 53 accept\n")
 	b.WriteString("\t\ttcp dport 53 accept\n")
 	if len(ports) > 0 {
-		strs := make([]string, len(ports))
-		for i, p := range ports {
-			strs[i] = strconv.Itoa(p)
-		}
-		b.WriteString("\t\ttcp dport { " + strings.Join(strs, ", ") + " } accept\n")
+		b.WriteString("\t\ttcp dport { " + joinPorts(ports) + " } accept\n")
+	}
+	// 端口转发的宿主端口（NAT 映射端口）：容器做代理时回环访问宿主公网 IP 上的
+	// 转发端口，即使不在 host_allow_ports 里也放行。TCP/UDP 分别处理。
+	if len(fwdPorts["tcp"]) > 0 {
+		b.WriteString("\t\ttcp dport { " + joinPorts(fwdPorts["tcp"]) + " } accept\n")
+	}
+	if len(fwdPorts["udp"]) > 0 {
+		b.WriteString("\t\tudp dport { " + joinPorts(fwdPorts["udp"]) + " } accept\n")
 	}
 	b.WriteString("\t\tcounter drop\n")
 	b.WriteString("\t}\n")
@@ -261,7 +282,7 @@ func inetRuleset(ports []int, subnets []string, ipv4 string) string {
 // INPUT 端口白名单 + FORWARD 拦截内网（ULA / 链路本地）。
 // 容器 IPv6 网段从 narwhal-net.json 读取（snat 模式 fd91:cafe:cafe:10::/64，
 // subnet 模式为 /112），不硬编码。
-func inet6Ruleset(ports []int, subnets []string, ipv6 string) string {
+func inet6Ruleset(ports []int, subnets []string, ipv6 string, fwdPorts map[string][]int) string {
 	var b strings.Builder
 	b.WriteString("table inet6 " + tableName + " {\n")
 
@@ -275,11 +296,14 @@ func inet6Ruleset(ports []int, subnets []string, ipv6 string) string {
 	b.WriteString("\t\tudp dport 53 accept\n")
 	b.WriteString("\t\ttcp dport 53 accept\n")
 	if len(ports) > 0 {
-		strs := make([]string, len(ports))
-		for i, p := range ports {
-			strs[i] = strconv.Itoa(p)
-		}
-		b.WriteString("\t\ttcp dport { " + strings.Join(strs, ", ") + " } accept\n")
+		b.WriteString("\t\ttcp dport { " + joinPorts(ports) + " } accept\n")
+	}
+	// 端口转发宿主端口（NAT 映射端口），与 inet 表对称。
+	if len(fwdPorts["tcp"]) > 0 {
+		b.WriteString("\t\ttcp dport { " + joinPorts(fwdPorts["tcp"]) + " } accept\n")
+	}
+	if len(fwdPorts["udp"]) > 0 {
+		b.WriteString("\t\tudp dport { " + joinPorts(fwdPorts["udp"]) + " } accept\n")
 	}
 	b.WriteString("\t\tcounter drop\n")
 	b.WriteString("\t}\n")
@@ -392,8 +416,9 @@ func bridgeNameFromPodman() string {
 }
 
 // fingerprint 生成与配置一一对应的指纹，用于判断是否需要重建。
-// 网段（ipv4/ipv6）纳入指纹：网络重建导致网段变化时也能触发规则重建。
-func fingerprint(ports []int, subnets []string, isolate bool, bridge, ipv4, ipv6 string) string {
+// 网段（ipv4/ipv6）与端口转发宿主端口（fwdPorts）也纳入指纹：
+// 网络重建或转发规则增删时都能触发规则重建。
+func fingerprint(ports []int, subnets []string, isolate bool, bridge, ipv4, ipv6 string, fwdPorts map[string][]int) string {
 	cp := append([]int(nil), ports...)
 	sort.Ints(cp)
 	ps := make([]string, len(cp))
@@ -404,6 +429,33 @@ func fingerprint(ports []int, subnets []string, isolate bool, bridge, ipv4, ipv6
 	cs := append([]string(nil), subnets...)
 	sort.Strings(cs)
 
-	return fmt.Sprintf("iso=%v|bridge=%s|ports=%s|subnets=%s|ipv4=%s|ipv6=%s",
-		isolate, bridge, strings.Join(ps, ","), strings.Join(cs, ","), ipv4, ipv6)
+	// fwdPorts 是 map，遍历顺序不定，需规范化成稳定字符串（协议:端口，升序）。
+	fp := make([]string, 0, len(fwdPorts))
+	for proto, list := range fwdPorts {
+		pl := append([]int(nil), list...)
+		sort.Ints(pl)
+		for _, p := range pl {
+			fp = append(fp, proto+":"+strconv.Itoa(p))
+		}
+	}
+	sort.Strings(fp)
+
+	return fmt.Sprintf("iso=%v|bridge=%s|ports=%s|subnets=%s|ipv4=%s|ipv6=%s|fwd=%s",
+		isolate, bridge, strings.Join(ps, ","), strings.Join(cs, ","), ipv4, ipv6, strings.Join(fp, ","))
+}
+
+// joinPorts 把端口切片格式化为 nft 集合字面量（升序、去重），如 "80, 443, 8080"。
+func joinPorts(ports []int) string {
+	cp := append([]int(nil), ports...)
+	sort.Ints(cp)
+	strs := make([]string, 0, len(cp))
+	last := -1
+	for _, p := range cp {
+		if p == last {
+			continue
+		}
+		strs = append(strs, strconv.Itoa(p))
+		last = p
+	}
+	return strings.Join(strs, ", ")
 }

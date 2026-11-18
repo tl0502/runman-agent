@@ -179,6 +179,8 @@ func main() {
 
 	// 容器 → 宿主机端口白名单（独立 nft 表），与 egress/1Panel 解耦。
 	fw := hostfw.New(cfg)
+	// 端口转发的宿主端口（NAT 映射端口）也应被容器回环访问，注入给 hostfw 放行。
+	fw.SetForwardPortsProvider(pf.ForwardPorts)
 	if err := fw.Apply(context.Background()); err != nil {
 		log.Printf("[HostFW] apply at startup failed: %v", err)
 	}

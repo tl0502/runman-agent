@@ -97,7 +97,7 @@ func TestReadNetworkFileNoIPv6(t *testing.T) {
 
 // TestInet6Ruleset 验证 IPv6 规则集含容器网段与 ULA/链路本地拦截。
 func TestInet6Ruleset(t *testing.T) {
-	rules := inet6Ruleset([]int{8792}, []string{"fd91:cafe:cafe:10::/64"}, "fd91:cafe:cafe:10::/64")
+	rules := inet6Ruleset([]int{8792}, []string{"fd91:cafe:cafe:10::/64"}, "fd91:cafe:cafe:10::/64", nil)
 	for _, want := range []string{
 		"table inet6 runman-hostfw",
 		"ip6 saddr fd91:cafe:cafe:10::/64 jump allow6",
@@ -113,9 +113,51 @@ func TestInet6Ruleset(t *testing.T) {
 
 // TestInetRulesetHasDNSAllow 验证 inet 表补了 DNS 放行（P2-7）。
 func TestInetRulesetHasDNSAllow(t *testing.T) {
-	rules := inetRuleset([]int{}, nil, "10.91.0.0/20")
+	rules := inetRuleset([]int{}, nil, "10.91.0.0/20", nil)
 	if !strings.Contains(rules, "udp dport 53 accept") || !strings.Contains(rules, "tcp dport 53 accept") {
 		t.Fatalf("inet ruleset should allow DNS:\n%s", rules)
+	}
+}
+
+// TestInetRulesetForwardPorts 验证端口转发宿主端口（NAT 映射端口）被放行：
+// TCP/UDP 分别生成 accept，且不依赖 host_allow_ports 白名单。
+func TestInetRulesetForwardPorts(t *testing.T) {
+	fwd := map[string][]int{"tcp": {22001, 49624}, "udp": {51820}}
+	rules := inetRuleset(nil, nil, "10.91.0.0/20", fwd)
+	for _, want := range []string{
+		"tcp dport { 22001, 49624 } accept",
+		"udp dport { 51820 } accept",
+	} {
+		if !strings.Contains(rules, want) {
+			t.Fatalf("inet ruleset missing forward-port allow %q:\n%s", want, rules)
+		}
+	}
+}
+
+// TestInetRulesetForwardPortsNoDup 验证转发端口与白名单重叠时不去重崩溃、
+// 且空转发端口不产生空集合（`{ }`）。
+func TestInetRulesetForwardPortsNoDup(t *testing.T) {
+	rules := inetRuleset([]int{22001}, nil, "10.91.0.0/20", map[string][]int{"tcp": {22001}})
+	if strings.Contains(rules, "{ }") {
+		t.Fatalf("empty port set should not appear:\n%s", rules)
+	}
+	// 白名单 22001 + 转发 22001，规则里至少应有一条 tcp 放行（重复无害）。
+	if !strings.Contains(rules, "22001") {
+		t.Fatalf("22001 should still be accepted:\n%s", rules)
+	}
+}
+
+// TestFingerprintIncludesForwardPorts 验证指纹纳入转发端口：增删转发规则会改变指纹。
+func TestFingerprintIncludesForwardPorts(t *testing.T) {
+	a := fingerprint(nil, nil, false, "", "10.91.0.0/20", "", map[string][]int{"tcp": {22001}})
+	b := fingerprint(nil, nil, false, "", "10.91.0.0/20", "", map[string][]int{"tcp": {22001, 22002}})
+	if a == b {
+		t.Fatalf("fingerprint should change when forward ports change: %q", a)
+	}
+	// 遍历顺序不影响指纹稳定性。
+	c := fingerprint(nil, nil, false, "", "10.91.0.0/20", "", map[string][]int{"tcp": {22002, 22001}})
+	if c != b {
+		t.Fatalf("fingerprint should be order-independent: %q vs %q", c, b)
 	}
 }
 

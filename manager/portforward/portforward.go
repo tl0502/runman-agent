@@ -500,6 +500,33 @@ func (m *Manager) DeleteVM(ctx context.Context, vmId string) {
 	m.ipLimitMu.Unlock()
 }
 
+// ForwardPorts 返回当前所有端口转发规则的宿主端口，按协议分组（去重、升序）。
+// 供 hostfw 把 NAT 映射端口纳入容器 INPUT 放行集合：容器做代理时回环访问
+// 宿主公网 IP 上的转发端口，即使不在 host_allow_ports 里也应放行。
+func (m *Manager) ForwardPorts() map[string][]int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	seen := make(map[string]map[int]bool)
+	for _, entries := range m.mappings {
+		for _, e := range entries {
+			if seen[e.Protocol] == nil {
+				seen[e.Protocol] = make(map[int]bool)
+			}
+			seen[e.Protocol][e.HostPort] = true
+		}
+	}
+	out := make(map[string][]int, len(seen))
+	for proto, set := range seen {
+		list := make([]int, 0, len(set))
+		for p := range set {
+			list = append(list, p)
+		}
+		sort.Ints(list)
+		out[proto] = list
+	}
+	return out
+}
+
 func (m *Manager) GetReport() []Entry {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
