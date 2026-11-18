@@ -15,10 +15,10 @@ import (
 var errThrottleNoEffect = errors.New("throttle rate not below allocated cap")
 
 // applyThrottle 对 VM 施加限速：落库 + 内存 + 立即打 tc。
-// 返回 tc 是否立即生效。VM 已停止 / veth 尚未就绪时 tc 打不上去，
-// 此时状态照样落库，由 reconcile 每轮幂等重放，VM 重新拉起后自动补上；
-// 调用方据此在事件文案里区分「已生效」与「待 VM 运行后生效」，避免假限速。
-func (s *Service) applyThrottle(vmID string, mbps int, releaseAt time.Time, reason string) bool {
+// applied 表示 tc 是否立即生效；noEffect 表示限速值不低于该 VM 的带宽上限
+// （施加了也不会更严格，直接跳过）——两者要区分，否则事件文案会把
+// 「永远不会生效」误写成「等 VM 重启后重放」。
+func (s *Service) applyThrottle(vmID string, mbps int, releaseAt time.Time, reason string) (applied, noEffect bool) {
 	s.mu.Lock()
 	s.throttles[vmID] = db.PatrolThrottle{VMID: vmID, RateMbps: mbps, ReleaseAt: releaseAt, Reason: reason}
 	s.mu.Unlock()
@@ -28,12 +28,12 @@ func (s *Service) applyThrottle(vmID string, mbps int, releaseAt time.Time, reas
 	if err := s.tcApply(vmID, mbps); err != nil {
 		if errors.Is(err, errThrottleNoEffect) {
 			log.Printf("[Patrol] throttle %s skipped: %v", vmID, err)
-		} else {
-			log.Printf("[Patrol] tc throttle %s failed (will retry): %v", vmID, err)
+			return false, true
 		}
-		return false
+		log.Printf("[Patrol] tc throttle %s failed (will retry): %v", vmID, err)
+		return false, false
 	}
-	return true
+	return true, false
 }
 
 // releaseThrottle 解除限速：恢复原上限 + 落库删除 + 内存删除 + 记录事件 + 通知。

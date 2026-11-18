@@ -192,7 +192,7 @@ func Init(path string) (*DB, error) {
 		sqlDB.SetMaxOpenConns(1)
 	}
 
-	if err := db.AutoMigrate(&Traffic{}, &VMConfig{}, &PodmanVMConfig{}, &CloudHVVMConfig{}, &IncusVMConfig{}, &PortForward{}, &VMIPLimit{}, &WGBinding{}, &System{}, &LoginLog{}, &LoginBan{}, &PatrolEvent{}, &PatrolThrottle{}, &PatrolStop{}); err != nil {
+	if err := db.AutoMigrate(&Traffic{}, &VMConfig{}, &PodmanVMConfig{}, &CloudHVVMConfig{}, &IncusVMConfig{}, &PortForward{}, &VMIPLimit{}, &WGBinding{}, &System{}, &LoginLog{}, &LoginBan{}, &PatrolEvent{}, &PatrolThrottle{}, &PatrolStop{}, &WebSession{}); err != nil {
 		return nil, fmt.Errorf("automigrate: %w", err)
 	}
 
@@ -349,6 +349,41 @@ func (d *DB) ListPatrolThrottles() []PatrolThrottle {
 	out := []PatrolThrottle{}
 	d.orm.Find(&out)
 	return out
+}
+
+// WebSession 持久化面板登录会话，使 agent 重启/自动更新后仍保持登录。
+// 只保存 token 的 SHA-256（不存明文），LastSeen 用于滑动过期与清理。
+type WebSession struct {
+	TokenHash string    `gorm:"primaryKey"`
+	User      string    `gorm:"index"`
+	LastSeen  time.Time `gorm:"index"`
+}
+
+// SaveWebSession 写入/刷新一条会话记录。
+func (d *DB) SaveWebSession(tokenHash, user string, lastSeen time.Time) error {
+	return d.orm.Save(&WebSession{TokenHash: tokenHash, User: user, LastSeen: lastSeen}).Error
+}
+
+// DeleteWebSession 删除单个会话（登出）。
+func (d *DB) DeleteWebSession(tokenHash string) error {
+	return d.orm.Delete(&WebSession{}, "token_hash = ?", tokenHash).Error
+}
+
+// DeleteAllWebSessions 清空全部会话（修改密码后强制所有端重新登录）。
+func (d *DB) DeleteAllWebSessions() error {
+	return d.orm.Where("1 = 1").Delete(&WebSession{}).Error
+}
+
+// ListWebSessions 返回全部会话（agent 启动时载入内存）。
+func (d *DB) ListWebSessions() []WebSession {
+	out := []WebSession{}
+	d.orm.Find(&out)
+	return out
+}
+
+// DeleteExpiredWebSessions 删除 last_seen 早于 before 的会话。
+func (d *DB) DeleteExpiredWebSessions(before time.Time) error {
+	return d.orm.Where("last_seen < ?", before).Delete(&WebSession{}).Error
 }
 
 // SavePatrolStop 写入一条「被巡查停机」状态。

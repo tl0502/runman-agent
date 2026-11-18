@@ -132,10 +132,13 @@ func (s *Service) checkBandwidth(conf config.Config, vm *agent.VMSummary, st *vm
 			st.bwOverSince = time.Time{}
 			mbps := bc.ThrottleMbps
 			release := now.Add(time.Duration(bc.ReleaseMin) * time.Minute)
-			applied := s.applyThrottle(vm.VmId, mbps, release, "bandwidth")
+			applied, noEffect := s.applyThrottle(vm.VmId, mbps, release, "bandwidth")
 			detail := fmt.Sprintf("带宽占用 %d%% 超阈值 %d%% 持续 %d 分钟，限速到 %d Mbps（%d 分钟后恢复）",
 				rateBps*100/capBit, bc.ThresholdPct, bc.DurationMin, mbps, bc.ReleaseMin)
-			if !applied {
+			switch {
+			case noEffect:
+				detail += "；限速值不低于该 VM 的带宽上限，未施加"
+			case !applied:
 				detail += "；tc 暂未生效（VM 未运行或网卡未就绪），下一轮巡查会重放"
 			}
 			s.emit(vm.VmId, "bandwidth", "throttle", detail, true)
@@ -172,10 +175,13 @@ func (s *Service) checkConnections(conf config.Config, vm *agent.VMSummary, conn
 			_ = s.db.SavePatrolStop(vm.VmId, "connections")
 			mbps := cc.ThrottleMbps
 			release := now.Add(time.Duration(cc.ReleaseMin) * time.Minute)
-			applied := s.applyThrottle(vm.VmId, mbps, release, "connections")
+			applied, noEffect := s.applyThrottle(vm.VmId, mbps, release, "connections")
 			detail := fmt.Sprintf("活跃连接 in=%d/out=%d 超限（阈值 in≥%d/out≥%d，持续 %d 分钟），停止 VM 并限速到 %d Mbps（%d 分钟后解除）",
 				c.in, c.out, cc.InLimit, cc.OutLimit, cc.DurationMin, mbps, cc.ReleaseMin)
-			if !applied {
+			switch {
+			case noEffect:
+				detail += "；限速值不低于该 VM 的带宽上限，未施加"
+			case !applied:
 				detail += "；VM 已停止，限速将在重新启动后自动生效"
 			}
 			s.emit(vm.VmId, "connections", "stop_vm", detail, true)

@@ -2,11 +2,15 @@ package web
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"log"
 	"net"
 	"net/http"
 	"sync"
 	"time"
+
+	"runman-agent/db"
 )
 
 const (
@@ -21,17 +25,21 @@ type sessionUserKeyType struct{}
 
 var sessionUserKey = sessionUserKeyType{}
 
-// sessionStore 保存已登录会话与登录失败记录；进程重启即全部失效（强制重新登录）。
+// sessionStore 保存已登录会话与登录失败记录。
+// 会话同时落库（只存 token 的 SHA-256），agent 重启/自动更新后从库恢复，
+// 不会把已登录用户踢出去；失败计数仍是内存态（重启清零可接受）。
 type sessionStore struct {
 	mu       sync.Mutex
-	sessions map[string]*sessionEntry // token -> entry
+	sessions map[string]*sessionEntry // tokenHash -> entry
 	fails    map[string]*failEntry    // ip -> 失败计数
 	blocked  map[string]time.Time     // ip -> 上次 blocked 事件记录时刻（节流）
+	db       *db.DB
 }
 
 type sessionEntry struct {
 	user     string
 	lastSeen time.Time
+	syncedAt time.Time // 上次写库时间（节流，避免每次请求都落盘）
 }
 
 type failEntry struct {
@@ -40,11 +48,32 @@ type failEntry struct {
 	lastFail    time.Time
 }
 
-func newSessionStore() *sessionStore {
+// tokenHash 返回会话 token 的 SHA-256（十六进制），内存与 DB 都用它作 key。
+func tokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func newSessionStore(database *db.DB) *sessionStore {
 	s := &sessionStore{
 		sessions: make(map[string]*sessionEntry),
 		fails:    make(map[string]*failEntry),
 		blocked:  make(map[string]time.Time),
+		db:       database,
+	}
+	// 从库恢复未过期会话：进程重启（含自动更新）后保持登录状态。
+	if database != nil {
+		cutoff := time.Now().Add(-sessionLifetime)
+		for _, row := range database.ListWebSessions() {
+			if row.LastSeen.Before(cutoff) {
+				continue
+			}
+			s.sessions[row.TokenHash] = &sessionEntry{
+				user:     row.User,
+				lastSeen: row.LastSeen,
+				syncedAt: row.LastSeen,
+			}
+		}
 	}
 	startSessionJanitor(s)
 	return s
@@ -62,14 +91,14 @@ func startSessionJanitor(s *sessionStore) {
 	}()
 }
 
-// sweep 删除过期会话与已失效的失败记录（持锁批量删除）。
+// sweep 删除过期会话与已失效的失败记录（持锁批量删除），
+// 锁外清理库中的过期会话行。
 func (s *sessionStore) sweep() {
 	now := time.Now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	for t, e := range s.sessions {
+	for h, e := range s.sessions {
 		if now.Sub(e.lastSeen) > sessionLifetime {
-			delete(s.sessions, t)
+			delete(s.sessions, h)
 		}
 	}
 	for ip, e := range s.fails {
@@ -80,6 +109,13 @@ func (s *sessionStore) sweep() {
 	for ip, t := range s.blocked {
 		if now.Sub(t) > time.Minute {
 			delete(s.blocked, ip)
+		}
+	}
+	s.mu.Unlock()
+
+	if s.db != nil {
+		if err := s.db.DeleteExpiredWebSessions(now.Add(-sessionLifetime)); err != nil {
+			log.Printf("[Web] purge expired sessions failed: %v", err)
 		}
 	}
 }
@@ -98,43 +134,84 @@ func (s *sessionStore) create(user string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	h := tokenHash(token)
+	now := time.Now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sessions[token] = &sessionEntry{user: user, lastSeen: time.Now()}
+	s.sessions[h] = &sessionEntry{user: user, lastSeen: now, syncedAt: now}
+	s.mu.Unlock()
+
+	// 落库失败不阻断登录（最坏情况是重启后需要重新登录）。
+	if s.db != nil {
+		if err := s.db.SaveWebSession(h, user, now); err != nil {
+			log.Printf("[Web] save session failed: %v", err)
+		}
+	}
 	return token, nil
 }
 
 // validate 校验 token 并滑动续期；无效返回 false。
+// 续期写库按 10 分钟节流，避免每个请求都落一次盘。
 func (s *sessionStore) validate(token string) (string, bool) {
 	if token == "" {
 		return "", false
 	}
+	h := tokenHash(token)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.sessions[token]
+	e, ok := s.sessions[h]
 	if !ok {
+		s.mu.Unlock()
 		return "", false
 	}
-	if time.Since(e.lastSeen) > sessionLifetime {
-		delete(s.sessions, token)
+	now := time.Now()
+	if now.Sub(e.lastSeen) > sessionLifetime {
+		delete(s.sessions, h)
+		s.mu.Unlock()
+		if s.db != nil {
+			_ = s.db.DeleteWebSession(h)
+		}
 		return "", false
 	}
-	e.lastSeen = time.Now()
-	return e.user, true
+	e.lastSeen = now
+	needSync := s.db != nil && now.Sub(e.syncedAt) > 10*time.Minute
+	if needSync {
+		e.syncedAt = now
+	}
+	user := e.user
+	s.mu.Unlock()
+
+	if needSync {
+		go func() {
+			if err := s.db.SaveWebSession(h, user, now); err != nil {
+				log.Printf("[Web] refresh session failed: %v", err)
+			}
+		}()
+	}
+	return user, true
 }
 
 // destroy 删除单个会话（登出）。
 func (s *sessionStore) destroy(token string) {
+	h := tokenHash(token)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.sessions, token)
+	delete(s.sessions, h)
+	s.mu.Unlock()
+	if s.db != nil {
+		if err := s.db.DeleteWebSession(h); err != nil {
+			log.Printf("[Web] delete session failed: %v", err)
+		}
+	}
 }
 
 // destroyAll 清空所有会话（修改密码后踢掉全部登录）。
 func (s *sessionStore) destroyAll() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.sessions = make(map[string]*sessionEntry)
+	s.mu.Unlock()
+	if s.db != nil {
+		if err := s.db.DeleteAllWebSessions(); err != nil {
+			log.Printf("[Web] clear sessions failed: %v", err)
+		}
+	}
 }
 
 // loginLocked 判断该 IP 是否处于登录失败锁定中。

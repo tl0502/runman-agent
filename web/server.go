@@ -99,7 +99,7 @@ func NewServer(database *db.DB, mgr manager.VMManager, hostMon *monitor.HostMoni
 		pf:          pf,
 		wg:          wg,
 		agent:       agent,
-		sessions:    newSessionStore(),
+		sessions:    newSessionStore(database),
 		version:     version,
 		commit:      commit,
 		updater:     upd,
