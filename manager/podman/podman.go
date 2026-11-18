@@ -896,7 +896,6 @@ func (m *Manager) KillProcess(_ context.Context, vmID string, pid int) error {
 	return m.execInContainer(vmID, []string{"kill", "-9", strconv.Itoa(pid)})
 }
 
-// GetVMDiskUsage 返回容器根文件系统（overlay）当前占用字节数（inspect SizeRootFs）。
 // GetVMDiskUsage 返回容器的磁盘占用（overlay 可写层 + 镜像层，字节）。
 // 必须显式请求 size：containers.Inspect 不传 InspectOptions 时 podman 不计算体积，
 // SizeRootFs 恒为 0，磁盘巡查会永远不触发（实测 --size 下为 287MB、不请求时为 0）。

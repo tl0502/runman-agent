@@ -140,7 +140,7 @@ func applyPodmanLimits(memoryMax, cpuQuota string) error {
 		}
 	}
 
-	if out, err := sysctlRun(15*time.Second, "systemctl", "daemon-reload"); err != nil {
+	if out, err := systemctlRun(15*time.Second, "systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("daemon-reload 失败: %v: %s", err, out)
 	}
 
@@ -158,7 +158,7 @@ func applyPodmanLimits(memoryMax, cpuQuota string) error {
 	} else {
 		args = append(args, "CPUQuota=")
 	}
-	if out, err := sysctlRun(15*time.Second, args...); err != nil {
+	if out, err := systemctlRun(15*time.Second, args...); err != nil {
 		return fmt.Errorf("下发资源上限失败: %v: %s", err, out)
 	}
 	return nil
@@ -171,7 +171,7 @@ func showSliceProps(props ...string) map[string]string {
 	for _, p := range props {
 		args = append(args, "-p", p)
 	}
-	b, err := sysctlRun(5*time.Second, args...)
+	b, err := systemctlRun(5*time.Second, args...)
 	if err != nil {
 		return out
 	}
@@ -183,8 +183,8 @@ func showSliceProps(props ...string) map[string]string {
 	return out
 }
 
-// sysctlRun 执行 systemctl 并返回输出（去除首尾空白）。
-func sysctlRun(timeout time.Duration, args ...string) (string, error) {
+// systemctlRun 执行 systemctl 并返回输出（去除首尾空白）。
+func systemctlRun(timeout time.Duration, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, args[0], args[1:]...).CombinedOutput()

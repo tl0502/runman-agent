@@ -18,6 +18,9 @@ var errThrottleNoEffect = errors.New("throttle rate not below allocated cap")
 // applied 表示 tc 是否立即生效；noEffect 表示限速值不低于该 VM 的带宽上限
 // （施加了也不会更严格，直接跳过）——两者要区分，否则事件文案会把
 // 「永远不会生效」误写成「等 VM 重启后重放」。
+//
+// noEffect 时回滚已写入的内存与 DB 状态：这条限速永远不会生效，不该进入
+// reconcile 的重放队列，否则每轮巡查都记一条 failed log 且 DB 残留无效记录。
 func (s *Service) applyThrottle(vmID string, mbps int, releaseAt time.Time, reason string) (applied, noEffect bool) {
 	s.mu.Lock()
 	s.throttles[vmID] = db.PatrolThrottle{VMID: vmID, RateMbps: mbps, ReleaseAt: releaseAt, Reason: reason}
@@ -27,7 +30,13 @@ func (s *Service) applyThrottle(vmID string, mbps int, releaseAt time.Time, reas
 	}
 	if err := s.tcApply(vmID, mbps); err != nil {
 		if errors.Is(err, errThrottleNoEffect) {
-			log.Printf("[Patrol] throttle %s skipped: %v", vmID, err)
+			// 限速值不低于 VM 带宽上限：回滚已写入的状态，避免 reconcile 反复重放
+			// 一条永远不会生效的限速（每轮刷 failed log + DB 残留）。
+			s.mu.Lock()
+			delete(s.throttles, vmID)
+			s.mu.Unlock()
+			_ = s.db.DeletePatrolThrottle(vmID)
+			log.Printf("[Patrol] throttle %s skipped (rate >= cap, rolled back): %v", vmID, err)
 			return false, true
 		}
 		log.Printf("[Patrol] tc throttle %s failed (will retry): %v", vmID, err)
@@ -74,6 +83,17 @@ func (s *Service) reconcileThrottles() {
 	}
 	for _, t := range active {
 		if err := s.tcApply(t.VMID, t.RateMbps); err != nil {
+			if errors.Is(err, errThrottleNoEffect) {
+				// VM 上限被调低后限速值不再低于上限：这条限速已无意义，清理掉
+				// 避免后续每轮都重放并刷 failed log（applyThrottle 新写的不会进队列，
+				// 这里兜住历史残留或上限变更后的存量）。
+				s.mu.Lock()
+				delete(s.throttles, t.VMID)
+				s.mu.Unlock()
+				_ = s.db.DeletePatrolThrottle(t.VMID)
+				log.Printf("[Patrol] throttle %s removed during replay (rate >= cap)", t.VMID)
+				continue
+			}
 			log.Printf("[Patrol] tc replay %s failed: %v", t.VMID, err)
 		}
 	}
