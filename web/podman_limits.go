@@ -209,14 +209,43 @@ func formatMemSize(v string) string {
 	}
 }
 
-// formatCPUQuota 把 CPUQuotaPerSecUSec（微秒/秒）转成人可读核数。
+// formatCPUQuota 把 CPUQuotaPerSecUSec（systemd 时间串或裸微秒）转成人可读核数。
 func formatCPUQuota(v string) string {
-	if v == "" || v == "infinity" {
+	sec, ok := parseSystemdTime(v)
+	if !ok {
 		return "不限"
 	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil {
-		return v
+	// 1 秒 CPU 时间/秒 = 100% = 1 核
+	return strconv.FormatFloat(sec, 'f', -1, 64) + " 核"
+}
+
+// parseSystemdTime 解析 systemd 时间字符串（"1.500000s" / "1500ms" / 裸微秒）为秒。
+func parseSystemdTime(v string) (float64, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" || v == "infinity" {
+		return 0, false
 	}
-	return strconv.FormatFloat(float64(n)/1000000, 'f', -1, 64) + " 核"
+	unit := 1e-6 // systemd USec 属性的裸值单位是微秒
+	switch {
+	case strings.HasSuffix(v, "us"):
+		v = strings.TrimSuffix(v, "us")
+		unit = 1e-6
+	case strings.HasSuffix(v, "ms"):
+		v = strings.TrimSuffix(v, "ms")
+		unit = 1e-3
+	case strings.HasSuffix(v, "min"):
+		v = strings.TrimSuffix(v, "min")
+		unit = 60
+	case strings.HasSuffix(v, "h"):
+		v = strings.TrimSuffix(v, "h")
+		unit = 3600
+	case strings.HasSuffix(v, "s"):
+		v = strings.TrimSuffix(v, "s")
+		unit = 1
+	}
+	n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil {
+		return 0, false
+	}
+	return n * unit, true
 }
