@@ -26,6 +26,7 @@ type sessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]*sessionEntry // token -> entry
 	fails    map[string]*failEntry    // ip -> 失败计数
+	blocked  map[string]time.Time     // ip -> 上次 blocked 事件记录时刻（节流）
 }
 
 type sessionEntry struct {
@@ -43,6 +44,7 @@ func newSessionStore() *sessionStore {
 	s := &sessionStore{
 		sessions: make(map[string]*sessionEntry),
 		fails:    make(map[string]*failEntry),
+		blocked:  make(map[string]time.Time),
 	}
 	startSessionJanitor(s)
 	return s
@@ -73,6 +75,11 @@ func (s *sessionStore) sweep() {
 	for ip, e := range s.fails {
 		if e.lockedUntil.Before(now) && now.Sub(e.lastFail) > lockoutDuration {
 			delete(s.fails, ip)
+		}
+	}
+	for ip, t := range s.blocked {
+		if now.Sub(t) > time.Minute {
+			delete(s.blocked, ip)
 		}
 	}
 }
@@ -202,6 +209,22 @@ func (s *sessionStore) clearLock(ip string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.fails, ip)
+	delete(s.blocked, ip)
+}
+
+// recordBlocked 对被封 IP 的登录尝试做事件节流：60 秒内同 IP 只记一次。
+// 被封后仍高频重试的攻击者若每次都写库，会刷爆时间线并放大 DB 写入。
+// 返回 true 表示本次应记录事件。
+func (s *sessionStore) recordBlocked(ip string) bool {
+	const blockedThrottle = time.Minute
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if last, ok := s.blocked[ip]; ok && now.Sub(last) < blockedThrottle {
+		return false
+	}
+	s.blocked[ip] = now
+	return true
 }
 
 // clientIP 提取来源 IP（RemoteAddr 去端口）。

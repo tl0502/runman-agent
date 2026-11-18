@@ -322,8 +322,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// 手动封禁检查（先于限速）：被封 IP 的登录请求直接拒绝并记录事件——
 	// 这是"攻击者被封后仍在活动"的观测点。响应与密码错误一致，不泄漏封禁状态。
+	// 事件 60s 节流：被封 IP 高频重试时不刷爆时间线/写放大 DB。
 	if _, banned := s.db.GetLoginBan(ip); banned {
-		s.db.InsertLoginLog("login_blocked", ip, req.User, "封禁中的 IP 尝试登录")
+		if s.sessions.recordBlocked(ip) {
+			s.db.InsertLoginLog("login_blocked", ip, req.User, "封禁中的 IP 尝试登录")
+		}
 		jsonErr(w, fmt.Errorf("用户名或密码错误"), http.StatusUnauthorized)
 		return
 	}
@@ -446,9 +449,20 @@ func (s *Server) handleSecurityBanCreate(w http.ResponseWriter, r *http.Request)
 		jsonErr(w, fmt.Errorf("不能封禁当前来源 IP"), http.StatusBadRequest)
 		return
 	}
+	// hours 边界：负数语义不明（会意外变永久），过大值经 time.Duration 乘法会
+	// int64 溢出回绕成过去时间（封禁立即失效）。上限 87600h = 100 年。
+	if req.Hours < 0 || req.Hours > 87600 {
+		jsonErr(w, fmt.Errorf("时长不合法（0=永久，1~87600 小时）"), http.StatusBadRequest)
+		return
+	}
 	var until time.Time
 	if req.Hours > 0 {
 		until = time.Now().Add(time.Duration(req.Hours) * time.Hour)
+	}
+	// reason 是攻击者/管理员都可能写长的一面，限制长度防 DB 膨胀
+	if len(req.Reason) > 200 {
+		jsonErr(w, fmt.Errorf("原因最长 200 字符"), http.StatusBadRequest)
+		return
 	}
 	if err := s.db.InsertLoginBan(ip, strings.TrimSpace(req.Reason), until); err != nil {
 		jsonErr(w, err, http.StatusInternalServerError)
@@ -464,11 +478,14 @@ func (s *Server) handleSecurityBanCreate(w http.ResponseWriter, r *http.Request)
 
 // handleSecurityBanDelete 解除封禁：同时清掉手动封禁记录与内存自动锁。
 func (s *Server) handleSecurityBanDelete(w http.ResponseWriter, r *http.Request) {
-	ip := r.PathValue("ip")
-	if p := net.ParseIP(ip); p == nil {
+	p := net.ParseIP(r.PathValue("ip"))
+	if p == nil {
 		jsonErr(w, fmt.Errorf("IP 格式不正确"), http.StatusBadRequest)
 		return
 	}
+	// 归一化后再删：写入端存的是 ParseIP().String() 的规范形式，
+	// 非规范输入（如 2001:DB8::1）不归一化会删不到行，造成解封假成功。
+	ip := p.String()
 	s.db.DeleteLoginBan(ip)
 	s.sessions.clearLock(ip)
 	s.db.InsertLoginLog("unban", ip, "", "管理员解封")

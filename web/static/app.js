@@ -1014,9 +1014,20 @@ function renderBans(bans) {
   $('banCount').textContent = bans.length;
   if (!bans.length) { tbody.innerHTML = ''; return; }
   tbody.innerHTML = bans.map((b) => {
-    const until = b.until > 0
-      ? `${ago(b.until)}<div class="dim small" title="${new Date(b.until * 1000).toLocaleString()}">${new Date(b.until * 1000).toLocaleString()}</div>`
-      : '<span class="badge badge-bad">永久</span>';
+    // 到期显示剩余时间：ago() 是"距今多久"，对未来的时间戳会算出负数恒显「1 秒前」
+    let until;
+    if (b.until > 0) {
+      const left = b.until - nowSec();
+      const abs = new Date(b.until * 1000).toLocaleString();
+      const rel = left <= 0 ? '已过期'
+        : left < 60 ? `${left} 秒后`
+        : left < 3600 ? `${Math.floor(left / 60)} 分钟后`
+        : left < 86400 ? `${Math.floor(left / 3600)} 小时后`
+        : `${Math.floor(left / 86400)} 天后`;
+      until = `${rel}<div class="dim small" title="${abs}">${abs}</div>`;
+    } else {
+      until = '<span class="badge badge-bad">永久</span>';
+    }
     const src = b.source === 'manual'
       ? '<span class="badge badge-blue">手动</span>'
       : '<span class="badge badge-warn">自动</span>';
