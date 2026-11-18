@@ -2,6 +2,8 @@ package updater
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runman-agent/config"
 	"runman-agent/db"
 	"strconv"
@@ -27,6 +28,14 @@ const (
 type githubRelease struct {
 	TagName         string `json:"tag_name"`
 	TargetCommitish string `json:"target_commitish"`
+	// Assets 携带每个资产的 sha256 摘要（GitHub 2025 起提供 digest 字段）。
+	// 用于校验下载到的 install.sh 与二进制确实是该 release 的内容。
+	Assets []githubAsset `json:"assets"`
+}
+
+type githubAsset struct {
+	Name   string `json:"name"`
+	Digest string `json:"digest"` // 形如 "sha256:abcdef..."
 }
 
 type Service struct {
@@ -65,8 +74,6 @@ func (s *Service) releaseDownloadBase() string {
 	// 语义化发布下，latest/download 恒指向最新正式版的资产。
 	return "https://github.com/" + s.cfg.Get().UpdateRepository() + "/releases/latest/download"
 }
-
-var commitPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 
 // LatestVersion 返回远程最新发布版本号，供面板的“检查更新”使用。
 // 地址与 updater 自身一致，避免面板查官方仓库、更新却走自有源的口径分裂。
@@ -140,13 +147,9 @@ func parseSemver(v string) (major, minor, patch int, pre string, ok bool) {
 }
 
 func releaseVersion(rel githubRelease, channel string) (string, error) {
-	if channel == "continuous" {
-		sha := strings.TrimSpace(rel.TargetCommitish)
-		if rel.TagName != "continuous" || !commitPattern.MatchString(sha) {
-			return "", fmt.Errorf("continuous release has no immutable commit identity")
-		}
-		return "continuous-" + strings.ToLower(sha), nil
-	}
+	// releaseChannel 恒返回 "latest"，continuous 通道已废弃（见 releaseChannel 注释），
+	// 因此这里只处理语义化 tag。
+	_ = channel
 	if !strings.HasPrefix(rel.TagName, "v") {
 		return "", fmt.Errorf("invalid stable release tag %q", rel.TagName)
 	}
@@ -253,30 +256,52 @@ func (s *Service) checkAndRun(ctx context.Context) {
 }
 
 func (s *Service) fetchLatestVersion() (string, error) {
+	rel, err := s.fetchRelease()
+	if err != nil {
+		return "", err
+	}
+	return releaseVersion(rel, releaseChannel(s.currentVer))
+}
+
+// fetchRelease 拉取 release 元数据（含资产 digest）。
+func (s *Service) fetchRelease() (githubRelease, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", s.releaseAPIURL(), nil)
 	if err != nil {
-		return "", err
+		return githubRelease{}, err
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return githubRelease{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("github api returned %d", resp.StatusCode)
+		return githubRelease{}, fmt.Errorf("github api returned %d", resp.StatusCode)
 	}
 
 	var rel githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return "", err
+		return githubRelease{}, err
 	}
+	return rel, nil
+}
 
-	return releaseVersion(rel, releaseChannel(s.currentVer))
+// assetDigest 返回指定资产名在该 release 中的 sha256 摘要。
+// 找不到资产或该 release 未提供 digest 时返回空串（调用方决定是否放行）。
+func (r githubRelease) assetDigest(name string) string {
+	for _, a := range r.Assets {
+		if a.Name != name {
+			continue
+		}
+		if strings.HasPrefix(a.Digest, "sha256:") {
+			return strings.TrimPrefix(a.Digest, "sha256:")
+		}
+	}
+	return ""
 }
 
 func (s *Service) executeUpdate() error {
@@ -321,13 +346,33 @@ func (s *Service) updateCommandArgs() []string {
 		"bash", installScript, "en", "--update-only", "--non-interactive"}
 }
 
+// downloadInstallScript 下载安装脚本并校验其 sha256。
+//
+// 安全要点：下载到的 install.sh 会以 root 身份被执行（systemd-run），
+// 因此必须确认内容确实是目标 release 的那份，不能只做语法检查。
+// 期望摘要取自 GitHub release API 的资产 digest 字段。
+// 自建镜像源若不提供 digest，则退化为「仅 https + 语法检查」——
+// 此时由配置层的域名/协议校验（config.ValidateDownloadBase）兜底。
 func (s *Service) downloadInstallScript() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	return downloadScript(ctx, http.DefaultClient, s.releaseDownloadBase()+"/install.sh", installScript)
+
+	expected := ""
+	if rel, err := s.fetchRelease(); err == nil {
+		expected = rel.assetDigest("install.sh")
+	} else {
+		log.Printf("[Updater] Could not fetch release digest for install.sh: %v", err)
+	}
+
+	return downloadScript(ctx, http.DefaultClient, s.releaseDownloadBase()+"/install.sh", installScript, expected)
 }
 
-func downloadScript(ctx context.Context, client *http.Client, scriptURL, destination string) error {
+// downloadScript 下载脚本到 destination。
+//
+// expectedSHA256 非空时校验内容摘要——不匹配则拒绝落盘。这是防止下载源被
+// 劫持后注入恶意脚本的关键一环（脚本会以 root 身份执行）。
+// expectedSHA256 为空表示上游未提供摘要（自建镜像源），此时仅做大小检查。
+func downloadScript(ctx context.Context, client *http.Client, scriptURL, destination, expectedSHA256 string) error {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", scriptURL, nil)
 	if err != nil {
@@ -359,7 +404,8 @@ func downloadScript(ctx context.Context, client *http.Client, scriptURL, destina
 	}()
 
 	const maxScriptSize = 2 << 20
-	n, err := io.Copy(f, io.LimitReader(resp.Body, maxScriptSize+1))
+	hasher := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, hasher), io.LimitReader(resp.Body, maxScriptSize+1))
 	if err != nil {
 		return err
 	}
@@ -368,6 +414,12 @@ func downloadScript(ctx context.Context, client *http.Client, scriptURL, destina
 	}
 	if err := f.Close(); err != nil {
 		return err
+	}
+	if expectedSHA256 != "" {
+		got := hex.EncodeToString(hasher.Sum(nil))
+		if !strings.EqualFold(got, expectedSHA256) {
+			return fmt.Errorf("installer sha256 mismatch: got %s, want %s", got, expectedSHA256)
+		}
 	}
 	return os.Rename(f.Name(), destination)
 }

@@ -660,7 +660,7 @@
                   <option value="">未指定（默认）</option>
                 </select>
               </div>
-              <label class="check"><input type="checkbox" id="platformInsecure"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 跳过平台 TLS 证书校验</label>
+              <label class="check"><input type="checkbox" id="platformInsecure"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 跳过平台 TLS 证书校验 <span class="warn" id="platformInsecureWarn" hidden>连接平台时不校验证书，仅用于自签证书场景</span></label>
             </div>
           </div>
 
@@ -702,6 +702,7 @@
           </div>
           <div class="card-body form-grid">
             <label class="check"><input type="checkbox" id="containerIsolate"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 容器间隔离 <span class="hint">开启后容器之间不可互通</span></label>
+            <div class="note danger" id="hostfwStatus" hidden>容器网络隔离规则未生效</div>
             <div class="field">
               <label for="hostAllowPorts">宿主机端口白名单 <span class="hint">留空 = 容器不能访问宿主机端口</span></label>
               <input class="input mono" id="hostAllowPorts" placeholder="例如 53, 8792">

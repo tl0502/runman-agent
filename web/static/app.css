@@ -968,6 +968,7 @@ table.data tbody tr.is-clickable { cursor: pointer; }
 .note.warn { background: var(--amber-soft); color: var(--amber-ink); }
 .note.warn svg { color: var(--amber-ink); }
 .note.danger { background: var(--red-soft); color: var(--red-ink); }
+.check .warn { color: var(--amber-ink); font-size: 12px; font-weight: 400; }
 
 .err {
   display: none;

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -90,8 +91,9 @@ type Config struct {
 	PublicIPv6 string `json:"public_ipv6"`
 
 	// ── 容器隔离与安全加固 ────────────────────────────────────────────────────
-	// ContainerIsolate 为 true 时在 narwhal-net 网络启用 netavark isolate，
-	// 使容器之间不能互相访问（只能访问网关与出站）。nil 视为 true。
+	// ContainerIsolate 为 true 时通过 runman-hostfw 的 bridge 表 nft 规则实现
+	// 容器间隔离（不用 netavark isolate，后者在 br_netfilter 未加载时对同桥流量
+	// 不生效）。使容器之间不能互相访问（只能访问网关与出站）。nil 视为 true。
 	ContainerIsolate *bool `json:"container_isolate"`
 
 	// HostAllowPorts 是允许容器访问的宿主机 TCP 端口白名单（仅约束新连接，
@@ -311,13 +313,22 @@ func (c Config) PlatformAddress() string {
 	return DefaultPlatformAddr
 }
 
+// updateRepoPattern 限定 update_repo 必须是 "owner/repo" 形式，
+// 避免填入任意字符串后拼出的 GitHub API 地址无法解析、或误导使用者以为能配镜像。
+var updateRepoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+
 // UpdateRepository 返回实际生效的自更新仓库（owner/repo）。
+// 非法格式回落到默认仓库——宁可更新失败也不拼出不可预期的地址。
 func (c Config) UpdateRepository() string {
 	v := strings.TrimSpace(c.UpdateRepo)
 	if v == "" {
 		return DefaultUpdateRepo
 	}
-	return strings.TrimPrefix(strings.TrimSuffix(v, "/"), "https://github.com/")
+	v = strings.TrimPrefix(strings.TrimSuffix(v, "/"), "https://github.com/")
+	if !updateRepoPattern.MatchString(v) {
+		return DefaultUpdateRepo
+	}
+	return v
 }
 
 // UpdateDownloadBase 返回自更新下载基址的覆盖值；空表示由仓库地址派生。
@@ -416,7 +427,8 @@ func (c Config) EgressIPv4() string {
 	return strings.TrimSpace(c.PublicIPv4)
 }
 
-// IsolateEnabled 返回是否启用容器间网络隔离（netavark isolate）。nil 视为 true。
+// IsolateEnabled 返回是否启用容器间网络隔离（runman-hostfw bridge 表 nft 规则）。
+// nil 视为 true。
 func (c Config) IsolateEnabled() bool {
 	if c.ContainerIsolate == nil {
 		return true

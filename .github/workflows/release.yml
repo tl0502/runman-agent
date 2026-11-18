@@ -26,6 +26,12 @@ jobs:
         env:
           CGO_ENABLED: 0
         run: |
+          # jq 是 install.sh 配置迁移的硬依赖，显式安装而非依赖 runner 预装，
+          # 否则 runner 镜像调整会导致 24 个安装器单测全部失败。
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq
+          # 静态检查：格式与 vet 都不允许欠账（本次评审实测全绿，锁住现状）。
+          test -z "$(gofmt -l .)" || { echo 'gofmt 发现未格式化的文件:' >&2; gofmt -l . >&2; exit 1; }
+          go vet -tags containers_image_openpgp ./...
           go test -tags containers_image_openpgp ./...
           bash -n install.sh
           python3 -m unittest discover -s tests -v

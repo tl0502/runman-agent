@@ -164,7 +164,7 @@ v0.5.x 起默认开启，全部通过 `runman-hostfw` nft 表实现（**不使�
 
 ## 更新与发布
 
-- **发布流程**：push tag `v*`（如 `v0.5.3`）→ GitHub Actions 自动跑 Go 测试 + 安装器测试 → 构建 amd64/arm64 → 发布 Release。`main` 分支持续构建为 `continuous-<commit>`。
+- **发布流程**：push tag `v*`（如 `v0.5.3`）→ GitHub Actions 自动跑 Go 测试 + 安装器测试 → 构建 amd64/arm64 → 发布 Release。`main` 分支持续构建为 `dev-<commit>`（仅用于验证，不产生 Release）。
 - **Agent 自更新**：默认每 6 小时检查 `tl0502/runman-agent`，发现新版本随机延迟 24–72 小时执行 `--update-only --non-interactive`；更新来源可用 `update_repo` / `update_base_url` / `update_api_url` 指向镜像。
 - **仅升级 Agent**（保留网络与业务）：
 

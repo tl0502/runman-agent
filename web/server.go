@@ -176,6 +176,7 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/api/system/info", s.handleSystemInfo)
 	mux.HandleFunc("/api/connection", s.handleConnection)
+	mux.HandleFunc("/api/hostfw/status", s.handleHostFWStatus)
 	mux.HandleFunc("/api/version", s.handleVersion)
 	mux.HandleFunc("/api/update-check", s.handleUpdateCheck)
 	mux.HandleFunc("POST /api/upgrade", s.handleUpgrade)
@@ -1146,6 +1147,21 @@ func (s *Server) handleConnection(w http.ResponseWriter, _ *http.Request) {
 	jsonOK(w, map[string]interface{}{
 		"connected": connected,
 		"error":     errMsg,
+	})
+}
+
+// handleHostFWStatus 返回容器网络隔离规则的生效状态。
+// 前端设置页据此在隔离失效时给出可见提示，避免 fail-open 静默发生。
+func (s *Server) handleHostFWStatus(w http.ResponseWriter, _ *http.Request) {
+	healthy, errMsg := true, ""
+	if s.agent != nil {
+		if a, ok := s.agent.(interface{ GetHostFWStatus() (bool, string) }); ok {
+			healthy, errMsg = a.GetHostFWStatus()
+		}
+	}
+	jsonOK(w, map[string]interface{}{
+		"healthy": healthy,
+		"error":   errMsg,
 	})
 }
 

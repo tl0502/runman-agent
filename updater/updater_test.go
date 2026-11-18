@@ -2,6 +2,8 @@ package updater
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -55,27 +57,15 @@ func newTestService(t *testing.T, version, body string) *Service {
 	return &Service{cfg: cfg, currentVer: version}
 }
 
-func TestRollingVersionIdentity(t *testing.T) {
-	sha := strings.Repeat("a", 40)
-	got, err := releaseVersion(githubRelease{TagName: "continuous", TargetCommitish: sha}, "continuous")
-	if err != nil || got != "continuous-"+sha {
-		t.Fatalf("%q %v", got, err)
-	}
-	newVersion, err := releaseVersion(githubRelease{TagName: "continuous", TargetCommitish: strings.Repeat("b", 40)}, "continuous")
-	if err != nil || newVersion == got {
-		t.Fatal("different commits compare equal")
-	}
-	for _, rel := range []githubRelease{
-		{}, {TagName: "continuous", TargetCommitish: "main"},
-		{TagName: "continuous", TargetCommitish: "abc"},
-		{TagName: "v1", TargetCommitish: sha},
-	} {
-		if _, err := releaseVersion(rel, "continuous"); err == nil {
-			t.Fatalf("accepted invalid release: %+v", rel)
-		}
-	}
+func TestStableVersionValidation(t *testing.T) {
 	if _, err := releaseVersion(githubRelease{}, "latest"); err == nil {
 		t.Fatal("accepted empty stable version")
+	}
+	if _, err := releaseVersion(githubRelease{TagName: "continuous"}, "latest"); err == nil {
+		t.Fatal("accepted non-v tag as stable")
+	}
+	if got, err := releaseVersion(githubRelease{TagName: "v0.5.3"}, "latest"); err != nil || got != "v0.5.3" {
+		t.Fatalf("%q %v", got, err)
 	}
 }
 
@@ -104,7 +94,7 @@ func TestDownloadScriptIsAtomic(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			err := downloadScript(context.Background(), server.Client(), server.URL, dest)
+			err := downloadScript(context.Background(), server.Client(), server.URL, dest, "")
 			data, readErr := os.ReadFile(dest)
 			if readErr != nil {
 				t.Fatal(readErr)
@@ -121,6 +111,80 @@ func TestDownloadScriptIsAtomic(t *testing.T) {
 				t.Fatalf("temporary files leaked: %v", files)
 			}
 		})
+	}
+}
+
+// TestDownloadScriptVerifiesSHA256 验证摘要不匹配时拒绝落盘。
+//
+// 这是防止下载源被劫持后注入恶意脚本的关键一环：install.sh 会以 root 身份
+// 被 systemd-run 执行，所以内容必须与目标 release 的资产摘要一致。
+func TestDownloadScriptVerifiesSHA256(t *testing.T) {
+	body := "#!/bin/bash\necho updated\n"
+	sum := sha256.Sum256([]byte(body))
+
+	for _, tc := range []struct {
+		name     string
+		expected string
+		wantErr  bool
+	}{
+		{"match", hex.EncodeToString(sum[:]), false},
+		{"mismatch", strings.Repeat("0", 64), true},
+		{"empty-expected-skips-check", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			dest := filepath.Join(dir, "install.sh")
+			old := "old upstream script"
+			if err := os.WriteFile(dest, []byte(old), 0600); err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			err := downloadScript(context.Background(), server.Client(), server.URL, dest, tc.expected)
+			data, readErr := os.ReadFile(dest)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected sha256 mismatch error, got nil")
+				}
+				if string(data) != old {
+					t.Fatalf("mismatched script replaced original: %q", data)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if string(data) != body {
+				t.Fatalf("unexpected content: %q", data)
+			}
+		})
+	}
+}
+
+// TestAssetDigestLookup 验证从 release 元数据中提取资产摘要。
+func TestAssetDigestLookup(t *testing.T) {
+	rel := githubRelease{
+		TagName: "v0.5.3",
+		Assets: []githubAsset{
+			{Name: "install.sh", Digest: "sha256:01e34f9446da2e61ec61f7b6558a9070f3c90cffc2b6544408d583f5c470afed"},
+			{Name: "rfw-amd64", Digest: "sha256:6df2fb50e6aa1457b6c20f5af1c69663e6afb1b9658f10baac497193a1186d22"},
+			{Name: "no-digest"},
+		},
+	}
+	if got := rel.assetDigest("install.sh"); got != "01e34f9446da2e61ec61f7b6558a9070f3c90cffc2b6544408d583f5c470afed" {
+		t.Fatalf("unexpected digest: %q", got)
+	}
+	if got := rel.assetDigest("missing"); got != "" {
+		t.Fatalf("expected empty digest for missing asset, got %q", got)
+	}
+	if got := rel.assetDigest("no-digest"); got != "" {
+		t.Fatalf("expected empty digest for asset without digest, got %q", got)
 	}
 }
 

@@ -509,6 +509,15 @@ func (a *Agent) GetConnStatus() (bool, string) {
 	return a.connected, a.lastError
 }
 
+// GetHostFWStatus 返回容器网络隔离规则的生效状态。
+// 供面板在设置页展示——隔离是安全边界，失效必须让用户可见，而非只写日志。
+func (a *Agent) GetHostFWStatus() (bool, string) {
+	if a.hostfw == nil {
+		return true, ""
+	}
+	return a.hostfw.Healthy()
+}
+
 // watchPlatformAddr 在连接存活期间轮询配置；平台地址被改动时主动断开当前流，
 // 交给 run() 的重连循环用新地址重新建连。
 func (a *Agent) watchPlatformAddr(ctx context.Context, cancel context.CancelFunc, current string) {

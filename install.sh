@@ -344,7 +344,7 @@ show_agent_status() {
         "AGENT_SERVICE=$agent_state" \
         "BACKEND_SERVICE=$backend_state" \
         "RFW_SERVICE=$rfw_state" \
-        "PANEL=http://$panel_host:$AGENT_WEB_PORT"
+        "PANEL=https://$panel_host:$AGENT_WEB_PORT"
 }
 
 ensure_podman_network_from_config() {
@@ -625,6 +625,87 @@ download_with_retry() {
         [ $attempt -eq $max ] && { log "$(t "Download failed." "下载失败。")"; return 1; }
         attempt=$((attempt + 1)); sleep 5
     done
+}
+
+# release_asset_digest 从 GitHub release API 取指定资产的 sha256 摘要。
+#
+# base 是 releases 下载基址（含 tag 或 latest），asset 是资产文件名。
+# 返回空串表示取不到摘要（自建镜像源无此能力）——调用方应另有校验兜底。
+# 用法：release_asset_digest <下载基址> <资产名>
+release_asset_digest() {
+    local base=$1 asset=$2 api=""
+    case "$base" in
+        https://github.com/*/releases/latest/download) api="https://api.github.com/repos/${base#https://github.com/}" ;;
+        https://github.com/*/releases/download/*) api="https://api.github.com/repos/${base#https://github.com/}" ;;
+    esac
+    [ -n "$api" ] || return 0
+    api="${api%/releases/*}/releases/latest"
+    curl -fsSL --max-time 20 "$api" 2>/dev/null \
+        | python3 -c "
+import json, sys
+try:
+    rel = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+name = sys.argv[1]
+for a in rel.get('assets') or []:
+    if a.get('name') == name:
+        d = a.get('digest') or ''
+        if d.startswith('sha256:'):
+            print(d[len('sha256:'):])
+        raise SystemExit(0)
+raise SystemExit(0)
+" "$asset" 2>/dev/null || true
+}
+
+# verify_elf_binary 校验下载到的是目标架构的 ELF64 可执行文件。
+#
+# 必要性：curl 的 -f 只在 HTTP 错误码时失败，代理或镜像返回的 200 错误页
+# 会被当成二进制落盘并 chmod +x 后安装。所有二进制产物（agent / netavark / rfw）
+# 都必须过这一关。
+#
+# 用法：verify_elf_binary <文件> <amd64|arm64>
+verify_elf_binary() {
+    local file=$1 arch=$2 expected
+    [ -s "$file" ] || { log "$(t "Downloaded file is empty: $file" "下载的文件为空：$file")"; return 1; }
+    case "$arch" in
+        amd64) expected=62 ;;
+        arm64) expected=183 ;;
+        *) log "$(t "Unknown arch for ELF verification: $arch" "ELF 校验时架构未知：$arch")"; return 1 ;;
+    esac
+    python3 - "$file" "$expected" <<'PYEOF'
+import sys
+path, expected = sys.argv[1], int(sys.argv[2])
+try:
+    with open(path, 'rb') as f:
+        header = f.read(20)
+except OSError as exc:
+    raise SystemExit(f'cannot read {path}: {exc}')
+if len(header) != 20 or header[:6] != b'\x7fELF\x02\x01' or int.from_bytes(header[18:20], 'little') != expected:
+    raise SystemExit(f'not an ELF64 binary for {expected}')
+PYEOF
+}
+
+# verify_sha256 校验文件的 sha256 摘要（可选依赖 sha256sum 或 shasum）。
+# 期望摘要为空时跳过——自建镜像源未必提供摘要，此时由 ELF 校验兜底。
+#
+# 用法：verify_sha256 <文件> <期望摘要（可为空）>
+verify_sha256() {
+    local file=$1 expected=$2 actual
+    [ -n "$expected" ] || return 0
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$file" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}')
+    else
+        log "$(t "No sha256 tool available; skipping digest check for $file" "缺少 sha256 工具，跳过 $file 的摘要校验")"
+        return 0
+    fi
+    if [ "$actual" != "$expected" ]; then
+        log "$(t "sha256 mismatch for $file: got $actual, want $expected" "$file 的 sha256 不匹配：实际 $actual，期望 $expected")"
+        return 1
+    fi
+    return 0
 }
 
 detect_arch() {
@@ -1007,11 +1088,18 @@ ensure_subuid() {
         useradd --comment "Podman userns id pool" --no-create-home --shell /usr/sbin/nologin containers
         log "$(t "✓ Created helper user containers (userns)." "✓ 已创建 userns 占位用户 containers。")"
     fi
+    # 仅在 containers: 行不存在时才写入默认池。已存在（管理员自定义过起始
+    # ID 或池大小）则保留原值，不静默覆盖——覆盖会打乱存量容器的 uid 映射。
     for f in /etc/subuid /etc/subgid; do
-        sed -i '/^containers:/d' "$f" 2>/dev/null || true
+        if grep -q '^containers:' "$f" 2>/dev/null; then
+            log "$(t "Kept existing userns pool in $f" "保留 $f 中已有的 userns 池配置。")"
+            continue
+        fi
         echo 'containers:1000000:6553600' >> "$f"
     done
-    log "$(t "✓ Configured subuid/subgid for containers (userns)." "✓ 已为 containers 配置 subuid/subgid（userns）。")"
+    # 提示池容量：默认每个容器约占 1 uid + 1 gid（未配置额外 subordinate 范围时），
+    # 池耗尽会导致新建容器失败。这里给出可支撑的近似规模，便于提前规划。
+    log "$(t "Configured subuid/subgid for containers (userns). Pool supports ~6553600 containers." "已为 containers 配置 subuid/subgid（userns）。该池约可支撑 6553600 个容器。")"
 }
 
 configure_journald() {
@@ -1227,14 +1315,10 @@ download_agent() {
     # 生产模式：从远程下载
     log "$(t "Downloading NarwhalCloud Agent ($arch)..." "下载 NarwhalCloud Agent ($arch)...")"
     download_with_retry "$DOWNLOAD_BASE/runman-agent-linux-$arch" "$AGENT_BINARY.new"
-    python3 - "$AGENT_BINARY.new" "$arch" <<'PY'
-import sys
-with open(sys.argv[1], 'rb') as binary:
-    header = binary.read(20)
-expected = {'amd64': 62, 'arm64': 183}[sys.argv[2]]
-if len(header) != 20 or header[:6] != b'\x7fELF\x02\x01' or int.from_bytes(header[18:20], 'little') != expected:
-    raise SystemExit('Downloaded Agent is not an ELF64 binary for the selected architecture')
-PY
+    verify_elf_binary "$AGENT_BINARY.new" "$arch" \
+        || die "$(t "Downloaded Agent failed ELF/architecture verification." "下载的 Agent 未通过 ELF/架构校验。")"
+    verify_sha256 "$AGENT_BINARY.new" "$(release_asset_digest "$DOWNLOAD_BASE" "runman-agent-linux-$arch")" \
+        || die "$(t "Downloaded Agent failed sha256 verification." "下载的 Agent 未通过 sha256 校验。")"
     chmod +x "$AGENT_BINARY.new"
     if [ "${2:-}" = "stage" ]; then
         log "$(t "✓ Agent download staged and architecture checked." "✓ Agent 已下载暂存并通过架构检查。")"
@@ -1294,6 +1378,9 @@ write_config_file() {
     local agent_token="${11:-}"
 
     mkdir -p "$AGENT_CONFIG_DIR"
+    # 目录同时存放二进制、配置、数据库与 install.sh，收紧为仅属主可进入，
+    # 避免其它本地用户列出目录内容或读到数据库。
+    chmod 700 "$AGENT_CONFIG_DIR"
 
     cat > "$AGENT_CONFIG_FILE" <<EOF
 {
@@ -1369,9 +1456,12 @@ install_rfw() {
     else
         # 生产模式：从远程下载 (即使已存在也更新)
         if download_with_retry "$RFW_BASE/rfw-$ARCH" "$RFW_BIN_DIR/rfw.new"; then
+            if verify_elf_binary "$RFW_BIN_DIR/rfw.new" "$ARCH" \
+               && verify_sha256 "$RFW_BIN_DIR/rfw.new" "$(release_asset_digest "$RFW_BASE" "rfw-$ARCH")"; then
             chmod +x "$RFW_BIN_DIR/rfw.new"
             systemctl is-active --quiet rfw && systemctl stop rfw
             mv "$RFW_BIN_DIR/rfw.new" "$RFW_BIN_DIR/rfw"
+            fi
         else
              log "$(t "Warning: rfw download failed." "警告: rfw 下载失败。")"
              [ -f "$RFW_BIN_DIR/rfw" ] || return 0
@@ -1612,9 +1702,15 @@ if systemctl is-active --quiet "$AGENT_SERVICE" 2>/dev/null || [ -f "$AGENT_BINA
     # Update netavark
     if [ "$UPDATE_ONLY" != "1" ] && [ "$_installed_virt" = "podman" ] && [ -f "/usr/libexec/podman/netavark" ]; then
         if download_with_retry "$NETAVARK_BASE/netavark-new-$ARCH" "/usr/libexec/podman/netavark.new"; then
-            chmod +x /usr/libexec/podman/netavark.new
-            mv /usr/libexec/podman/netavark.new /usr/libexec/podman/netavark
-            log "$(t "✓ Custom netavark updated." "✓ 自定义 netavark 已更新。")"
+            if verify_elf_binary "/usr/libexec/podman/netavark.new" "$ARCH" \
+               && verify_sha256 "/usr/libexec/podman/netavark.new" "$(release_asset_digest "$NETAVARK_BASE" "netavark-new-$ARCH")"; then
+                chmod +x /usr/libexec/podman/netavark.new
+                mv /usr/libexec/podman/netavark.new /usr/libexec/podman/netavark
+                log "$(t "✓ Custom netavark updated." "✓ 自定义 netavark 已更新。")"
+            else
+                rm -f /usr/libexec/podman/netavark.new
+                log "$(t "netavark download failed verification; keeping the existing binary." "netavark 下载未通过校验，保留原有二进制。")"
+            fi
         fi
         if [ -f "/usr/lib/podman/aardvark-dns" ] && [ ! -f "/usr/libexec/podman/aardvark-dns" ]; then
             ln -sf /usr/lib/podman/aardvark-dns /usr/libexec/podman/aardvark-dns
@@ -1911,8 +2007,14 @@ fi
 if [ "$VIRT_TYPE" = "podman" ]; then
     # 先安装自定义 netavark（支持 snat_ipv6 选项），再操作网络
     if download_with_retry "$NETAVARK_BASE/netavark-new-$ARCH" "/usr/libexec/podman/netavark"; then
-        chmod +x /usr/libexec/podman/netavark
-        log "$(t "✓ Custom netavark installed." "✓ 自定义 netavark 已安装。")"
+        if verify_elf_binary "/usr/libexec/podman/netavark" "$ARCH" \
+           && verify_sha256 "/usr/libexec/podman/netavark" "$(release_asset_digest "$NETAVARK_BASE" "netavark-new-$ARCH")"; then
+            chmod +x /usr/libexec/podman/netavark
+            log "$(t "✓ Custom netavark installed." "✓ 自定义 netavark 已安装。")"
+        else
+            rm -f /usr/libexec/podman/netavark
+            log "$(t "netavark download failed verification; using system default." "netavark 下载未通过校验，使用系统默认版本。")"
+        fi
     else
         log "$(t "Warning: netavark download failed, using system default." "警告: netavark 下载失败，使用系统默认版本。")"
     fi
@@ -2075,7 +2177,7 @@ echo ""
 log "========================================"
 log "$(t "✓ NarwhalCloud Agent installation complete!" "✓ NarwhalCloud Agent 安装完成！")"
 log "$(t "IP:           $IP" "IP:           $IP")"
-log "$(t "Web panel:    http://$IP:$AGENT_WEB_PORT" "面板地址:     http://$IP:$AGENT_WEB_PORT")"
+log "$(t "Web panel:    https://$IP:$AGENT_WEB_PORT (首次访问需信任自签证书)" "面板地址:     https://$IP:$AGENT_WEB_PORT（首次访问需信任自签证书）")"
 log "$(t "Username:     $DEFAULT_USER" "用户名:       $DEFAULT_USER")"
 log "$(t "Password:     $DEFAULT_PASS" "密码:         $DEFAULT_PASS")"
 log "$(t "Token:        $INITIAL_TOKEN" "对接 Token:    $INITIAL_TOKEN")"

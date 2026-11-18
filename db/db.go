@@ -166,6 +166,15 @@ func Init(path string) (*DB, error) {
 		return nil, fmt.Errorf("automigrate: %w", err)
 	}
 
+	// 数据库内含平台 Token、VM 记录与端口转发规则，须收紧为仅属主可读写。
+	// 新建时按 0600 落盘；文件已存在（升级场景）也一并校正，避免历史 0644。
+	// 注意：SQLite 的 WAL 模式会生成 -wal / -shm 伴生文件，这里一并收紧。
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, 0600); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("chmod %s: %w", p, err)
+		}
+	}
+
 	return &DB{orm: db}, nil
 }
 

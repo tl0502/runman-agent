@@ -1157,6 +1157,7 @@ function loadConfigIntoForm(c) {
   $('allowInsecureDownload').checked = !!c.allow_insecure_download;
   $('allowInternalDownload').checked = !!c.allow_internal_download;
   $('platformInsecure').checked = !!c.platform_insecure;
+  $('platformInsecureWarn').hidden = !c.platform_insecure;
   $('containerIsolate').checked = c.container_isolate !== false;
   $('hostAllowPorts').value = (c.host_allow_ports || []).join(', ');
   $('containerAllowSubnets').value = (c.container_allow_subnets || []).join(', ');
@@ -1197,7 +1198,7 @@ async function loadNetworkAddresses(selected) {
 }
 
 CONF_FIELDS.forEach((id) => $(id)?.addEventListener('input', syncDirty));
-$('platformInsecure').addEventListener('change', syncDirty);
+$('platformInsecure').addEventListener('change', () => { $('platformInsecureWarn').hidden = !$('platformInsecure').checked; syncDirty(); });
 $('containerIsolate').addEventListener('change', syncDirty);
 
 async function saveConfig(btn) {
@@ -1717,6 +1718,8 @@ async function init() {
     renderHostKv();
     updateConnection();
     setInterval(updateConnection, 4000);
+    updateHostFWStatus();
+    setInterval(updateHostFWStatus, 10000);
   } catch { /* 静默 */ }
 
   await Promise.all([refreshStatus(), refreshVMs()]);
@@ -1753,6 +1756,24 @@ async function updateConnection() {
   } catch {
     pill.className = 'pill pill-quiet';
     pill.innerHTML = '<span class="dot"></span><span id="connText">未知</span>';
+  }
+}
+
+// updateHostFWStatus 轮询容器网络隔离规则的生效状态。
+// 隔离是安全边界，失效必须可见——这里只在设置页「容器网络」卡片给出提示。
+async function updateHostFWStatus() {
+  const el = $('hostfwStatus');
+  if (!el) return;
+  try {
+    const d = await api('GET', '/api/hostfw/status');
+    if (d.healthy) {
+      el.hidden = true;
+    } else {
+      el.hidden = false;
+      el.textContent = d.error || '容器网络隔离规则未生效';
+    }
+  } catch {
+    el.hidden = true;
   }
 }
 
