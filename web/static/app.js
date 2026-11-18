@@ -1591,6 +1591,7 @@ function confSnapshot() {
   o.containerIsolate = $('containerIsolate').checked;
   o.allowInsecureDownload = $('allowInsecureDownload').checked;
   o.allowInternalDownload = $('allowInternalDownload').checked;
+  o.trafficResetMode = $('trafficResetMode').value;
   return JSON.stringify(o);
 }
 
@@ -1626,6 +1627,8 @@ function loadConfigIntoForm(c) {
   $('maxPortForward').value = c.max_port_forward || 20;
   $('maxForwardIPs').value = c.max_forward_ips || 0;
   $('trafficResetDay').value = c.traffic_reset_day || 1;
+  $('trafficResetMode').value = c.traffic_reset_mode === 'rental' ? 'rental' : 'monthly';
+  syncTrafficResetUI();
   $('entryHost').value = c.host || '';
   $('webUser').value = c.web_user || '';
   $('webPass').value = '';
@@ -1647,6 +1650,12 @@ function loadConfigIntoForm(c) {
   state.snapshot = confSnapshot();
   syncDirty();
   loadNetworkAddresses(c.public_ipv4 || '');
+}
+
+// 流量重置模式切换：rental（创建 + 30 天）时隐藏「重置日」输入。
+function syncTrafficResetUI() {
+  const el = $('trafficResetDayField');
+  if (el) el.style.display = $('trafficResetMode').value === 'rental' ? 'none' : '';
 }
 
 // loadNetworkAddresses 拉取宿主机可用的 IPv4 填充下拉框。
@@ -1772,6 +1781,7 @@ function addPortTags() {
 CONF_FIELDS.forEach((id) => $(id)?.addEventListener('input', syncDirty));
 $('platformInsecure').addEventListener('change', () => { $('platformInsecureWarn').hidden = !$('platformInsecure').checked; syncDirty(); });
 $('containerIsolate').addEventListener('change', syncDirty);
+$('trafficResetMode').addEventListener('change', () => { syncTrafficResetUI(); syncDirty(); });
 $('portInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addPortTags(); }
 });
@@ -1810,6 +1820,7 @@ async function saveConfig(btn) {
       max_port_forward: Number($('maxPortForward').value) || 20,
       max_forward_ips: Math.max(0, Number($('maxForwardIPs').value) || 0),
       traffic_reset_day: Number($('trafficResetDay').value) || 1,
+      traffic_reset_mode: $('trafficResetMode').value,
       host: $('entryHost').value.trim(),
       web_user: $('webUser').value,
       web_pass: $('webPass').value,

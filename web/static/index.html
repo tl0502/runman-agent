@@ -865,9 +865,18 @@
                   <input class="input tnum" type="number" id="maxForwardIPs" min="0" max="100000">
                 </div>
               </div>
-              <div class="field" style="max-width:calc(50% - 7px)">
-                <label for="trafficResetDay">流量重置日 <span class="hint">1–28</span></label>
-                <input class="input tnum" type="number" id="trafficResetDay" min="1" max="28">
+              <div class="form-grid cols-2">
+                <div class="field">
+                  <label for="trafficResetMode">流量重置</label>
+                  <select class="input" id="trafficResetMode">
+                    <option value="monthly">每月固定日</option>
+                    <option value="rental">创建 + 30 天</option>
+                  </select>
+                </div>
+                <div class="field" id="trafficResetDayField">
+                  <label for="trafficResetDay">重置日 <span class="hint">1–28</span></label>
+                  <input class="input tnum" type="number" id="trafficResetDay" min="1" max="28">
+                </div>
               </div>
             </div>
           </div>

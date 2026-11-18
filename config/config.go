@@ -147,7 +147,11 @@ type Config struct {
 	// 每个 VM 端口转发允许的最大唯一来源 IP 数（全局默认值，0 表示不限制，可按 VM 覆盖）
 	MaxForwardIPs int32 `json:"max_forward_ips"`
 
-	// 每月自动重置流量的日期（1-28）
+	// 流量重置模式："monthly" = 每月固定日（TrafficResetDay）；"rental" = 每 VM 按创建时间 + 30 天。
+	// 为空或非法值回落 "monthly"。
+	TrafficResetMode string `json:"traffic_reset_mode"`
+
+	// 每月自动重置流量的日期（1-28，仅 monthly 模式生效）
 	TrafficResetDay int `json:"traffic_reset_day"`
 
 	// IPv6 配置（cloud-hypervisor / incus 公用）
@@ -364,6 +368,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.SiteName == "" {
 		cfg.SiteName = DefaultSiteName
+	}
+	if cfg.TrafficResetMode != "rental" {
+		cfg.TrafficResetMode = "monthly"
 	}
 	if cfg.TrafficResetDay <= 0 || cfg.TrafficResetDay > 28 {
 		cfg.TrafficResetDay = 1

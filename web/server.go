@@ -1144,16 +1144,17 @@ func defaultRouteIface() string {
 }
 
 type configRequest struct {
-	Token           string  `json:"token"`
-	MonitorNIC      string  `json:"monitor_nic"`
-	MonitorDisk     string  `json:"monitor_disk"`
-	WebUser         string  `json:"web_user"`
-	WebPass         string  `json:"web_pass"` // plaintext，服务端 bcrypt 后存储
-	SiteName        *string `json:"site_name"`
-	Host            string  `json:"host"`
-	MaxPortForward  int32   `json:"max_port_forward"`
-	MaxForwardIPs   *int32  `json:"max_forward_ips"` // 指针以区分"未提交"与"设为 0（不限制）"
-	TrafficResetDay int     `json:"traffic_reset_day"`
+	Token            string  `json:"token"`
+	MonitorNIC       string  `json:"monitor_nic"`
+	MonitorDisk      string  `json:"monitor_disk"`
+	WebUser          string  `json:"web_user"`
+	WebPass          string  `json:"web_pass"` // plaintext，服务端 bcrypt 后存储
+	SiteName         *string `json:"site_name"`
+	Host             string  `json:"host"`
+	MaxPortForward   int32   `json:"max_port_forward"`
+	MaxForwardIPs    *int32  `json:"max_forward_ips"` // 指针以区分"未提交"与"设为 0（不限制）"
+	TrafficResetDay  int     `json:"traffic_reset_day"`
+	TrafficResetMode string  `json:"traffic_reset_mode"` // "monthly" / "rental"
 
 	// 接入点配置。指针用于区分"未提交"（保持原值）与"提交空串"（回落到内置默认），
 	// 保证不认识这些字段的旧客户端调用 POST /api/config 时行为完全不变。
@@ -1181,17 +1182,18 @@ type configRequest struct {
 type configResponse struct {
 	// 只回传"是否已配置"，不回传 Token 本身。凭据一旦进入响应就会落到浏览器
 	// 内存与开发者工具里，面板并不需要它的明文——留空即"不修改"。
-	HasToken        bool   `json:"has_token"`
-	MonitorNIC      string `json:"monitor_nic"`
-	MonitorDisk     string `json:"monitor_disk"`
-	WebUser         string `json:"web_user"`
-	SiteName        string `json:"site_name"`
-	SiteIcon        int64  `json:"site_icon"` // 自定义图标的修改时间，0 表示用内置图标
-	VirtType        string `json:"virt_type"`
-	Host            string `json:"host"`
-	MaxPortForward  int32  `json:"max_port_forward"`
-	MaxForwardIPs   int32  `json:"max_forward_ips"`
-	TrafficResetDay int    `json:"traffic_reset_day"`
+	HasToken         bool   `json:"has_token"`
+	MonitorNIC       string `json:"monitor_nic"`
+	MonitorDisk      string `json:"monitor_disk"`
+	WebUser          string `json:"web_user"`
+	SiteName         string `json:"site_name"`
+	SiteIcon         int64  `json:"site_icon"` // 自定义图标的修改时间，0 表示用内置图标
+	VirtType         string `json:"virt_type"`
+	Host             string `json:"host"`
+	MaxPortForward   int32  `json:"max_port_forward"`
+	MaxForwardIPs    int32  `json:"max_forward_ips"`
+	TrafficResetDay  int    `json:"traffic_reset_day"`
+	TrafficResetMode string `json:"traffic_reset_mode"`
 	// 空串表示走内置默认，面板据此显示 placeholder。
 	PlatformAddr     string `json:"platform_addr"`
 	PlatformEnabled  bool   `json:"platform_enabled"`
@@ -1270,6 +1272,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			if req.TrafficResetDay > 0 && req.TrafficResetDay <= 28 {
 				cfg.TrafficResetDay = req.TrafficResetDay
+			}
+			if req.TrafficResetMode == "monthly" || req.TrafficResetMode == "rental" {
+				cfg.TrafficResetMode = req.TrafficResetMode
 			}
 			if req.PlatformAddr != nil {
 				cfg.PlatformAddr = strings.TrimSpace(*req.PlatformAddr)
@@ -1359,6 +1364,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		MaxPortForward:   conf.MaxPortForward,
 		MaxForwardIPs:    conf.MaxForwardIPs,
 		TrafficResetDay:  conf.TrafficResetDay,
+		TrafficResetMode: conf.TrafficResetMode,
 		PlatformAddr:     conf.PlatformAddr,
 		PlatformEnabled:  conf.PlatformEnabledOn(),
 		UpdateRepo:       conf.UpdateRepo,

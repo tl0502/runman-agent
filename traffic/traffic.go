@@ -87,25 +87,27 @@ func (s *Service) syncOnce(ctx context.Context) {
 	}
 
 	now := time.Now()
+	cfg := s.cfg.Get()
 
-	// 从配置获取重置日期
-	resetDay := s.cfg.Get().TrafficResetDay
+	// 重置模式：monthly（每月固定日，全局统一）/ rental（每 VM 按创建时间 + 30 天）。
+	mode := cfg.TrafficResetMode
+	if mode != "rental" {
+		mode = "monthly"
+	}
+	resetDay := cfg.TrafficResetDay
 	if resetDay <= 0 || resetDay > 28 {
 		resetDay = 1
 	}
-
-	// 计算当前所处的计费周期键值 (例如 "2024-03-15")
-	y, m, d := now.Date()
-	if d < resetDay {
-		m -= 1
-		if m == 0 {
-			m = 12
-			y -= 1
-		}
-	}
-	currentCycle := fmt.Sprintf("%04d-%02d-%02d", y, m, resetDay)
+	// monthly 模式下所有 VM 共用一个周期键。
+	monthlyCycle := monthlyCycleKey(now, resetDay)
 
 	for _, vm := range vms {
+		// 该 VM 当前所处的计费周期键（monthly 全局；rental 逐 VM 计算）。
+		cycle := monthlyCycle
+		if mode == "rental" {
+			cycle = s.rentalCycleKey(ctx, vm.VmId, now, monthlyCycle)
+		}
+
 		// 从驱动获取 VM 的当前流量值（累计字节数）
 		netStats, err := s.mgr.GetVMNetStats(ctx, vm.VmId)
 		if err != nil {
@@ -123,7 +125,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 				RawOut:    netStats.OutBytes,
 				TotalIn:   0,
 				TotalOut:  0,
-				Month:     currentCycle,
+				Month:     cycle,
 				MonthIn:   0,
 				MonthOut:  0,
 				UpdatedAt: now,
@@ -146,9 +148,9 @@ func (s *Service) syncOnce(ctx context.Context) {
 			traffic.TotalOut += deltaOut
 
 			// 检查周期是否变化
-			if traffic.Month != currentCycle {
+			if traffic.Month != cycle {
 				// 周期切换，重置月度数据
-				traffic.Month = currentCycle
+				traffic.Month = cycle
 				traffic.MonthIn = 0
 				traffic.MonthOut = 0
 			}
@@ -168,6 +170,45 @@ func (s *Service) syncOnce(ctx context.Context) {
 			log.Printf("failed to save traffic for VM %s: %v", vm.VmId, err)
 		}
 	}
+}
+
+// monthlyCycleKey 计算「每月 resetDay」的周期键（如 "2024-03-15"）。
+// 当前日期在 resetDay 之前时归属上一个月的周期。
+func monthlyCycleKey(now time.Time, resetDay int) string {
+	y, m, d := now.Date()
+	if d < resetDay {
+		m -= 1
+		if m == 0 {
+			m = 12
+			y -= 1
+		}
+	}
+	return fmt.Sprintf("%04d-%02d-%02d", y, m, resetDay)
+}
+
+// rentalCycleKey 计算「VM 创建时间 + 30 天」的当前周期键（返回周期开始日）。
+// 拿不到创建时间时回落到 monthly 的周期键，避免流量被误归零。
+func (s *Service) rentalCycleKey(ctx context.Context, vmID string, now time.Time, fallback string) string {
+	created, err := s.mgr.GetVMCreatedAt(ctx, vmID)
+	if err != nil {
+		return fallback
+	}
+	return rentalCycleKeyFrom(created, now, fallback)
+}
+
+// rentalCycleKeyFrom 是 rentalCycleKey 的纯计算部分（便于单测）。
+// 以创建时间为起点，每 30 天一个周期；当前周期开始日即周期键。
+func rentalCycleKeyFrom(created, now time.Time, fallback string) string {
+	if created.IsZero() {
+		return fallback
+	}
+	elapsed := now.Sub(created)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	n := int64(elapsed / (30 * 24 * time.Hour))
+	cycleStart := created.Add(time.Duration(n) * 30 * 24 * time.Hour)
+	return cycleStart.Format("2006-01-02")
 }
 
 // GetVMTraffic 从数据库获取 VM 的累计流量（用于 API）
