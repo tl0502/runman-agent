@@ -49,6 +49,11 @@ type Config struct {
 	// 平台认证
 	Token string `json:"token"`
 
+	// PlatformEnabled 控制是否接入平台。为 false 时 Agent 完全不建立平台连接，
+	// 仅通过本地面板管理（独立模式）。nil 视为 true——存量配置没有这个字段，
+	// 必须保持原有的连接行为，升级不能静默改变已有部署。
+	PlatformEnabled *bool `json:"platform_enabled"`
+
 	// 平台接入地址（gRPC host:port）。为空时回落到 DefaultPlatformAddr。
 	// 改动后 Agent 会自动断开并按新地址重连，无需重启进程。
 	PlatformAddr string `json:"platform_addr"`
@@ -303,6 +308,13 @@ func applyDefaults(cfg *Config) {
 	if cfg.IPv6BackupDir == "" {
 		cfg.IPv6BackupDir = "/var/lib/narwhal-agent/backups"
 	}
+}
+
+// PlatformEnabledOn 返回是否接入平台。nil 视为 true：存量配置里没有该字段，
+// 升级后必须沿用它原本的行为（接平台），否则所有已接入的机器会静默断连。
+// 独立模式（不接平台）只能由用户显式关闭。
+func (c Config) PlatformEnabledOn() bool {
+	return c.PlatformEnabled == nil || *c.PlatformEnabled
 }
 
 // PlatformAddress 返回实际生效的平台接入地址（host:port）。

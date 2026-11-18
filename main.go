@@ -333,6 +333,17 @@ func (a *Agent) run() {
 		a.mu.Lock()
 		a.config = conf
 		a.mu.Unlock()
+
+		// 独立模式：用户显式关闭了平台接入，不建立任何连接。
+		// 这里用固定 10 秒轮询等待开关恢复（面板或 --platform on 改的是内存/文件配置，
+		// 没有唤醒通道），同时重置退避延迟，保证重新开启后能立刻连上而不是等满 5 分钟。
+		if !conf.PlatformEnabledOn() {
+			a.setConnected(false, "")
+			delay = baseDelay
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
 		if conf.Token == "" {
 			a.setConnected(false, "No token configured")
 			time.Sleep(10 * time.Second)
@@ -518,9 +529,9 @@ func (a *Agent) GetHostFWStatus() (bool, string) {
 	return a.hostfw.Healthy()
 }
 
-// watchPlatformAddr 在连接存活期间轮询配置；平台地址被改动时主动断开当前流，
-// 交给 run() 的重连循环用新地址重新建连。
-func (a *Agent) watchPlatformAddr(ctx context.Context, cancel context.CancelFunc, current string) {
+// watchPlatformAddr 在连接存活期间轮询配置；平台地址被改动、或平台接入开关
+// 被切换时主动断开当前流，交给 run() 的重连循环按新配置重新决定（连/不连）。
+func (a *Agent) watchPlatformAddr(ctx context.Context, cancel context.CancelFunc, current string, currentEnabled bool) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -528,9 +539,16 @@ func (a *Agent) watchPlatformAddr(ctx context.Context, cancel context.CancelFunc
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			latest := a.cfg.Get().PlatformAddress()
+			conf := a.cfg.Get()
+			latest := conf.PlatformAddress()
 			if latest != current {
 				log.Printf("[Agent] platform address changed: %s -> %s, reconnecting", current, latest)
+				cancel()
+				return
+			}
+			// 开关关闭时必须断开已有连接，否则「独立模式」只是名义上的。
+			if enabled := conf.PlatformEnabledOn(); enabled != currentEnabled {
+				log.Printf("[Agent] platform access toggled: %v -> %v, reconnecting", currentEnabled, enabled)
 				cancel()
 				return
 			}
@@ -620,7 +638,7 @@ func (a *Agent) connectAndLoop() error {
 	client := agent.NewAgentGatewayClient(conn)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go a.watchPlatformAddr(ctx, cancel, addr)
+	go a.watchPlatformAddr(ctx, cancel, addr, conf.PlatformEnabledOn())
 	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+a.config.Token)
 	stream, err := client.Connect(ctx)
 	if err != nil {

@@ -642,9 +642,13 @@
               <span class="card-title">平台接入</span>
             </div>
             <div class="card-body form-grid">
+              <label class="check"><input type="checkbox" id="platformEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 接入平台 <span class="hint">关闭后仅本地面板管理</span></label>
               <div class="field">
                 <label for="token">API Token</label>
-                <input class="input mono" type="password" id="token" placeholder="未配置">
+                <div class="field-row">
+                  <input class="input mono" type="password" id="token" placeholder="未配置">
+                  <button class="btn btn-ghost btn-sm" id="clearToken" type="button">清除</button>
+                </div>
               </div>
               <div class="field">
                 <label for="platformAddr">平台地址</label>

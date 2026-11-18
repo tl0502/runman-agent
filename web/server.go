@@ -177,6 +177,8 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("/api/system/info", s.handleSystemInfo)
 	mux.HandleFunc("/api/connection", s.handleConnection)
 	mux.HandleFunc("/api/hostfw/status", s.handleHostFWStatus)
+	// 清除平台凭据（显式动作，等同退出平台接入）
+	mux.HandleFunc("DELETE /api/platform/token", s.handleClearPlatformToken)
 	mux.HandleFunc("/api/version", s.handleVersion)
 	mux.HandleFunc("/api/update-check", s.handleUpdateCheck)
 	mux.HandleFunc("POST /api/upgrade", s.handleUpgrade)
@@ -930,10 +932,12 @@ type configRequest struct {
 
 	// 接入点配置。指针用于区分"未提交"（保持原值）与"提交空串"（回落到内置默认），
 	// 保证不认识这些字段的旧客户端调用 POST /api/config 时行为完全不变。
-	PlatformAddr  *string `json:"platform_addr"`
-	UpdateRepo    *string `json:"update_repo"`
-	UpdateBaseURL *string `json:"update_base_url"`
-	UpdateAPIURL  *string `json:"update_api_url"`
+	PlatformAddr *string `json:"platform_addr"`
+	// nil = 未提交（保持原值）；false = 显式关闭平台接入（独立模式）。
+	PlatformEnabled *bool   `json:"platform_enabled"`
+	UpdateRepo      *string `json:"update_repo"`
+	UpdateBaseURL   *string `json:"update_base_url"`
+	UpdateAPIURL    *string `json:"update_api_url"`
 	// 下载源安全开关：默认关闭，放行明文 http 与内网地址需显式开启。
 	AllowInsecureDownload *bool `json:"allow_insecure_download"`
 	AllowInternalDownload *bool `json:"allow_internal_download"`
@@ -963,6 +967,7 @@ type configResponse struct {
 	TrafficResetDay int    `json:"traffic_reset_day"`
 	// 空串表示走内置默认，面板据此显示 placeholder。
 	PlatformAddr     string `json:"platform_addr"`
+	PlatformEnabled  bool   `json:"platform_enabled"`
 	UpdateRepo       string `json:"update_repo"`
 	UpdateBaseURL    string `json:"update_base_url"`
 	UpdateAPIURL     string `json:"update_api_url"`
@@ -1037,6 +1042,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			if req.PlatformAddr != nil {
 				cfg.PlatformAddr = strings.TrimSpace(*req.PlatformAddr)
+			}
+			if req.PlatformEnabled != nil {
+				enabled := *req.PlatformEnabled
+				cfg.PlatformEnabled = &enabled
 			}
 			if req.UpdateRepo != nil {
 				cfg.UpdateRepo = strings.TrimSpace(*req.UpdateRepo)
@@ -1120,6 +1129,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		MaxForwardIPs:    conf.MaxForwardIPs,
 		TrafficResetDay:  conf.TrafficResetDay,
 		PlatformAddr:     conf.PlatformAddr,
+		PlatformEnabled:  conf.PlatformEnabledOn(),
 		UpdateRepo:       conf.UpdateRepo,
 		UpdateBaseURL:    conf.UpdateBaseURL,
 		UpdateAPIURL:     conf.UpdateAPIURL,
@@ -1144,10 +1154,47 @@ func (s *Server) handleConnection(w http.ResponseWriter, _ *http.Request) {
 			connected, errMsg = a.GetConnStatus()
 		}
 	}
+	// mode 区分四种状态，前端据此渲染胶囊：
+	//   standalone   —— 用户显式关闭平台接入，中性显示，不是故障
+	//   connected    —— 已连上平台
+	//   no_token     —— 开关开着但没有 Token，无法连接
+	//   disconnected —— 有 Token 但没连上（网络 / TLS / 认证失败等），属故障
+	// 开关优先于实际连接状态：刚关掉的 10 秒窗口内连接可能还在，但用户意图已是独立模式。
+	conf := s.cfg.Get()
+	mode := "disconnected"
+	switch {
+	case !conf.PlatformEnabledOn():
+		mode = "standalone"
+		errMsg = ""
+	case connected:
+		mode = "connected"
+	case conf.Token == "":
+		mode = "no_token"
+	}
 	jsonOK(w, map[string]interface{}{
 		"connected": connected,
+		"mode":      mode,
 		"error":     errMsg,
 	})
+}
+
+// handleClearPlatformToken 清除平台 Token 并同时关闭平台接入。
+//
+// 单独开一个接口而不是复用 POST /api/config：那里的 token 字段是"空串 = 未修改"
+// 的语义（避免前端没填就抹掉凭据），无法表达"我要清空"。清除是显式动作，
+// 语义上等于退出平台接入，因此顺带把平台开关关掉，不留"开着开关但没有凭据"的半配状态。
+func (s *Server) handleClearPlatformToken(w http.ResponseWriter, _ *http.Request) {
+	err := s.cfg.UpdateChecked(func(cfg *config.Config) error {
+		cfg.Token = ""
+		disabled := false
+		cfg.PlatformEnabled = &disabled
+		return nil
+	})
+	if err != nil {
+		jsonErr(w, err, http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, map[string]interface{}{"ok": true, "mode": "standalone"})
 }
 
 // handleHostFWStatus 返回容器网络隔离规则的生效状态。

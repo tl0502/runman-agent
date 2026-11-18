@@ -176,10 +176,41 @@ write_agent_token() {
     [ -f "$AGENT_CONFIG_FILE" ] || die "$(t "Agent config not found: $AGENT_CONFIG_FILE" "未找到 Agent 配置: $AGENT_CONFIG_FILE")"
     command -v jq >/dev/null 2>&1 || die "jq is required"
     validate_agent_token "$value" || exit 1
-    jq --arg token "$value" '.token = $token' "$AGENT_CONFIG_FILE" > "$AGENT_CONFIG_FILE.tmp"
+    # 设置 Token 的意图就是接入平台，顺带把开关打开——否则会留下
+    # 「配了 Token 却因为开关关着而永远不连」的半配状态。
+    jq --arg token "$value" '.token = $token | .platform_enabled = true' "$AGENT_CONFIG_FILE" > "$AGENT_CONFIG_FILE.tmp"
     chmod 600 "$AGENT_CONFIG_FILE.tmp"
     mv "$AGENT_CONFIG_FILE.tmp" "$AGENT_CONFIG_FILE"
     systemctl restart "$AGENT_SERVICE" 2>/dev/null || true
+}
+
+# set_platform_enabled 开关平台接入（off = 独立模式）。
+#
+# 关闭后 Agent 完全不建立平台连接，仅通过本地面板管理；重新开启会立即恢复连接。
+# 与 --rotate-token 一致：改完配置重启服务生效——Agent 的配置在内存里，
+# 外部改文件不会被自动重载。
+#
+# 用法：set_platform_enabled on|off
+set_platform_enabled() {
+    local mode=$1 v
+    [ "$(id -u)" = "0" ] || die "$(t "Platform switch requires root." "平台开关需要 root 权限。")"
+    [ -f "$AGENT_CONFIG_FILE" ] || die "$(t "Agent config not found: $AGENT_CONFIG_FILE" "未找到 Agent 配置: $AGENT_CONFIG_FILE")"
+    command -v jq >/dev/null 2>&1 || die "jq is required"
+    case "$mode" in
+        on) v=true ;;
+        off) v=false ;;
+        *) die "$(t "--platform accepts only on|off" "--platform 只接受 on 或 off")" ;;
+    esac
+    jq --argjson v "$v" '.platform_enabled = $v' "$AGENT_CONFIG_FILE" > "$AGENT_CONFIG_FILE.tmp"
+    chmod 600 "$AGENT_CONFIG_FILE.tmp"
+    mv "$AGENT_CONFIG_FILE.tmp" "$AGENT_CONFIG_FILE"
+    systemctl restart "$AGENT_SERVICE" 2>/dev/null || true
+    if [ "$v" = "true" ]; then
+        log "$(t "✓ Platform access enabled; agent restarted." "✓ 已启用平台接入，Agent 已重启。")"
+        [ -n "$(read_agent_token)" ] || log "$(t "! Token is empty; the agent will not connect until one is set." "! Token 为空，设置前 Agent 不会连接平台。")"
+    else
+        log "$(t "✓ Standalone mode: platform connection disabled, panel only." "✓ 独立模式：已关闭平台连接，仅本地面板管理。")"
+    fi
 }
 
 show_agent_token() {
@@ -294,6 +325,8 @@ TOKEN_ACTION=""
 TOKEN_VALUE="${TOKEN_VALUE:-}"
 INITIAL_TOKEN="${NARWHAL_AGENT_TOKEN:-}"
 GENERATE_TOKEN=0
+# 平台接入开关的一次性操作（on/off）。空表示不改，保持配置里现有的值。
+PLATFORM_ACTION="${PLATFORM_ACTION:-}"
 SKIP_IPV6_PROBE="${SKIP_IPV6_PROBE:-0}"
 SYSTEM_ACTION=""
 IMAGE_MENU=0
@@ -314,6 +347,8 @@ Runman Agent installer
   bash install.sh --show-token             Print current integration Token
   bash install.sh --rotate-token           Generate, store and print a new Token
   bash install.sh --rotate-token --token X Store and print a custom Token
+  bash install.sh --platform off           Standalone mode: stop connecting to the platform
+  bash install.sh --platform on            Re-enable platform connection
   bash install.sh --status                 Show Agent/backend/service status
   bash install.sh --restart-agent          Restart Agent and optional rfw
   bash install.sh --reset-panel-password   Reset panel password interactively
@@ -482,6 +517,7 @@ while [[ $# -gt 0 ]]; do
         --rollback-ipv6) IPV6_ONESHOT_MODE="rollback"; shift ;;
         --show-token) TOKEN_ACTION="show"; shift ;;
         --rotate-token) TOKEN_ACTION="rotate"; shift ;;
+        --platform) [ $# -ge 2 ] || die "--platform requires on|off"; PLATFORM_ACTION="$2"; shift 2 ;;
         --status) SYSTEM_ACTION="status"; shift ;;
         --restart-agent) SYSTEM_ACTION="restart"; shift ;;
         --reset-panel-password) SYSTEM_ACTION="reset-password"; shift ;;
@@ -504,7 +540,7 @@ esac
 # One-shot operations and explicit non-interactive installs must never pause for
 # a language selection. Guided/menu installs keep the bilingual prompt.
 if [ -z "$LANG_CODE" ] && { [ -n "$SYSTEM_ACTION" ] || [ -n "$TOKEN_ACTION" ] \
-    || [ -n "$IPV6_ONESHOT_MODE" ] || [ "$UNINSTALL" = "1" ] \
+    || [ -n "$PLATFORM_ACTION" ] || [ -n "$IPV6_ONESHOT_MODE" ] || [ "$UNINSTALL" = "1" ] \
     || [ "$NON_INTERACTIVE" = "1" ]; }; then
     LANG_CODE="en"
 fi
@@ -528,7 +564,7 @@ fi
 
 # ── 一键 Token / 备份 / 回滚 / 卸载（处理完即退出）──
 if [ "$UPDATE_ONLY" = "1" ]; then
-    [ -z "$SYSTEM_ACTION" ] && [ -z "$TOKEN_ACTION" ] && [ -z "$IPV6_ONESHOT_MODE" ] \
+    [ -z "$SYSTEM_ACTION" ] && [ -z "$TOKEN_ACTION" ] && [ -z "$PLATFORM_ACTION" ] && [ -z "$IPV6_ONESHOT_MODE" ] \
         && [ "$UNINSTALL" != "1" ] && [ "$GENERATE_TOKEN" = "0" ] \
         || die "--update-only cannot be combined with other management actions."
 fi
@@ -537,10 +573,20 @@ case "$SYSTEM_ACTION" in
     restart) restart_agent_services; exit 0 ;;
     reset-password) reset_panel_password; exit 0 ;;
 esac
+# 平台接入开关是独立的一次性操作（改配置 + 重启服务）。
+# 不与 token 动作组合：设置 Token 本身就会自动启用平台接入，无需再叠加。
+# 冲突检查必须放在 TOKEN_ACTION 分支之前——那边会 exit，之后就检查不到了。
+if [ -n "$PLATFORM_ACTION" ] && [ -n "$TOKEN_ACTION" ]; then
+    die "$(t "--platform cannot be combined with token actions." "--platform 不能与 Token 操作同时使用。")"
+fi
 case "$TOKEN_ACTION" in
     show) show_agent_token; exit 0 ;;
     rotate) rotate_agent_token; exit 0 ;;
 esac
+if [ -n "$PLATFORM_ACTION" ]; then
+    set_platform_enabled "$PLATFORM_ACTION"
+    exit 0
+fi
 if [ "$IPV6_ONESHOT_MODE" = "backup" ]; then
     b=$(backup_ipv6_config); log "$(t "IPv6 config backed up to $b" "IPv6 配置已备份至 $b")"; exit 0
 elif [ "$IPV6_ONESHOT_MODE" = "rollback" ]; then
@@ -1377,6 +1423,12 @@ write_config_file() {
     local web_pass="${10:-}"
     local agent_token="${11:-}"
 
+    # 装完默认是否接入平台：只有提供了 Token 才置 true。
+    # 不写这个字段会按 nil 处理成「接入平台」，与初始 token 为空的实际行为不符，
+    # 会让面板显示「已启用」但状态却是「未配置 Token」。
+    local platform_enabled=false
+    [ -n "$agent_token" ] && platform_enabled=true
+
     mkdir -p "$AGENT_CONFIG_DIR"
     # 目录同时存放二进制、配置、数据库与 install.sh，收紧为仅属主可进入，
     # 避免其它本地用户列出目录内容或读到数据库。
@@ -1388,6 +1440,7 @@ write_config_file() {
     "web": ":$AGENT_WEB_PORT",
     "virt_type": "$virt_type",
     "token": "",
+    "platform_enabled": $platform_enabled,
     "monitor_nic": "",
     "monitor_disk": "/",
     "web_user": "$web_user",
@@ -2184,5 +2237,6 @@ log "$(t "Token:        $INITIAL_TOKEN" "对接 Token:    $INITIAL_TOKEN")"
 echo ""
 log "$(t "Token rotation: bash install.sh --rotate-token" "Token 轮换:    bash install.sh --rotate-token")"
 log "$(t "Custom Token:  bash install.sh --rotate-token --token '<new-token>'" "自定义 Token:   bash install.sh --rotate-token --token '<新Token>'")"
+log "$(t "Standalone:    bash install.sh --platform off" "独立模式:      bash install.sh --platform off")"
 log "$(t "Network:      IPv4 NAT=on, IPv6=$IPV6_MODE" "网络模式:      IPv4 NAT=开启, IPv6=$IPV6_MODE")"
 log "========================================"

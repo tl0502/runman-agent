@@ -1122,9 +1122,20 @@ const CONF_FIELDS = ['siteName', 'token', 'platformAddr', 'monitorNIC', 'monitor
   'maxForwardIPs', 'trafficResetDay', 'entryHost', 'updateRepo', 'updateBase', 'updateApi', 'netavarkBase',
   'publicIpv4', 'webUser', 'webPass', 'hostAllowPorts', 'containerAllowSubnets'];
 
+// 独立模式下「平台凭据」相关控件保留可见但不可编辑——用户能直接看到重新接入
+// 需要填什么，不用先开开关才知道。开关本身就是这一组字段的生效前提。
+function applyPlatformEnabledUI() {
+  const on = $('platformEnabled').checked;
+  $('token').disabled = !on;
+  $('platformAddr').disabled = !on;
+  $('platformInsecure').disabled = !on;
+  $('clearToken').disabled = !on;
+}
+
 function confSnapshot() {
   const o = {};
   CONF_FIELDS.forEach((id) => { o[id] = $(id).value; });
+  o.platformEnabled = $('platformEnabled').checked;
   o.platformInsecure = $('platformInsecure').checked;
   o.containerIsolate = $('containerIsolate').checked;
   o.allowInsecureDownload = $('allowInsecureDownload').checked;
@@ -1150,6 +1161,8 @@ function loadConfigIntoForm(c) {
   $('webUser').value = c.web_user || '';
   $('webPass').value = '';
   $('platformAddr').value = c.platform_addr || '';
+  $('platformEnabled').checked = c.platform_enabled !== false;
+  applyPlatformEnabledUI();
   $('updateRepo').value = c.update_repo || '';
   $('updateBase').value = c.update_base_url || '';
   $('updateApi').value = c.update_api_url || '';
@@ -1200,6 +1213,25 @@ async function loadNetworkAddresses(selected) {
 CONF_FIELDS.forEach((id) => $(id)?.addEventListener('input', syncDirty));
 $('platformInsecure').addEventListener('change', () => { $('platformInsecureWarn').hidden = !$('platformInsecure').checked; syncDirty(); });
 $('containerIsolate').addEventListener('change', syncDirty);
+$('platformEnabled').addEventListener('change', () => { applyPlatformEnabledUI(); syncDirty(); });
+// 清除 Token 是立即生效的后端操作（不是待在表单里保存的字段），
+// 因此完成后要把快照基线一起刷新，否则会留下一个假的「未保存」提示。
+$('clearToken').addEventListener('click', (e) => clearPlatformToken(e.currentTarget).catch(toastErr));
+
+async function clearPlatformToken(btn) {
+  if (!confirm('清除 Token 并切换为独立模式？')) return;
+  await withBusy(btn, async () => {
+    await api('DELETE', '/api/platform/token');
+    $('token').value = '';
+    $('platformEnabled').checked = false;
+    applyPlatformEnabledUI();
+    if (state.config) state.config.token = '';
+    state.snapshot = confSnapshot();
+    syncDirty();
+    toast('已清除 Token，切换为独立模式');
+    updateConnection();
+  });
+}
 
 async function saveConfig(btn) {
   await withBusy(btn, async () => {
@@ -1215,6 +1247,7 @@ async function saveConfig(btn) {
       web_user: $('webUser').value,
       web_pass: $('webPass').value,
       platform_addr: $('platformAddr').value.trim(),
+      platform_enabled: $('platformEnabled').checked,
       update_repo: $('updateRepo').value.trim(),
       update_base_url: $('updateBase').value.trim(),
       update_api_url: $('updateApi').value.trim(),
@@ -1235,6 +1268,9 @@ async function saveConfig(btn) {
       syncDirty();
       applyBrand(body.site_name);
       renderHostKv();
+      // 平台开关是热生效的（后端 10 秒内断开/重连），保存后立刻刷新一次胶囊，
+      // 不让用户盯着「连接中」等下一轮轮询。
+      updateConnection();
       toast('配置已保存');
     } catch (e) { toastErr(e); }
   });
@@ -1735,23 +1771,28 @@ async function init() {
 
 async function updateConnection() {
   const pill = $('connPill');
-  const text = $('connText');
-  const hasToken = !!state.config?.token;
-  if (!hasToken) {
-    pill.className = 'pill pill-warn';
-    pill.innerHTML = '<span class="dot"></span><span id="connText">未配置</span>';
-    return;
-  }
   try {
     const d = await api('GET', '/api/connection');
-    if (d.connected) {
-      pill.className = 'pill pill-ok';
-      pill.innerHTML = '<span class="dot"></span><span id="connText">已连接</span>';
-      pill.title = '平台连接正常';
-    } else {
-      pill.className = 'pill pill-warn';
-      pill.innerHTML = '<span class="dot"></span><span id="connText">连接中</span>';
-      pill.title = d.error || '正在连接平台';
+    switch (d.mode) {
+      case 'standalone':
+        pill.className = 'pill pill-quiet';
+        pill.innerHTML = '<span class="dot"></span><span id="connText">独立模式</span>';
+        pill.title = '未接入平台，仅本地面板管理';
+        break;
+      case 'connected':
+        pill.className = 'pill pill-ok';
+        pill.innerHTML = '<span class="dot"></span><span id="connText">已连接</span>';
+        pill.title = '平台连接正常';
+        break;
+      case 'no_token':
+        pill.className = 'pill pill-warn';
+        pill.innerHTML = '<span class="dot"></span><span id="connText">未配置</span>';
+        pill.title = '已启用平台接入，但未设置 Token';
+        break;
+      default:
+        pill.className = 'pill pill-warn';
+        pill.innerHTML = '<span class="dot"></span><span id="connText">连接中</span>';
+        pill.title = d.error || '正在连接平台';
     }
   } catch {
     pill.className = 'pill pill-quiet';
