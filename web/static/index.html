@@ -1047,53 +1047,39 @@
     <div class="dtab" id="dtab-ports" hidden>
       <div class="card" style="border-radius:14px">
         <div class="card-head">
-          <span class="card-title">新增规则</span>
+          <span class="card-title">转发规则</span>
           <span class="card-note mono" id="pfSummary"></span>
         </div>
-        <div class="card-body">
-          <div class="form-grid cols-3">
-            <div class="field">
-              <label>协议</label>
-              <select class="input" id="pfProto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
-            </div>
-            <div class="field">
-              <label>宿主端口</label>
-              <input class="input tnum" type="number" id="pfHost" min="1" max="65535" placeholder="2222">
-            </div>
-            <div class="field">
-              <label>VM 端口</label>
-              <input class="input tnum" type="number" id="pfGuest" min="1" max="65535" placeholder="22">
-            </div>
-          </div>
-          <button class="btn btn-primary btn-block" style="margin-top:12px" id="pfAdd">添加转发</button>
-          <div class="err" id="pfErr" style="margin-top:10px"></div>
-        </div>
-      </div>
-
-      <div class="card" style="border-radius:14px;margin-top:14px">
-        <div class="card-head">
-          <span class="card-title">连接来源限制</span>
-          <span class="card-note mono" id="ipLimitStatus"></span>
-        </div>
-        <div class="card-body">
-          <div class="row" style="gap:8px;flex-wrap:wrap">
-            <input class="input tnum" type="number" id="ipLimitValue" min="0" max="100000" placeholder="使用全局" style="flex:1;min-width:120px">
-            <button class="btn btn-ghost" id="ipLimitSet">设置</button>
-            <button class="btn btn-quiet" id="ipLimitGlobal">用全局</button>
-          </div>
-          <div class="metric-meta" style="margin-top:10px">
-            <span>已在线的 IP 不受限；新 IP 在唯一 IP 数达到上限后被拒绝。</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="card" style="border-radius:14px;margin-top:14px">
-        <div class="card-head"><span class="card-title">转发规则</span></div>
-        <div id="pfList" style="padding:6px 8px"></div>
-        <div class="empty" id="pfEmpty" hidden style="padding:28px 20px">
+        <div id="pfList" style="padding:4px 8px 8px"></div>
+        <div class="empty" id="pfEmpty" hidden style="padding:24px 20px">
           <span class="empty-sub">还没有端口转发规则</span>
         </div>
-        <div class="err" id="pfErr2" style="margin:0 16px 14px"></div>
+        <div class="err" id="pfErr2" style="margin:0 16px 12px"></div>
+        <div class="pf-add">
+          <button class="pf-toggle" id="pfToggleAdd" type="button" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#i-plus"/></svg>
+            <span>新增转发规则</span>
+            <svg class="pf-toggle-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev-down"/></svg>
+          </button>
+          <div class="pf-add-body" id="pfAddBody" hidden>
+            <div class="form-grid cols-3">
+              <div class="field">
+                <label>协议</label>
+                <select class="input" id="pfProto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+              </div>
+              <div class="field">
+                <label>宿主端口</label>
+                <input class="input tnum" type="number" id="pfHost" min="1" max="65535" placeholder="2222">
+              </div>
+              <div class="field">
+                <label>VM 端口</label>
+                <input class="input tnum" type="number" id="pfGuest" min="1" max="65535" placeholder="22">
+              </div>
+            </div>
+            <button class="btn btn-primary btn-sm" style="margin-top:10px" id="pfAdd">添加</button>
+            <div class="err" id="pfErr" style="margin-top:8px"></div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1194,6 +1180,23 @@
           <div class="field"><label>镜像</label><select class="input" id="mgImage"></select></div>
           <div class="field"><label>root 密码</label><input class="input mono" id="mgRePwd" placeholder="新密码"></div>
           <button class="btn btn-ghost span-2" id="mgReinstall">重装（会清空数据）</button>
+        </div>
+      </div>
+
+      <div class="card" style="border-radius:14px;margin-top:14px">
+        <div class="card-head">
+          <span class="card-title">连接来源限制</span>
+          <span class="card-note mono" id="ipLimitStatus"></span>
+        </div>
+        <div class="card-body">
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <input class="input tnum" type="number" id="ipLimitValue" min="0" max="100000" placeholder="使用全局" style="flex:1;min-width:120px">
+            <button class="btn btn-ghost" id="ipLimitSet">设置</button>
+            <button class="btn btn-quiet" id="ipLimitGlobal">用全局</button>
+          </div>
+          <div class="metric-meta" style="margin-top:10px">
+            <span>已在线的 IP 不受限；新 IP 在唯一 IP 数达到上限后被拒绝。</span>
+          </div>
         </div>
       </div>
 

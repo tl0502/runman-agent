@@ -551,7 +551,93 @@ main {
 }
 .list-row:hover { background: var(--fill); }
 .list-row + .list-row { box-shadow: inset 0 1px 0 var(--hairline); border-radius: 0; }
-.list-row + .list-row:hover { border-radius: 10px; }
+/* hover 不再改 border-radius：0 ↔ 10px 的突变会让相邻行在指针移动时"跳"一下，
+   是列表 hover 闪烁感的主要来源。圆角保持与静态时一致。 */
+
+/* 转发规则行：主行 + 来源 IP 副行。信息齐全但不撑高，
+   IP 默认只展示前 3 个，其余折叠为 +N。 */
+.pf-row {
+  padding: 10px 12px;
+  border-radius: 10px;
+  transition: background .15s ease;
+}
+.pf-row:hover { background: var(--fill); }
+.pf-row + .pf-row { box-shadow: inset 0 1px 0 var(--hairline); border-radius: 0; }
+.pf-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pf-proto {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--ink-1);
+  background: var(--fill);
+  border-radius: 5px;
+  padding: 2px 5px;
+  flex: none;
+}
+.pf-port { font-size: 12px; font-weight: 560; flex: none; }
+.pf-target {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.pf-desc { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; flex: none; }
+.pf-stat {
+  font-size: 10.5px;
+  font-weight: 560;
+  color: var(--ink-2);
+  background: var(--fill);
+  border-radius: 999px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  flex: none;
+}
+.pf-stat.is-ok { color: var(--green-ink); background: var(--green-soft); }
+.pf-ips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.pf-ip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  background: var(--fill);
+  border-radius: 6px;
+  padding: 1.5px 6px;
+}
+.pf-ip b { font-weight: 600; color: var(--ink-3); }
+.pf-ip.is-active b { color: var(--green-ink); }
+.pf-ip i { font-style: normal; color: var(--ink-3); opacity: .75; }
+.pf-ip.more { color: var(--ink-3); }
+
+/* 端口转发：新增规则折叠区（默认收起，规则列表优先占位） */
+.pf-add { border-top: 1px solid var(--hairline); }
+.pf-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 11px 16px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 560;
+  color: var(--ink-2);
+  text-align: left;
+  transition: color .15s ease;
+}
+.pf-toggle:hover { color: var(--ink-0); }
+.pf-toggle svg { width: 13px; height: 13px; flex: none; }
+.pf-toggle-chev { margin-left: auto; transition: transform .18s var(--ease); }
+.pf-toggle[aria-expanded="true"] .pf-toggle-chev { transform: rotate(180deg); }
+.pf-add-body { padding: 0 16px 14px; }
 
 /* 流量分项 */
 .flow { display: grid; gap: 12px; margin-top: 16px; }

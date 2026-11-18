@@ -644,19 +644,33 @@ async function refreshPorts() {
     $('pfSummary').textContent = `${rules.length} 条 · ${active} 活跃 · ${total} 累计`;
 
     list.innerHTML = rules.map((r) => {
-      const ips = (r.top_ips || []).slice(0, 3).map((ip) => `<span class="badge badge-quiet badge-mono">${esc(ip.ip)} · ${ip.count}</span>`).join('');
+      const active = r.active_conns || 0;
+      const total = r.total_conns || 0;
+      const allIPs = r.top_ips || [];
+      // 默认只铺前 3 个来源 IP，其余收成 +N，避免 IP 多时把行撑高
+      const shown = allIPs.slice(0, 3);
+      const restCount = allIPs.length - shown.length;
+      const ipBadges = shown.map((ip) => {
+        const a = ip.active_count || 0;
+        return `<span class="pf-ip${a ? ' is-active' : ''}"><b>${a ? '●' + a : '·'}</b>${esc(ip.ip)}<i>${ip.count}</i></span>`;
+      }).join('') + (restCount > 0 ? `<span class="pf-ip more">+${restCount}</span>` : '');
+
       return `
-      <div class="list-row">
-        <span class="badge badge-quiet" style="text-transform:uppercase">${esc(r.protocol)}</span>
-        <span class="mono small">:${r.host_port}</span>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dim"><use href="#i-arrow-right"/></svg>
-        <span class="mono small muted truncate">${esc(r.target_addr || ':' + r.guest_port)}</span>
-        <span class="spacer"></span>
-        ${ips}
-        <span class="badge ${r.active_conns ? 'badge-ok' : 'badge-quiet'}">${r.active_conns || 0} 活跃</span>
-        <button class="act danger" data-del-pf="${esc(r.protocol)}:${r.host_port}" title="删除">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg>
-        </button>
+      <div class="pf-row">
+        <div class="pf-main">
+          <span class="pf-proto">${esc(r.protocol)}</span>
+          <span class="mono pf-port">:${r.host_port}</span>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dim"><use href="#i-arrow-right"/></svg>
+          <span class="pf-target">${esc(r.target_addr || ':' + r.guest_port)}</span>
+          ${r.description ? `<span class="pf-desc">${esc(r.description)}</span>` : ''}
+          <span class="spacer"></span>
+          <span class="pf-stat${active ? ' is-ok' : ''}">${active} 活跃</span>
+          <span class="pf-stat">${total} 累计</span>
+          <button class="act danger" data-del-pf="${esc(r.protocol)}:${r.host_port}" title="删除">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg>
+          </button>
+        </div>
+        ${allIPs.length ? `<div class="pf-ips">${ipBadges}</div>` : ''}
       </div>`;
     }).join('');
 
@@ -671,6 +685,15 @@ async function refreshPorts() {
     }));
   } catch (e) { $('pfErr2').textContent = e.message; $('pfErr2').classList.add('show'); }
 }
+
+// 新增规则默认收起：抽屉里优先展示规则列表，避免表单常驻把列表挤下去
+$('pfToggleAdd').addEventListener('click', () => {
+  const btn = $('pfToggleAdd');
+  const open = btn.getAttribute('aria-expanded') === 'true';
+  btn.setAttribute('aria-expanded', String(!open));
+  $('pfAddBody').hidden = open;
+  if (!open) $('pfHost').focus();
+});
 
 $('pfAdd').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   $('pfErr').classList.remove('show');
