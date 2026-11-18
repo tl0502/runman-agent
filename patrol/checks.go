@@ -102,26 +102,29 @@ func (s *Service) checkBandwidth(conf config.Config, vm *agent.VMSummary, st *vm
 		return // 未分配带宽上限，跳过
 	}
 
-	var rate int64
+	var rateBps int64
 	if !st.lastNetAt.IsZero() {
 		elapsed := now.Sub(st.lastNetAt).Seconds()
 		if elapsed >= 1 {
 			dIn := vm.TrafficInBytes - st.lastIn
 			dOut := vm.TrafficOutBytes - st.lastOut
 			if dIn >= 0 && dOut >= 0 {
-				rate = int64(float64(dIn+dOut) / elapsed)
+				// dIn/dOut 是字节，capBit/threshold 是 bit/s：必须 ×8 统一成 bit/s。
+				// 旧实现直接拿 bytes/s 比 bit/s，实际触发门槛被放大 8 倍（灌 6Mbps
+				// 过不了 1Mbps 的阈值），带宽巡查形同虚设。
+				rateBps = int64(float64(dIn+dOut) * 8 / elapsed)
 			}
 		}
 	}
 	st.lastIn, st.lastOut, st.lastNetAt = vm.TrafficInBytes, vm.TrafficOutBytes, now
-	if rate <= 0 {
+	if rateBps <= 0 {
 		return
 	}
 
 	// capBit 是分配上限的 bit/s 数值（与 tc "rate <n>bit"、netavark bandwidth_rate 一致）。
 	capBit := int64(vmCfg.BandwidthMbps) * 1000000
 	threshold := capBit * int64(bc.ThresholdPct) / 100
-	if rate >= threshold {
+	if rateBps >= threshold {
 		if st.bwOverSince.IsZero() {
 			st.bwOverSince = now
 		}
@@ -131,7 +134,7 @@ func (s *Service) checkBandwidth(conf config.Config, vm *agent.VMSummary, st *vm
 			release := now.Add(time.Duration(bc.ReleaseMin) * time.Minute)
 			applied := s.applyThrottle(vm.VmId, mbps, release, "bandwidth")
 			detail := fmt.Sprintf("带宽占用 %d%% 超阈值 %d%% 持续 %d 分钟，限速到 %d Mbps（%d 分钟后恢复）",
-				rate*100/capBit, bc.ThresholdPct, bc.DurationMin, mbps, bc.ReleaseMin)
+				rateBps*100/capBit, bc.ThresholdPct, bc.DurationMin, mbps, bc.ReleaseMin)
 			if !applied {
 				detail += "；tc 暂未生效（VM 未运行或网卡未就绪），下一轮巡查会重放"
 			}
