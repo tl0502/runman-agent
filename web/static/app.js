@@ -1237,6 +1237,8 @@ async function clearPlatformToken(btn) {
     toast('已清除 Token，切换为独立模式');
     updateConnection();
   });
+  // withBusy 结束时会把按钮无条件恢复为可用，这里按最新状态再矫正一次。
+  applyPlatformEnabledUI();
 }
 
 async function saveConfig(btn) {
@@ -1654,8 +1656,6 @@ function connectWS(vmId) {
   term.onResize(({ cols, rows }) => {
     if (termWs?.readyState === WebSocket.OPEN) termWs.send(JSON.stringify({ type: 'resize', cols, rows }));
   });
-  // withBusy 结束时会把按钮无条件恢复为可用，这里按最新状态再矫正一次。
-  applyPlatformEnabledUI();
 }
 
 function closeConsole() {
