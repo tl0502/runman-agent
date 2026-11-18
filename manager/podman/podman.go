@@ -4,7 +4,6 @@ package podman
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -841,32 +840,6 @@ func (m *Manager) getIPsFromInspect(inspect *define.InspectContainerData) (ipv4,
 	return ipv4, ipv6, nil
 }
 
-// execCapture 在容器内执行一条命令并返回合并后的 stdout/stderr 文本。
-func (m *Manager) execCapture(id string, cmd []string) (string, error) {
-	execID, err := containers.ExecCreate(m.timeoutCtx(), id, &handlers.ExecCreateConfig{
-		ExecOptions: dockerContainer.ExecOptions{
-			AttachStdout: true,
-			AttachStderr: true,
-			Cmd:          cmd,
-		},
-	})
-	if err != nil {
-		return "", err
-	}
-	var buf bytes.Buffer
-	attachCtx, cancel := context.WithCancel(m.ctx)
-	defer cancel()
-	if err := containers.ExecStartAndAttach(attachCtx, execID,
-		new(containers.ExecStartAndAttachOptions).
-			WithAttachOutput(true).
-			WithAttachError(true).
-			WithOutputStream(&buf).
-			WithErrorStream(&buf)); err != nil {
-		return buf.String(), err
-	}
-	return buf.String(), nil
-}
-
 // ListProcesses 枚举容器内正在运行的进程（供巡查黑名单匹配）。
 // 走 libpod 的 top 接口（内部执行容器内 ps），结果按 tab 分隔，args 不会因空格错位。
 // 注意：镜像没有 ps 时会失败，调用方必须记日志，避免「进程巡查静默失效」。
@@ -940,26 +913,63 @@ func (m *Manager) GetVMVeth(_ context.Context, vmID string) (string, error) {
 	if inspect.State == nil || inspect.State.Pid <= 0 {
 		return "", fmt.Errorf("container %s is not running", vmID)
 	}
+	// host / none / container 网络没有独立的 veth pair：这类容器的 netns 里能看到
+	// 宿主机（或另一容器）的全部接口，按 ifindex 反查会误中无关 veth 并限错对象，
+	// 因此直接拒绝限速（调用方会记为「tc 暂未生效」）。
+	if inspect.HostConfig != nil {
+		switch inspect.HostConfig.NetworkMode {
+		case "host", "none", "container":
+			return "", fmt.Errorf("container %s uses %s network, no independent veth to throttle", vmID, inspect.HostConfig.NetworkMode)
+		}
+	}
 	pid := inspect.State.Pid
 
 	nsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// 必须用 ip(8) 而不是读 /sys/class/net/<iface>/ifindex：nsenter -n 只切换
+	// network namespace、不切换 mount namespace，/sys 仍是宿主机的 sysfs，
+	// 读到的会是宿主接口而不是容器接口（宿主机往往没有 eth0）。
+	// ip 走 netlink，netlink 随 netns 隔离，nsenter 后查询的就是容器内的接口。
 	out, err := exec.CommandContext(nsCtx, "nsenter", "-t", strconv.Itoa(pid), "-n",
-		"sh", "-c", `for f in /sys/class/net/*/ifindex; do v=$(cat "$f" 2>/dev/null); [ -z "$v" ] && continue; [ "$v" = 1 ] && continue; echo "$v"; done`).Output()
+		"ip", "-o", "link", "show").Output()
 	if err != nil {
-		return "", fmt.Errorf("nsenter read container ifindex: %w", err)
+		return "", fmt.Errorf("nsenter list container links: %w", err)
 	}
-	peerIdxs := map[string]bool{}
+	// ip -o link show 每行形如 "8: eth0@if44: <BROADCAST,...>" / "1: lo: <LOOPBACK,...>"。
+	// 优先取 eth0 的 ifindex（本项目容器的主接口），没有 eth0 时兜底取第一个非 lo 接口。
+	var primary, fallback string
 	for _, line := range strings.Split(string(out), "\n") {
-		if v := strings.TrimSpace(line); v != "" {
-			peerIdxs[v] = true
+		colon := strings.Index(line, ": ")
+		if colon <= 0 {
+			continue
+		}
+		idx := strings.TrimSpace(line[:colon])
+		rest := line[colon+2:]
+		end := strings.IndexAny(rest, "@:")
+		if end < 0 {
+			continue
+		}
+		name := rest[:end]
+		if name == "lo" {
+			continue
+		}
+		if name == "eth0" {
+			primary = idx
+			break
+		}
+		if fallback == "" {
+			fallback = idx
 		}
 	}
-	if len(peerIdxs) == 0 {
+	peerIdx := primary
+	if peerIdx == "" {
+		peerIdx = fallback
+	}
+	if peerIdx == "" {
 		return "", fmt.Errorf("no container interface found for %s", vmID)
 	}
 
-	// 宿主机侧反查：iflink 命中任一容器接口 ifindex 的 veth 即宿主侧网卡。
+	// 宿主机侧反查：iflink == peerIdx 的网卡即宿主侧 veth。
 	entries, err := os.ReadDir("/sys/class/net")
 	if err != nil {
 		return "", err
@@ -972,11 +982,11 @@ func (m *Manager) GetVMVeth(_ context.Context, vmID string) (string, error) {
 		if err != nil {
 			continue
 		}
-		if peerIdxs[strings.TrimSpace(string(b))] {
+		if strings.TrimSpace(string(b)) == peerIdx {
 			return e.Name(), nil
 		}
 	}
-	return "", fmt.Errorf("host veth not found for %s", vmID)
+	return "", fmt.Errorf("host veth not found for %s (peer ifindex %s)", vmID, peerIdx)
 }
 
 // GetVMNetStats 获取 VM 的网络流量统计（用于流量统计服务）
