@@ -495,6 +495,7 @@ $('dwClose').addEventListener('click', closeDrawer);
 $('scrim').addEventListener('click', closeDrawer);
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
+  if (!$('consoleDock').hidden) return closeConsole();
   if (!$('console').hidden) return closeConsole();
   if (!$('drawer').hidden) return closeDrawer();
   const open = qsa('.modal').find((m) => !m.hidden);
@@ -686,23 +687,61 @@ async function refreshPorts() {
   } catch (e) { $('pfErr2').textContent = e.message; $('pfErr2').classList.add('show'); }
 }
 
-// 新增规则默认收起：抽屉里优先展示规则列表，避免表单常驻把列表挤下去
-$('pfToggleAdd').addEventListener('click', () => {
-  const btn = $('pfToggleAdd');
-  const open = btn.getAttribute('aria-expanded') === 'true';
-  btn.setAttribute('aria-expanded', String(!open));
-  $('pfAddBody').hidden = open;
-  if (!open) $('pfHost').focus();
+$('pfOpenModal').addEventListener('click', () => {
+  $('modalPF').hidden = false;
+  $('pfErr').classList.remove('show');
+  setPFMode('single');
+  $('pfHost').value = ''; $('pfGuest').value = ''; $('pfBatchText').value = '';
+  setTimeout(() => $('pfHost').focus(), 60);
 });
+
+function setPFMode(mode) {
+  qsa('.pf-seg-btn').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.pfmode === mode)));
+  $('pfSingle').hidden = mode !== 'single';
+  $('pfBatch').hidden = mode !== 'batch';
+}
+qsa('.pf-seg-btn').forEach((b) => b.addEventListener('click', () => setPFMode(b.dataset.pfmode)));
+
+// 批量文本解析：每行 [协议:]宿主:VM，协议缺省为 tcp；也接受 host->guest / host guest。
+function parseBatchPorts(text) {
+  const out = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = line.match(/^(?:([a-zA-Z]{3})\s*:\s*)?(\d{1,5})\s*(?:[:>]\s*|\s+)(\d{1,5})$/);
+    if (!m) { out.push({ err: line }); continue; }
+    const proto = m[1] ? m[1].toLowerCase() : 'tcp';
+    if (proto !== 'tcp' && proto !== 'udp') { out.push({ err: line }); continue; }
+    out.push({ protocol: proto, host: Number(m[2]), guest: Number(m[3]) });
+  }
+  return out;
+}
+
+async function submitPortFwds(items) {
+  for (const it of items) {
+    await api('POST', `/api/vms/${state.activeVm}/portfwds`, it);
+  }
+}
 
 $('pfAdd').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   $('pfErr').classList.remove('show');
-  const body = { protocol: $('pfProto').value, host_port: Number($('pfHost').value), guest_port: Number($('pfGuest').value) };
-  if (!body.host_port || !body.guest_port) { $('pfErr').textContent = '端口不能为空'; $('pfErr').classList.add('show'); return; }
+  const isBatch = $('pfBatch').hidden === false;
+  const items = [];
+  if (isBatch) {
+    const parsed = parseBatchPorts($('pfBatchText').value);
+    const bad = parsed.filter((p) => p.err);
+    if (bad.length) { $('pfErr').textContent = `无法解析：${bad.map((b) => b.err).join('、')}`; $('pfErr').classList.add('show'); return; }
+    if (!parsed.length) { $('pfErr').textContent = '请填写要映射的端口'; $('pfErr').classList.add('show'); return; }
+    parsed.forEach((p) => items.push({ protocol: p.protocol, host_port: p.host, guest_port: p.guest }));
+  } else {
+    const body = { protocol: $('pfProto').value, host_port: Number($('pfHost').value), guest_port: Number($('pfGuest').value) };
+    if (!body.host_port || !body.guest_port) { $('pfErr').textContent = '端口不能为空'; $('pfErr').classList.add('show'); return; }
+    items.push(body);
+  }
   try {
-    await api('POST', `/api/vms/${state.activeVm}/portfwds`, body);
-    $('pfHost').value = ''; $('pfGuest').value = '';
-    toast('转发规则已添加');
+    await submitPortFwds(items);
+    $('modalPF').hidden = true;
+    toast(items.length > 1 ? `已添加 ${items.length} 条转发规则` : '转发规则已添加');
     refreshPorts();
   } catch (err) { $('pfErr').textContent = err.message; $('pfErr').classList.add('show'); }
 }));
@@ -712,7 +751,7 @@ async function loadIPLimit(fill) {
   try {
     const info = await api('GET', `/api/vms/${state.activeVm}/iplimit`);
     if (fill) $('ipLimitValue').value = info.override === null ? '' : info.override;
-    $('ipLimitStatus').textContent = `生效 ${info.effective > 0 ? info.effective : '∞'} · 全局 ${info.global > 0 ? info.global : '∞'}`;
+    $('ipLimitStatus').textContent = `生效 ${info.effective > 0 ? info.effective : '不限'} · 全局 ${info.global > 0 ? info.global : '不限'}`;
   } catch { /* 静默 */ }
 }
 $('ipLimitSet').addEventListener('click', async () => {
@@ -866,7 +905,7 @@ $('wgSubmit').addEventListener('click', (e) => withBusy(e.currentTarget, async (
 $('mgStart').addEventListener('click', (e) => doVmAction(e.currentTarget, 'start'));
 $('mgStop').addEventListener('click', (e) => doVmAction(e.currentTarget, 'stop', { force: false }));
 $('mgRestart').addEventListener('click', (e) => doVmAction(e.currentTarget, 'restart'));
-$('mgConsole').addEventListener('click', () => { const id = state.activeVm; closeDrawer(); openConsole(id); });
+$('mgConsole').addEventListener('click', () => openConsole(state.activeVm));
 
 async function doVmAction(btn, action, body) {
   try {
@@ -908,7 +947,7 @@ $('mgDelete').addEventListener('click', async () => {
     toast('已删除');
     closeDrawer();
     refreshVMs();
-  } catch (e) { $('mgErr').textContent = e.message; $('mgErr').classList.add('show'); }
+  } catch (e) { toastErr(e); }
 });
 
 /* ══════════════════════════════ 防火墙 ═════════════════════════════════════ */
@@ -2088,16 +2127,30 @@ $('ciAdd').addEventListener('click', async () => {
 qsa('[data-close]').forEach((el) => el.addEventListener('click', () => { $(el.dataset.close).hidden = true; }));
 
 /* ── 控制台 ───────────────────────────────────────────────────────────────── */
-let term = null, termWs = null, fitAddon = null, termObserver = null, termMaximized = false;
+let term = null, termWs = null, fitAddon = null, termObserver = null, termMaximized = false, termMinimized = false;
+
+// 拆掉当前终端：先把 socket 的回调摘掉再 close，
+// 否则 close() 触发的 onclose 会落到刚创建的新终端上（表现就是开控制台时闪一行「已断开」）。
+function teardownTerm() {
+  if (termWs) {
+    const old = termWs;
+    termWs = null;
+    old.onopen = old.onmessage = old.onclose = old.onerror = null;
+    try { old.close(); } catch {}
+  }
+  if (term) { term.dispose(); term = null; }
+  if (termObserver) { termObserver.disconnect(); termObserver = null; }
+}
 
 function openConsole(vmId) {
   $('consoleTitle').textContent = `console — ${vmId}`;
+  $('consoleDockTitle').textContent = vmId;
+  $('consoleDock').hidden = true;
   $('console').hidden = false;
   document.body.style.overflow = 'hidden';
+  termMinimized = false;
 
-  if (termWs) { termWs.close(); termWs = null; }
-  if (term) { term.dispose(); term = null; }
-  if (termObserver) { termObserver.disconnect(); termObserver = null; }
+  teardownTerm();
 
   const host = $('termHost');
   host.innerHTML = '';
@@ -2122,46 +2175,84 @@ function openConsole(vmId) {
 
 function connectWS(vmId) {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  termWs = new WebSocket(`${proto}://${location.host}/api/vms/${encodeURIComponent(vmId)}/tty`);
-  termWs.binaryType = 'arraybuffer';
+  const mine = term;
+  const sock = new WebSocket(`${proto}://${location.host}/api/vms/${encodeURIComponent(vmId)}/tty`);
+  sock.binaryType = 'arraybuffer';
+  termWs = sock;
+  let errored = false;
 
-  termWs.onopen = () => {
-    termWs.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-  };
-  termWs.onmessage = (e) => {
-    if (e.data instanceof ArrayBuffer) term.write(new Uint8Array(e.data));
-    else term.write(e.data);
-  };
-  termWs.onclose = () => term?.write('\r\n\x1b[38;5;245m[已断开]\x1b[0m\r\n');
-  termWs.onerror = () => term?.write('\r\n\x1b[31m[连接错误]\x1b[0m\r\n');
+  const alive = () => termWs === sock && term === mine;
 
-  term.onData((data) => {
+  sock.onopen = () => {
+    if (termWs !== sock) return;
+    sock.send(JSON.stringify({ type: 'resize', cols: mine.cols, rows: mine.rows }));
+  };
+  sock.onmessage = (e) => {
+    if (!alive()) return;
+    if (e.data instanceof ArrayBuffer) mine.write(new Uint8Array(e.data));
+    else mine.write(e.data);
+  };
+  sock.onclose = () => {
+    if (termWs !== sock) return; // 主动关闭 / 已被新连接替换：不提示
+    termWs = null;
+    if (!errored && term === mine) mine.write('\r\n\x1b[38;5;245m[已断开]\x1b[0m\r\n');
+  };
+  sock.onerror = () => {
+    if (termWs !== sock || term !== mine) return;
+    errored = true;
+    mine.write('\r\n\x1b[31m[连接错误]\x1b[0m\r\n');
+  };
+
+  mine.onData((data) => {
     if (termWs?.readyState === WebSocket.OPEN) termWs.send(new TextEncoder().encode(data));
   });
-  term.onResize(({ cols, rows }) => {
+  mine.onResize(({ cols, rows }) => {
     if (termWs?.readyState === WebSocket.OPEN) termWs.send(JSON.stringify({ type: 'resize', cols, rows }));
   });
 }
 
+// 黄点：最小化到右下角停靠条，会话保持连接（不 dispose 终端）
+function minimizeConsole() {
+  if ($('console').hidden) return;
+  termMinimized = true;
+  $('console').hidden = true;
+  $('consoleDock').hidden = false;
+  document.body.style.overflow = '';
+}
+
+function restoreConsole() {
+  if (!termMinimized) return;
+  termMinimized = false;
+  $('consoleDock').hidden = true;
+  $('console').hidden = false;
+  document.body.style.overflow = 'hidden';
+  setTimeout(() => { try { fitAddon.fit(); term?.focus(); } catch {} }, 60);
+}
+
 function closeConsole() {
-  if (termWs) { termWs.close(); termWs = null; }
-  if (term) { term.dispose(); term = null; }
-  if (termObserver) { termObserver.disconnect(); termObserver = null; }
+  teardownTerm();
+  termMinimized = false;
   termMaximized = false;
   $('consoleWindow').classList.remove('maximized');
+  $('cwMax').classList.remove('maximized');
+  $('cwMax').title = '最大化';
+  $('consoleDock').hidden = true;
   $('console').hidden = true;
   document.body.style.overflow = '';
 }
 
 $('cwClose').addEventListener('click', closeConsole);
-$('cwMin').addEventListener('click', closeConsole);
+$('cwMin').addEventListener('click', minimizeConsole);
 $('cwMax').addEventListener('click', toggleConsoleMax);
-$('cwFull').addEventListener('click', toggleConsoleMax);
+$('cwRestore').addEventListener('click', restoreConsole);
+$('cwDockClose').addEventListener('click', closeConsole);
 
 function toggleConsoleMax() {
   termMaximized = !termMaximized;
   const win = $('consoleWindow');
   win.classList.toggle('maximized', termMaximized);
+  $('cwMax').classList.toggle('maximized', termMaximized);
+  $('cwMax').title = termMaximized ? '还原' : '最大化';
   qs('.console', document).style.padding = termMaximized ? '0' : '';
   setTimeout(() => { try { fitAddon.fit(); } catch {} }, 60);
 }
@@ -2241,10 +2332,10 @@ async function init() {
     $('versionPill').textContent = fmtVersion(version, false);
     $('aboutVersion').textContent = fmtVersion(version);
     $('aboutVirt').textContent = (state.config.virt_type || '').toUpperCase() || '—';
-    $('aboutRepo').textContent = state.config.update_repo || 'GitHub 默认';
+    $('aboutRepo').textContent = state.config.update_repo || 'tl0502/runman-agent';
 
-    $('monitorNIC').innerHTML = '<option value="">全部网卡</option>' + (sys.nics || []).map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
-    $('monitorDisk').innerHTML = (sys.disks || []).map((d) => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+    $('monitorNIC').innerHTML = '<option value="">全部网卡</option>' + (sys.nics || []).map((n) => `<option value="${esc(n)}">${esc(n)}${n === sys.primary_nic ? ' · 主网卡' : ''}</option>`).join('');
+    $('monitorDisk').innerHTML = (sys.disks || []).map((d) => `<option value="${esc(d)}">${esc(d)}${d === (sys.primary_disk || '/') ? ' · 系统盘' : ''}</option>`).join('');
 
     loadConfigIntoForm(state.config);
     renderHostKv();

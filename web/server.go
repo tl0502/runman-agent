@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -1113,7 +1114,31 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, _ *http.Request) {
 	for _, p := range parts {
 		mountPoints = append(mountPoints, p.Mountpoint)
 	}
-	jsonOK(w, map[string][]string{"nics": nicNames, "disks": mountPoints})
+	jsonOK(w, map[string]any{
+		"nics":         nicNames,
+		"disks":        mountPoints,
+		"primary_nic":  defaultRouteIface(),
+		"primary_disk": "/",
+	})
+}
+
+// defaultRouteIface 读取 /proc/net/route 里 Destination=00000000 的默认路由网卡名。
+func defaultRouteIface() string {
+	f, err := os.Open("/proc/net/route")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	if sc.Scan() { /* 跳过表头 */
+	}
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) >= 8 && fields[1] == "00000000" {
+			return fields[0]
+		}
+	}
+	return ""
 }
 
 type configRequest struct {

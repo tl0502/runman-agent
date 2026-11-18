@@ -25,8 +25,27 @@ const (
 
 type HostStats struct {
 	*agent.Heartbeat
-	NetInTotal  int64 `json:"net_in_total"`
-	NetOutTotal int64 `json:"net_out_total"`
+	NetInTotal  int64  `json:"net_in_total"`
+	NetOutTotal int64  `json:"net_out_total"`
+	Os          string `json:"os,omitempty"`
+	Kernel      string `json:"kernel,omitempty"`
+}
+
+var (
+	osInfoOnce sync.Once
+	osName     string
+	osKernel   string
+)
+
+// hostOSKernel 返回宿主机操作系统与内核版本；进程生命周期内取一次即可。
+func hostOSKernel() (string, string) {
+	osInfoOnce.Do(func() {
+		if i, err := host.Info(); err == nil {
+			osKernel = i.KernelVersion
+			osName = strings.TrimSpace(i.Platform + " " + i.PlatformVersion)
+		}
+	})
+	return osName, osKernel
 }
 
 type HostMonitor struct {
@@ -138,9 +157,12 @@ func (h *HostMonitor) GetStats(ctx context.Context) (*HostStats, error) {
 		hb.Load15 = float32(loadAvg.Load15)
 	}
 
+	osName, osKernel := hostOSKernel()
 	return &HostStats{
 		Heartbeat:   hb,
 		NetInTotal:  currentIn,
 		NetOutTotal: currentOut,
+		Os:          osName,
+		Kernel:      osKernel,
 	}, nil
 }

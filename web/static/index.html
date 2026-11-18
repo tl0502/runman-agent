@@ -669,7 +669,6 @@
               <div class="field">
                 <label for="pInterval">巡查间隔 <span class="hint">秒</span></label>
                 <input class="input tnum" type="number" id="pInterval" min="5" max="86400">
-                <span class="hint">每轮对所有运行中的 VM 做一次探测</span>
               </div>
             </div>
           </section>
@@ -688,7 +687,6 @@
                 <div class="field"><label for="pbThrottle">限速到 <span class="hint">Mbps</span></label><input class="input tnum" type="number" id="pbThrottle" min="1" max="100000"></div>
                 <div class="field"><label for="pbRelease">自动恢复 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="pbRelease" min="1"></div>
               </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>带宽占用达到分配上限的 <b>阈值 %</b> 并持续 <b>N 分钟</b>，则限速到上限的 <b>限速 %</b>，<b>M 分钟</b>后自动恢复。</span></div>
             </div>
 
             <div class="cfg-group">
@@ -703,7 +701,7 @@
                 <div class="field"><label for="pcThrottle">同步限速 <span class="hint">Mbps</span></label><input class="input tnum" type="number" id="pcThrottle" min="1" max="100000"></div>
                 <div class="field span-2"><label for="pcRelease">限速解除 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="pcRelease" min="1"></div>
               </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>入/出方向活跃连接数超阈值并持续 <b>N 分钟</b>，则<b>停止 VM</b> 并同步限速，<b>M 分钟</b>后解除限速（VM 保持停止，需人工重启）。</span></div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>超限后停止 VM，需人工重启。</span></div>
             </div>
           </section>
 
@@ -722,7 +720,6 @@
                 <div class="field"><label for="prCooldown">重启冷却 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prCooldown" min="1"></div>
                 <div class="field"><label for="prAction">超限动作</label><select class="input" id="prAction"><option value="restart">自动重启</option><option value="stop">关机</option><option value="alert">仅告警</option></select></div>
               </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>CPU/内存超阈值持续 <b>N 分钟</b> 后执行「超限动作」；两次自动动作间隔不小于「重启冷却」。</span></div>
             </div>
             <div class="cfg-group">
               <div class="cfg-group-head"><span>磁盘</span></div>
@@ -730,7 +727,7 @@
                 <div class="field"><label for="prDisk">磁盘阈值 <span class="hint">%</span></label><input class="input tnum" type="number" id="prDisk" min="1" max="100"></div>
                 <div class="field"><label for="prDiskInterval">告警间隔 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prDiskInterval" min="10" max="10080"></div>
               </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>磁盘超阈值<b>仅记面板日志</b>、不发 Telegram，也不自动处置。同一 VM 两次告警的间隔不小于「告警间隔」。</span></div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>仅记录日志，不自动处置。</span></div>
             </div>
           </section>
 
@@ -745,7 +742,7 @@
                 <div class="tag-list" id="ppTagList"></div>
                 <textarea class="tag-input" id="ppInput" rows="1" placeholder="回车添加；可粘贴逗号/换行分隔的多个关键词批量导入" autocomplete="off" spellcheck="false"></textarea>
               </div>
-              <span class="hint">全局一份。容器内进程名或命令行命中任意关键词即被 kill，只记日志不通知 Telegram。</span>
+              <span class="hint">全局生效，仅记日志、不通知 Telegram。</span>
             </div>
           </section>
 
@@ -909,12 +906,12 @@
           <div class="card">
             <div class="card-head">
               <span class="card-title">更新源</span>
-              <span class="card-note">留空走 GitHub</span>
+              <span class="card-note">留空走 tl0502/runman-agent</span>
             </div>
             <div class="card-body form-grid">
               <div class="field">
                 <label for="updateRepo">仓库 <span class="hint">owner/repo</span></label>
-                <input class="input mono" id="updateRepo" placeholder="narwhal-cloud/runman-agent">
+                <input class="input mono" id="updateRepo" placeholder="tl0502/runman-agent">
               </div>
               <div class="field">
                 <label for="updateBase">下载基址</label>
@@ -926,7 +923,7 @@
               </div>
               <div class="field">
                 <label for="netavarkBase">Netavark 下载基址 <span class="hint">Podman 后端</span></label>
-                <input class="input mono" id="netavarkBase" placeholder="https://…/releases/latest/download">
+                <input class="input mono" id="netavarkBase" placeholder="https://github.com/tl0502/netavark-Runman/releases/latest/download">
               </div>
               <div class="field">
                 <label class="check"><input type="checkbox" id="allowInsecureDownload"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 允许明文 http</label>
@@ -996,6 +993,26 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg>
       </button>
     </div>
+    <div class="drawer-actions">
+      <button class="dact" id="mgStart" title="启动">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-play"/></svg>启动
+      </button>
+      <button class="dact" id="mgStop" title="停止">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-stop"/></svg>停止
+      </button>
+      <button class="dact" id="mgRestart" title="重启">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>重启
+      </button>
+      <span class="dact-sep"></span>
+      <button class="dact" id="mgConsole" title="打开控制台">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-terminal"/></svg>控制台
+      </button>
+      <span class="spacer"></span>
+      <button class="dact" id="mgResetTraffic" title="清零这台 VM 的流量统计">重置流量</button>
+      <button class="dact dact-danger" id="mgDelete" title="删除虚拟机">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg>删除
+      </button>
+    </div>
     <div class="drawer-tabs" role="tablist" id="dwTabs">
       <button class="tab" role="tab" data-dtab="monitor" aria-selected="true">监控</button>
       <button class="tab" role="tab" data-dtab="ports" aria-selected="false">端口转发</button>
@@ -1007,80 +1024,77 @@
   <div class="drawer-body">
     <!-- 监控 -->
     <div class="dtab" id="dtab-monitor">
-      <div class="chart-card">
-        <div class="chart-head">
-          <span class="chart-title">CPU / 内存</span>
+      <div class="dstats">
+        <div class="dstat">
+          <span class="dstat-k">CPU</span>
+          <span class="dstat-v"><b id="dwCpu">0</b><i>%</i></span>
+        </div>
+        <div class="dstat">
+          <span class="dstat-k">内存</span>
+          <span class="dstat-v"><b id="dwRam">0</b><i id="dwRamUnit">MB</i></span>
+        </div>
+        <div class="dstat">
+          <span class="dstat-k">本月流量</span>
+          <span class="dstat-v"><b id="dwTraffic">0</b><i id="dwTrafficUnit"></i></span>
+        </div>
+      </div>
+
+      <section class="dsec">
+        <div class="dsec-head">
+          <span class="dsec-title">CPU / 内存</span>
+          <span class="spacer"></span>
           <span class="chart-legend">
             <span><i style="background:var(--ink-0)"></i>CPU <b id="lgCpu">0%</b></span>
             <span><i style="background:var(--blue)"></i>内存 <b id="lgMem">0%</b></span>
           </span>
         </div>
         <div class="chart-box"><svg id="chartCpu" preserveAspectRatio="none"></svg></div>
-      </div>
-      <div class="chart-card mt-16">
-        <div class="chart-head">
-          <span class="chart-title">网络</span>
+      </section>
+
+      <section class="dsec">
+        <div class="dsec-head">
+          <span class="dsec-title">网络</span>
+          <span class="spacer"></span>
           <span class="chart-legend">
             <span><i style="background:var(--blue)"></i>RX <b id="lgRx">0</b></span>
             <span><i style="background:var(--green)"></i>TX <b id="lgTx">0</b></span>
           </span>
         </div>
         <div class="chart-box"><svg id="chartNet" preserveAspectRatio="none"></svg></div>
-      </div>
-      <div class="grid grid-3 mt-16" style="gap:12px">
-        <div class="card" style="border-radius:14px"><div class="card-body tight">
-          <div class="metric-label">CPU</div>
-          <div class="metric-value" style="margin-top:6px"><span class="num" style="font-size:20px" id="dwCpu">0</span><span class="unit">%</span></div>
-        </div></div>
-        <div class="card" style="border-radius:14px"><div class="card-body tight">
-          <div class="metric-label">内存</div>
-          <div class="metric-value" style="margin-top:6px"><span class="num" style="font-size:20px" id="dwRam">0</span><span class="unit" id="dwRamUnit">MB</span></div>
-        </div></div>
-        <div class="card" style="border-radius:14px"><div class="card-body tight">
-          <div class="metric-label">本月流量</div>
-          <div class="metric-value" style="margin-top:6px"><span class="num" style="font-size:20px" id="dwTraffic">0</span><span class="unit" id="dwTrafficUnit"></span></div>
-        </div></div>
-      </div>
+      </section>
     </div>
 
     <!-- 端口转发 -->
     <div class="dtab" id="dtab-ports" hidden>
-      <div class="card" style="border-radius:14px">
-        <div class="card-head">
-          <span class="card-title">转发规则</span>
-          <span class="card-note mono" id="pfSummary"></span>
+      <section class="dsec">
+        <div class="dsec-head">
+          <span class="dsec-title">连接来源限制</span>
+          <span class="spacer"></span>
+          <span class="dsec-note mono" id="ipLimitStatus"></span>
         </div>
-        <div id="pfList" style="padding:4px 8px 8px"></div>
-        <div class="empty" id="pfEmpty" hidden style="padding:24px 20px">
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <input class="input tnum" type="number" id="ipLimitValue" min="0" max="100000" placeholder="使用全局" style="flex:1;min-width:120px">
+          <button class="btn btn-ghost btn-sm" id="ipLimitSet">设置</button>
+          <button class="btn btn-quiet btn-sm" id="ipLimitGlobal">用全局</button>
+        </div>
+        <p class="dsec-hint">已在线的 IP 不受限；新 IP 在唯一 IP 数达到上限后被拒绝。</p>
+      </section>
+
+      <section class="dsec">
+        <div class="dsec-head">
+          <span class="dsec-title">转发规则</span>
+          <span class="spacer"></span>
+          <span class="dsec-note mono" id="pfSummary"></span>
+          <button class="btn btn-primary btn-sm" id="pfOpenModal">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#i-plus"/></svg>新增映射
+          </button>
+        </div>
+        <div id="pfList"></div>
+        <div class="empty" id="pfEmpty" hidden style="padding:22px 0">
           <span class="empty-sub">还没有端口转发规则</span>
         </div>
-        <div class="err" id="pfErr2" style="margin:0 16px 12px"></div>
-        <div class="pf-add">
-          <button class="pf-toggle" id="pfToggleAdd" type="button" aria-expanded="false">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><use href="#i-plus"/></svg>
-            <span>新增转发规则</span>
-            <svg class="pf-toggle-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chev-down"/></svg>
-          </button>
-          <div class="pf-add-body" id="pfAddBody" hidden>
-            <div class="form-grid cols-3">
-              <div class="field">
-                <label>协议</label>
-                <select class="input" id="pfProto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
-              </div>
-              <div class="field">
-                <label>宿主端口</label>
-                <input class="input tnum" type="number" id="pfHost" min="1" max="65535" placeholder="2222">
-              </div>
-              <div class="field">
-                <label>VM 端口</label>
-                <input class="input tnum" type="number" id="pfGuest" min="1" max="65535" placeholder="22">
-              </div>
-            </div>
-            <button class="btn btn-primary btn-sm" style="margin-top:10px" id="pfAdd">添加</button>
-            <div class="err" id="pfErr" style="margin-top:8px"></div>
-          </div>
-        </div>
-      </div>
+        <div class="err" id="pfErr2"></div>
+      </section>
     </div>
 
     <!-- WireGuard -->
@@ -1090,12 +1104,13 @@
         <span>纯用户态 WireGuard：隧道地址收到的全部 TCP/UDP 按<strong>原端口</strong>转发到 VM 内网 IPv4，ping 由 Agent 应答。不加载内核模块、不改 iptables，<strong>仅入站</strong>。填 Endpoint = 主动连对端；留空 = 被动等待，需指定 Listen Port。</span>
       </div>
 
-      <div class="card" style="border-radius:14px">
-        <div class="card-head">
-          <span class="card-title" id="wgFormTitle">新增绑定</span>
+      <section class="dsec">
+        <div class="dsec-head">
+          <span class="dsec-title" id="wgFormTitle">新增绑定</span>
+          <span class="spacer"></span>
           <button class="btn btn-quiet btn-sm" id="wgCancelEdit" hidden>取消编辑</button>
         </div>
-        <div class="card-body form-grid">
+        <div class="form-grid">
           <div class="form-grid cols-2">
             <div class="field"><label>名称</label><input class="input" id="wgName" placeholder="tunnel-hk"></div>
             <div class="field"><label>隧道地址 *</label><input class="input mono" id="wgAddress" placeholder="10.7.0.5 或 2001:db8::5"></div>
@@ -1128,86 +1143,38 @@
           <button class="btn btn-primary btn-block" id="wgSubmit">添加绑定</button>
           <div class="err" id="wgErr"></div>
         </div>
-      </div>
+      </section>
 
-      <div class="card" style="border-radius:14px;margin-top:14px">
-        <div class="card-head">
-          <span class="card-title">绑定</span>
-          <span class="card-note mono" id="wgSummary"></span>
+      <section class="dsec">
+        <div class="dsec-head">
+          <span class="dsec-title">绑定</span>
+          <span class="spacer"></span>
+          <span class="dsec-note mono" id="wgSummary"></span>
         </div>
-        <div id="wgList" style="padding:6px 8px"></div>
-        <div class="empty" id="wgEmpty" hidden style="padding:28px 20px"><span class="empty-sub">还没有 WireGuard 绑定</span></div>
-      </div>
+        <div id="wgList"></div>
+        <div class="empty" id="wgEmpty" hidden style="padding:22px 0"><span class="empty-sub">还没有 WireGuard 绑定</span></div>
+      </section>
     </div>
 
     <!-- 管理 -->
     <div class="dtab" id="dtab-manage" hidden>
-      <div class="card" style="border-radius:14px">
-        <div class="card-head"><span class="card-title">电源</span></div>
-        <div class="card-body row" style="gap:8px;flex-wrap:wrap">
-          <button class="btn btn-ghost" id="mgStart">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-play"/></svg>
-            启动
-          </button>
-          <button class="btn btn-ghost" id="mgStop">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-stop"/></svg>
-            停止
-          </button>
-          <button class="btn btn-ghost" id="mgRestart">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
-            重启
-          </button>
-          <button class="btn btn-ghost" id="mgConsole">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-terminal"/></svg>
-            打开控制台
-          </button>
+      <section class="dsec">
+        <div class="dsec-head"><span class="dsec-title">重置 root 密码</span></div>
+        <div class="mrow">
+          <input class="input mono" id="mgPwd" placeholder="新密码">
+          <button class="btn btn-ghost btn-sm" id="mgPwdBtn">重置</button>
         </div>
-      </div>
+      </section>
 
-      <div class="card" style="border-radius:14px;margin-top:14px">
-        <div class="card-head"><span class="card-title">重置 root 密码</span></div>
-        <div class="card-body">
-          <div class="row" style="gap:8px">
-            <input class="input mono" id="mgPwd" placeholder="新密码" style="flex:1">
-            <button class="btn btn-ghost" id="mgPwdBtn">重置</button>
-          </div>
+      <section class="dsec">
+        <div class="dsec-head"><span class="dsec-title">重装系统</span></div>
+        <div class="mrow">
+          <select class="input" id="mgImage"></select>
+          <input class="input mono" id="mgRePwd" placeholder="root 密码">
+          <button class="btn btn-ghost btn-sm" id="mgReinstall">重装</button>
         </div>
-      </div>
-
-      <div class="card" style="border-radius:14px;margin-top:14px">
-        <div class="card-head"><span class="card-title">重装系统</span></div>
-        <div class="card-body form-grid cols-2">
-          <div class="field"><label>镜像</label><select class="input" id="mgImage"></select></div>
-          <div class="field"><label>root 密码</label><input class="input mono" id="mgRePwd" placeholder="新密码"></div>
-          <button class="btn btn-ghost span-2" id="mgReinstall">重装（会清空数据）</button>
-        </div>
-      </div>
-
-      <div class="card" style="border-radius:14px;margin-top:14px">
-        <div class="card-head">
-          <span class="card-title">连接来源限制</span>
-          <span class="card-note mono" id="ipLimitStatus"></span>
-        </div>
-        <div class="card-body">
-          <div class="row" style="gap:8px;flex-wrap:wrap">
-            <input class="input tnum" type="number" id="ipLimitValue" min="0" max="100000" placeholder="使用全局" style="flex:1;min-width:120px">
-            <button class="btn btn-ghost" id="ipLimitSet">设置</button>
-            <button class="btn btn-quiet" id="ipLimitGlobal">用全局</button>
-          </div>
-          <div class="metric-meta" style="margin-top:10px">
-            <span>已在线的 IP 不受限；新 IP 在唯一 IP 数达到上限后被拒绝。</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="danger-zone" style="margin-top:14px">
-        <div class="dz-title">危险操作</div>
-        <div class="row" style="gap:8px;flex-wrap:wrap">
-          <button class="btn btn-ghost" id="mgResetTraffic">重置流量统计</button>
-          <button class="btn btn-danger-soft" id="mgDelete">删除虚拟机</button>
-        </div>
-        <div class="err" id="mgErr"></div>
-      </div>
+        <p class="dsec-hint">会清空 VM 内全部数据，不可恢复。</p>
+      </section>
     </div>
   </div>
 </aside>
@@ -1336,6 +1303,47 @@
   </div>
 </div>
 
+<!-- ── 弹窗：新增端口映射 ─────────────────────────────────────────────────── -->
+<div class="modal" id="modalPF" hidden>
+  <div class="modal-scrim" data-close="modalPF"></div>
+  <div class="modal-card" role="dialog" aria-modal="true" style="max-width:440px">
+    <div class="modal-head">
+      <div><div class="modal-title">新增端口映射</div></div>
+      <button class="icon-btn" data-close="modalPF"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <div class="pf-seg" role="tablist">
+        <button class="pf-seg-btn" data-pfmode="single" aria-pressed="true">单个</button>
+        <button class="pf-seg-btn" data-pfmode="batch" aria-pressed="false">批量</button>
+      </div>
+      <div id="pfSingle" style="margin-top:14px">
+        <div class="form-grid cols-3">
+          <div class="field">
+            <label>协议</label>
+            <select class="input" id="pfProto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+          </div>
+          <div class="field">
+            <label>宿主端口</label>
+            <input class="input tnum" type="number" id="pfHost" min="1" max="65535" placeholder="2222">
+          </div>
+          <div class="field">
+            <label>VM 端口</label>
+            <input class="input tnum" type="number" id="pfGuest" min="1" max="65535" placeholder="22">
+          </div>
+        </div>
+      </div>
+      <div id="pfBatch" style="margin-top:14px" hidden>
+        <textarea class="input textarea" id="pfBatchText" rows="6" placeholder="每行一条，可带协议（默认 TCP）&#10;tcp:2222:22&#10;udp:51820:51820&#10;8080:80"></textarea>
+      </div>
+      <div class="err" id="pfErr"></div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-quiet" data-close="modalPF">取消</button>
+      <button type="submit" class="btn btn-primary" id="pfAdd">添加</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── 弹窗：版本 ──────────────────────────────────────────────────────────── -->
 <div class="modal" id="modalVersion" hidden>
   <div class="modal-scrim" data-close="modalVersion"></div>
@@ -1374,19 +1382,26 @@
   <div class="console-window" id="consoleWindow">
     <div class="console-bar">
       <div class="lights">
-        <span class="light r" id="cwClose"></span>
-        <span class="light y" id="cwMin"></span>
-        <span class="light g" id="cwMax"></span>
+        <button class="light r" id="cwClose" title="关闭" aria-label="关闭"></button>
+        <button class="light y" id="cwMin" title="最小化" aria-label="最小化"></button>
+        <button class="light g" id="cwMax" title="最大化" aria-label="最大化"></button>
       </div>
       <span class="title" id="consoleTitle">console</span>
-      <div class="right">
-        <button class="icon-btn" id="cwFull" title="最大化">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
-        </button>
-      </div>
     </div>
     <div class="term-host" id="termHost"></div>
   </div>
+</div>
+
+<!-- 控制台最小化后的停靠条 -->
+<div class="console-dock" id="consoleDock" hidden>
+  <span class="dot dot-ok"></span>
+  <span class="mono small truncate" id="consoleDockTitle">console</span>
+  <button class="icon-btn" id="cwRestore" title="还原">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14V4h10M20 10v10H10"/></svg>
+  </button>
+  <button class="icon-btn" id="cwDockClose" title="关闭">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg>
+  </button>
 </div>
 
 <div class="savebar" id="savebar">
