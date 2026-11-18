@@ -687,6 +687,7 @@
                 <div class="field"><label for="pbThrottle">限速到 <span class="hint">Mbps</span></label><input class="input tnum" type="number" id="pbThrottle" min="1" max="100000"></div>
                 <div class="field"><label for="pbRelease">自动恢复 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="pbRelease" min="1"></div>
               </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>带宽占用达到分配上限的 <b>阈值 %</b> 并持续 <b>N 分钟</b>，则限速到 <b>限速值</b>，<b>M 分钟</b>后自动恢复。</span></div>
             </div>
 
             <div class="cfg-group">
@@ -701,7 +702,7 @@
                 <div class="field"><label for="pcThrottle">同步限速 <span class="hint">Mbps</span></label><input class="input tnum" type="number" id="pcThrottle" min="1" max="100000"></div>
                 <div class="field span-2"><label for="pcRelease">限速解除 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="pcRelease" min="1"></div>
               </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>超限后停止 VM，需人工重启。</span></div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>入/出方向活跃连接数超阈值并持续 <b>N 分钟</b>，则<b>停止 VM</b> 并同步限速，<b>M 分钟</b>后解除限速（VM 保持停止，需人工重启）。</span></div>
             </div>
           </section>
 
@@ -720,6 +721,7 @@
                 <div class="field"><label for="prCooldown">重启冷却 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prCooldown" min="1"></div>
                 <div class="field"><label for="prAction">超限动作</label><select class="input" id="prAction"><option value="restart">自动重启</option><option value="stop">关机</option><option value="alert">仅告警</option></select></div>
               </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>CPU/内存超阈值持续 <b>N 分钟</b> 后执行「超限动作」；两次自动动作间隔不小于「重启冷却」。</span></div>
             </div>
             <div class="cfg-group">
               <div class="cfg-group-head"><span>磁盘</span></div>
@@ -727,7 +729,7 @@
                 <div class="field"><label for="prDisk">磁盘阈值 <span class="hint">%</span></label><input class="input tnum" type="number" id="prDisk" min="1" max="100"></div>
                 <div class="field"><label for="prDiskInterval">告警间隔 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prDiskInterval" min="10" max="10080"></div>
               </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>仅记录日志，不自动处置。</span></div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>磁盘超阈值<b>仅记面板日志</b>、不发 Telegram，也不自动处置。同一 VM 两次告警的间隔不小于「告警间隔」。</span></div>
             </div>
           </section>
 
@@ -742,7 +744,7 @@
                 <div class="tag-list" id="ppTagList"></div>
                 <textarea class="tag-input" id="ppInput" rows="1" placeholder="回车添加；可粘贴逗号/换行分隔的多个关键词批量导入" autocomplete="off" spellcheck="false"></textarea>
               </div>
-              <span class="hint">全局生效，仅记日志、不通知 Telegram。</span>
+              <span class="hint">全局匹配，容器内进程名或命令行命中任意关键词即被 kill。</span>
             </div>
           </section>
 
@@ -953,6 +955,30 @@
               <label for="containerAllowSubnets">内网子网白名单 <span class="hint">留空 = 容器只能出公网</span></label>
               <input class="input mono" id="containerAllowSubnets" placeholder="例如 10.0.0.0/8">
             </div>
+          </div>
+        </div>
+
+        <div class="card" id="podmanLimitsCard" hidden>
+          <div class="card-head">
+            <span class="card-title">容器资源上限</span>
+            <span class="card-note" id="plEff"></span>
+          </div>
+          <div class="card-body form-grid">
+            <div class="form-grid cols-2">
+              <div class="field">
+                <label for="plMemory">内存合计上限 <span class="hint">空 = 不限</span></label>
+                <input class="input mono" id="plMemory" placeholder="3G / 2560M">
+              </div>
+              <div class="field">
+                <label for="plCPU">CPU 合计上限 <span class="hint">核，空 = 不限</span></label>
+                <input class="input tnum" id="plCPU" placeholder="1.5">
+              </div>
+            </div>
+            <div class="row" style="gap:8px;align-items:center">
+              <button type="button" class="btn btn-primary btn-sm" id="plApply">应用</button>
+              <button type="button" class="btn btn-quiet btn-sm" id="plClear">取消限制</button>
+            </div>
+            <div class="err" id="plErr"></div>
           </div>
         </div>
 

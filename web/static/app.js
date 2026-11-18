@@ -1680,6 +1680,61 @@ async function loadNetworkAddresses(selected) {
   syncDirty();
 }
 
+// 容器资源上限：限制所有 podman 容器合计的 CPU/内存（machine.slice 预算）。
+async function loadPodmanLimits() {
+  const card = $('podmanLimitsCard');
+  if (!card) return;
+  let d;
+  try {
+    d = await api('GET', '/api/podman/limits');
+  } catch (e) {
+    card.hidden = true;
+    return;
+  }
+  if (!d || !d.supported) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  $('plMemory').value = d.memory_max || '';
+  $('plCPU').value = d.cpu_quota ? String(Number(d.cpu_quota) / 100) : '';
+  $('plEff').textContent = `当前生效：${d.eff_memory || '不限'} · ${d.eff_cpu || '不限'}`;
+}
+
+async function savePodmanLimits(memoryMax, cpuCores) {
+  let cpuQuota = '';
+  if (cpuCores !== '') {
+    const n = Number(cpuCores);
+    if (!Number.isFinite(n) || n <= 0) throw new Error('CPU 核数无效');
+    cpuQuota = String(Math.round(n * 100));
+  }
+  await api('POST', '/api/podman/limits', { memory_max: memoryMax, cpu_quota: cpuQuota });
+}
+
+$('plApply').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  $('plErr').classList.remove('show');
+  try {
+    await savePodmanLimits($('plMemory').value.trim(), $('plCPU').value.trim());
+    toast('资源上限已生效');
+    await loadPodmanLimits();
+  } catch (err) {
+    $('plErr').textContent = err.message;
+    $('plErr').classList.add('show');
+  }
+}));
+
+$('plClear').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  $('plErr').classList.remove('show');
+  try {
+    await savePodmanLimits('', '');
+    toast('已取消资源上限');
+    await loadPodmanLimits();
+  } catch (err) {
+    $('plErr').textContent = err.message;
+    $('plErr').classList.add('show');
+  }
+}));
+
 // 宿主机端口白名单 tag 编辑器：与进程黑名单一致的可增删 chip 列表。
 // 支持粘贴逗号/空格/换行/中文标点分隔的多个端口批量导入；
 // 非 1-65535 的非法项直接忽略（旧版靠后端 ParsePortList 静默丢弃，
@@ -2338,6 +2393,7 @@ async function init() {
     $('monitorDisk').innerHTML = (sys.disks || []).map((d) => `<option value="${esc(d)}">${esc(d)}${d === (sys.primary_disk || '/') ? ' · 系统盘' : ''}</option>`).join('');
 
     loadConfigIntoForm(state.config);
+    loadPodmanLimits();
     renderHostKv();
     updateConnection();
     setInterval(updateConnection, 4000);

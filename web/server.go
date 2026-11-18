@@ -183,6 +183,8 @@ func (s *Server) ListenAndServe(addr string) error {
 	// 自定义图标同时充当 tab 图标；没有配置时回落到内置 favicon。
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/api/system/info", s.handleSystemInfo)
+	mux.HandleFunc("GET /api/podman/limits", s.handlePodmanLimits)
+	mux.HandleFunc("POST /api/podman/limits", s.handlePodmanLimitsSave)
 	mux.HandleFunc("/api/connection", s.handleConnection)
 	mux.HandleFunc("/api/hostfw/status", s.handleHostFWStatus)
 	// 清除平台凭据（显式动作，等同退出平台接入）
