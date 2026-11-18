@@ -2,7 +2,7 @@
 
 > Slice your idle server into rentable NAT VPS instances and amortize hosting costs.
 >
-> This project is forked from [narwhal-cloud/runman-agent](https://github.com/narwhal-cloud/runman-agent) with second-party development for self-hosted deployments: **only the Podman backend is maintained**, with a self-hosted release/update channel, plus container network isolation, elastic IP, security hardening and white-label branding. Developer docs live in [runman-agent-docs](https://github.com/tl0502/runman-agent-docs).
+> This project is forked from [narwhal-cloud/runman-agent](https://github.com/narwhal-cloud/runman-agent) with second-party development for self-hosted deployments: **only the Podman backend is maintained**, with a self-hosted release/update channel, plus container network isolation, elastic IP, security hardening and white-label branding.
 
 [中文](README.md) · [Gateway Protocol](PROTOCOL.en.md)
 

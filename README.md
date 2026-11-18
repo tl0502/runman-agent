@@ -2,7 +2,7 @@
 
 > 把你的闲置服务器切分成 NAT VPS 实例出租，平摊托管成本。
 >
-> 本项目 fork 自 [narwhal-cloud/runman-agent](https://github.com/narwhal-cloud/runman-agent)，面向自有部署场景做了二次开发：**只维护 Podman 后端**，自建发布与更新通道，并新增了容器网络隔离、弹性 IP、安全加固与品牌自定义等能力。详细开发文档见 [runman-agent-docs](https://github.com/tl0502/runman-agent-docs)。
+> 本项目 fork 自 [narwhal-cloud/runman-agent](https://github.com/narwhal-cloud/runman-agent)，面向自有部署场景做了二次开发：**只维护 Podman 后端**，自建发布与更新通道，并新增了容器网络隔离、弹性 IP、安全加固与品牌自定义等能力。
 
 [English](README.en.md) · [协议对接指南](PROTOCOL.md)
 

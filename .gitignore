@@ -10,3 +10,6 @@ dist/
 # 设计期前端预览工具（mock API + CDP 截图），零依赖、不进二进制
 tools/
 
+
+# Agent 本地说明（不入库）
+AGENT.md
