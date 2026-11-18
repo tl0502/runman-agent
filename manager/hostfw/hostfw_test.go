@@ -147,6 +147,20 @@ func TestInetRulesetForwardPortsNoDup(t *testing.T) {
 	}
 }
 
+// TestInet6RulesetForwardPorts 验证 IPv6 规则集与 inet 表对称，同样放行转发端口。
+func TestInet6RulesetForwardPorts(t *testing.T) {
+	fwd := map[string][]int{"tcp": {22001}, "udp": {51820}}
+	rules := inet6Ruleset(nil, nil, "fd91:cafe:cafe:10::/64", fwd)
+	for _, want := range []string{
+		"tcp dport { 22001 } accept",
+		"udp dport { 51820 } accept",
+	} {
+		if !strings.Contains(rules, want) {
+			t.Fatalf("inet6 ruleset missing forward-port allow %q:\n%s", want, rules)
+		}
+	}
+}
+
 // TestFingerprintIncludesForwardPorts 验证指纹纳入转发端口：增删转发规则会改变指纹。
 func TestFingerprintIncludesForwardPorts(t *testing.T) {
 	a := fingerprint(nil, nil, false, "", "10.91.0.0/20", "", map[string][]int{"tcp": {22001}})
