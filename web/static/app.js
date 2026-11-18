@@ -1706,24 +1706,26 @@ async function loadPodmanLimits() {
   }
   card.hidden = false;
   $('plMemory').value = d.memory_max || '';
+  $('plMemoryHigh').value = d.memory_high || '';
+  $('plSwap').value = d.swap_max || '';
   $('plCPU').value = d.cpu_quota ? String(Number(d.cpu_quota) / 100) : '';
-  $('plEff').textContent = `当前生效：${d.eff_memory || '不限'} · ${d.eff_cpu || '不限'}`;
+  $('plEff').textContent = `当前生效：内存 ${d.eff_memory || '不限'} · 软 ${d.eff_mem_high || '不限'} · Swap ${d.eff_swap || '不限'} · CPU ${d.eff_cpu || '不限'}`;
 }
 
-async function savePodmanLimits(memoryMax, cpuCores) {
+async function savePodmanLimits(memoryMax, memoryHigh, swapMax, cpuCores) {
   let cpuQuota = '';
   if (cpuCores !== '') {
     const n = Number(cpuCores);
     if (!Number.isFinite(n) || n <= 0) throw new Error('CPU 核数无效');
     cpuQuota = String(Math.round(n * 100));
   }
-  await api('POST', '/api/podman/limits', { memory_max: memoryMax, cpu_quota: cpuQuota });
+  await api('POST', '/api/podman/limits', { memory_max: memoryMax, memory_high: memoryHigh, swap_max: swapMax, cpu_quota: cpuQuota });
 }
 
 $('plApply').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   $('plErr').classList.remove('show');
   try {
-    await savePodmanLimits($('plMemory').value.trim(), $('plCPU').value.trim());
+    await savePodmanLimits($('plMemory').value.trim(), $('plMemoryHigh').value.trim(), $('plSwap').value.trim(), $('plCPU').value.trim());
     toast('资源上限已生效');
     await loadPodmanLimits();
   } catch (err) {
@@ -1735,7 +1737,7 @@ $('plApply').addEventListener('click', (e) => withBusy(e.currentTarget, async ()
 $('plClear').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
   $('plErr').classList.remove('show');
   try {
-    await savePodmanLimits('', '');
+    await savePodmanLimits('', '', '', '');
     toast('已取消资源上限');
     await loadPodmanLimits();
   } catch (err) {

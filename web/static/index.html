@@ -975,11 +975,19 @@
           <div class="card-body form-grid">
             <div class="form-grid cols-2">
               <div class="field">
-                <label for="plMemory">内存合计上限 <span class="hint">空 = 不限</span></label>
+                <label for="plMemory">内存上限 <span class="hint">空 = 不限</span></label>
                 <input class="input mono" id="plMemory" placeholder="3G / 2560M">
               </div>
               <div class="field">
-                <label for="plCPU">CPU 合计上限 <span class="hint">核，空 = 不限</span></label>
+                <label for="plMemoryHigh">内存软上限 <span class="hint">空 = 不限</span></label>
+                <input class="input mono" id="plMemoryHigh" placeholder="2560M">
+              </div>
+              <div class="field">
+                <label for="plSwap">Swap 上限 <span class="hint">0 = 禁用，空 = 不限</span></label>
+                <input class="input mono" id="plSwap" placeholder="0">
+              </div>
+              <div class="field">
+                <label for="plCPU">CPU 上限 <span class="hint">核，空 = 不限</span></label>
                 <input class="input tnum" id="plCPU" placeholder="1.5">
               </div>
             </div>

@@ -28,16 +28,22 @@ var (
 
 // podmanLimitsView 是 GET /api/podman/limits 的返回结构。
 type podmanLimitsView struct {
-	Supported bool   `json:"supported"`
-	MemoryMax string `json:"memory_max"` // 配置值（systemd 尺寸，如 "3G"），空=不限
-	CPUQuota  string `json:"cpu_quota"`  // 配置值（百分比，如 "150" = 1.5 核），空=不限
-	EffMemory string `json:"eff_memory"` // 生效值（人可读，如 "3.0G" / "不限"）
-	EffCPU    string `json:"eff_cpu"`    // 生效值（人可读，如 "1.5 核" / "不限"）
+	Supported  bool   `json:"supported"`
+	MemoryMax  string `json:"memory_max"`   // 配置值（systemd 尺寸，如 "3G"），空=不限
+	MemoryHigh string `json:"memory_high"`  // 软上限（systemd 尺寸），空=不限
+	SwapMax    string `json:"swap_max"`     // MemorySwapMax（内存+swap 合计），空=不限，"0"=禁用
+	CPUQuota   string `json:"cpu_quota"`    // 配置值（百分比，如 "150" = 1.5 核），空=不限
+	EffMemory  string `json:"eff_memory"`   // 生效值（人可读，如 "3.0G" / "不限"）
+	EffMemHigh string `json:"eff_mem_high"` // 软上限生效值
+	EffSwap    string `json:"eff_swap"`     // 生效值（人可读，如 "512M" / "禁用" / "不限"）
+	EffCPU     string `json:"eff_cpu"`      // 生效值（人可读，如 "1.5 核" / "不限"）
 }
 
 type podmanLimitsRequest struct {
-	MemoryMax string `json:"memory_max"`
-	CPUQuota  string `json:"cpu_quota"`
+	MemoryMax  string `json:"memory_max"`
+	MemoryHigh string `json:"memory_high"`
+	SwapMax    string `json:"swap_max"`
+	CPUQuota   string `json:"cpu_quota"`
 }
 
 func (s *Server) handlePodmanLimits(w http.ResponseWriter, _ *http.Request) {
@@ -46,9 +52,11 @@ func (s *Server) handlePodmanLimits(w http.ResponseWriter, _ *http.Request) {
 		jsonOK(w, v)
 		return
 	}
-	v.MemoryMax, v.CPUQuota = readPodmanLimitsDropIn()
-	show := showSliceProps("MemoryMax", "CPUQuotaPerSecUSec")
+	v.MemoryMax, v.MemoryHigh, v.SwapMax, v.CPUQuota = readPodmanLimitsDropIn()
+	show := showSliceProps("MemoryMax", "MemoryHigh", "MemorySwapMax", "CPUQuotaPerSecUSec")
 	v.EffMemory = formatMemSize(show["MemoryMax"])
+	v.EffMemHigh = formatMemSize(show["MemoryHigh"])
+	v.EffSwap = formatSwap(show["MemorySwapMax"])
 	v.EffCPU = formatCPUQuota(show["CPUQuotaPerSecUSec"])
 	jsonOK(w, v)
 }
@@ -64,9 +72,19 @@ func (s *Server) handlePodmanLimitsSave(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	req.MemoryMax = strings.TrimSpace(req.MemoryMax)
+	req.MemoryHigh = strings.TrimSpace(req.MemoryHigh)
+	req.SwapMax = strings.TrimSpace(req.SwapMax)
 	req.CPUQuota = strings.TrimSpace(req.CPUQuota)
 	if req.MemoryMax != "" && !limSizeRe.MatchString(req.MemoryMax) {
 		jsonErr(w, fmt.Errorf("内存上限格式无效（如 3G / 2560M）"), http.StatusBadRequest)
+		return
+	}
+	if req.MemoryHigh != "" && !limSizeRe.MatchString(req.MemoryHigh) {
+		jsonErr(w, fmt.Errorf("内存软上限格式无效（如 2560M）"), http.StatusBadRequest)
+		return
+	}
+	if req.SwapMax != "" && !limSizeRe.MatchString(req.SwapMax) {
+		jsonErr(w, fmt.Errorf("Swap 上限格式无效（如 512M，0=禁用）"), http.StatusBadRequest)
 		return
 	}
 	if req.CPUQuota != "" {
@@ -79,7 +97,7 @@ func (s *Server) handlePodmanLimitsSave(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	if err := applyPodmanLimits(req.MemoryMax, req.CPUQuota); err != nil {
+	if err := applyPodmanLimits(req.MemoryMax, req.MemoryHigh, req.SwapMax, req.CPUQuota); err != nil {
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
 	}
@@ -97,28 +115,32 @@ func cgroupV2() bool {
 	return err == nil && len(strings.TrimSpace(string(b))) > 0
 }
 
-// readPodmanLimitsDropIn 从 drop-in 文件解析出配置的 MemoryMax / CPUQuota（无则空）。
-func readPodmanLimitsDropIn() (memoryMax, cpuQuota string) {
+// readPodmanLimitsDropIn 从 drop-in 文件解析出配置的四个值（无则空）。
+func readPodmanLimitsDropIn() (memoryMax, memoryHigh, swapMax, cpuQuota string) {
 	b, err := os.ReadFile(podmanLimitsDropIn)
 	if err != nil {
-		return "", ""
+		return "", "", "", ""
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "MemoryMax="):
 			memoryMax = strings.TrimPrefix(line, "MemoryMax=")
+		case strings.HasPrefix(line, "MemoryHigh="):
+			memoryHigh = strings.TrimPrefix(line, "MemoryHigh=")
+		case strings.HasPrefix(line, "MemorySwapMax="):
+			swapMax = strings.TrimPrefix(line, "MemorySwapMax=")
 		case strings.HasPrefix(line, "CPUQuota="):
 			cpuQuota = strings.TrimSuffix(strings.TrimPrefix(line, "CPUQuota="), "%")
 		}
 	}
-	return memoryMax, cpuQuota
+	return memoryMax, memoryHigh, swapMax, cpuQuota
 }
 
 // applyPodmanLimits 三步齐全才影响运行中的容器：写 drop-in → daemon-reload →
-// set-property 下发。内存/CPU 都为空视为「不限」，删除 drop-in 并恢复默认。
-func applyPodmanLimits(memoryMax, cpuQuota string) error {
-	if memoryMax == "" && cpuQuota == "" {
+// set-property 下发。四项都为空视为「不限」，删除 drop-in 并恢复默认。
+func applyPodmanLimits(memoryMax, memoryHigh, swapMax, cpuQuota string) error {
+	if memoryMax == "" && memoryHigh == "" && swapMax == "" && cpuQuota == "" {
 		if err := os.Remove(podmanLimitsDropIn); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -130,7 +152,12 @@ func applyPodmanLimits(memoryMax, cpuQuota string) error {
 		b.WriteString("[Slice]\n")
 		if memoryMax != "" {
 			b.WriteString("MemoryMax=" + memoryMax + "\n")
-			b.WriteString("MemorySwapMax=0\n")
+		}
+		if memoryHigh != "" {
+			b.WriteString("MemoryHigh=" + memoryHigh + "\n")
+		}
+		if swapMax != "" {
+			b.WriteString("MemorySwapMax=" + swapMax + "\n")
 		}
 		if cpuQuota != "" {
 			b.WriteString("CPUQuota=" + cpuQuota + "%\n")
@@ -146,12 +173,21 @@ func applyPodmanLimits(memoryMax, cpuQuota string) error {
 
 	args := []string{"systemctl", "set-property", "machine.slice"}
 	if memoryMax != "" {
-		args = append(args, "MemoryMax="+memoryMax, "MemorySwapMax=0")
+		args = append(args, "MemoryMax="+memoryMax)
 	} else {
 		// 空值 = 重置为默认（不限）。systemd 257 的 CPUQuota 不接受 infinity，
-		// MemoryMax/MemorySwapMax 虽接受 infinity 但统一用空值更干净，且能
-		// 显式清掉上一次残留的配额。
-		args = append(args, "MemoryMax=", "MemorySwapMax=")
+		// 统一用空值更干净，且能显式清掉上一次残留的配额。
+		args = append(args, "MemoryMax=")
+	}
+	if memoryHigh != "" {
+		args = append(args, "MemoryHigh="+memoryHigh)
+	} else {
+		args = append(args, "MemoryHigh=")
+	}
+	if swapMax != "" {
+		args = append(args, "MemorySwapMax="+swapMax)
+	} else {
+		args = append(args, "MemorySwapMax=")
 	}
 	if cpuQuota != "" {
 		args = append(args, "CPUQuota="+cpuQuota+"%")
@@ -210,6 +246,18 @@ func formatMemSize(v string) string {
 	default:
 		return fmt.Sprintf("%dB", n)
 	}
+}
+
+// formatSwap 把 MemorySwapMax 的字节数（或 infinity/0）转成人可读字符串。
+// "0" 是 systemd 的禁用语义，单独标注，避免显示成 "0B" 让人误解为无 swap。
+func formatSwap(v string) string {
+	if v == "" || v == "infinity" {
+		return "不限"
+	}
+	if v == "0" {
+		return "禁用"
+	}
+	return formatMemSize(v)
 }
 
 // formatCPUQuota 把 CPUQuotaPerSecUSec（systemd 时间串或裸微秒）转成人可读核数。
