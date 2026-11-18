@@ -148,12 +148,15 @@ func applyPodmanLimits(memoryMax, cpuQuota string) error {
 	if memoryMax != "" {
 		args = append(args, "MemoryMax="+memoryMax, "MemorySwapMax=0")
 	} else {
-		args = append(args, "MemoryMax=infinity", "MemorySwapMax=infinity")
+		// 空值 = 重置为默认（不限）。systemd 257 的 CPUQuota 不接受 infinity，
+		// MemoryMax/MemorySwapMax 虽接受 infinity 但统一用空值更干净，且能
+		// 显式清掉上一次残留的配额。
+		args = append(args, "MemoryMax=", "MemorySwapMax=")
 	}
 	if cpuQuota != "" {
 		args = append(args, "CPUQuota="+cpuQuota+"%")
 	} else {
-		args = append(args, "CPUQuota=infinity")
+		args = append(args, "CPUQuota=")
 	}
 	if out, err := sysctlRun(15*time.Second, args...); err != nil {
 		return fmt.Errorf("下发资源上限失败: %v: %s", err, out)
