@@ -106,6 +106,7 @@ const state = {
   view: 'overview',
   vms: [],
   config: null,
+  hasToken: false,
   images: [],
   sort: { field: '', order: 'desc' },
   filter: 'all',
@@ -1129,7 +1130,8 @@ function applyPlatformEnabledUI() {
   $('token').disabled = !on;
   $('platformAddr').disabled = !on;
   $('platformInsecure').disabled = !on;
-  $('clearToken').disabled = !on;
+  // 清除按钮跟随「服务端是否存着 Token」，不跟随开关——独立模式下也要能清遗留凭据。
+  $('clearToken').disabled = !state.hasToken;
 }
 
 function confSnapshot() {
@@ -1152,6 +1154,9 @@ function syncDirty() {
 function loadConfigIntoForm(c) {
   $('siteName').value = c.site_name || 'Run';
   $('token').value = c.token || '';
+  // 「清除」清的是服务端已保存的凭据，与平台开关无关：独立模式下也要能清掉
+  // 遗留 Token，否则只能先打开开关才能清。
+  state.hasToken = !!c.token;
   $('monitorNIC').value = c.monitor_nic || '';
   $('monitorDisk').value = c.monitor_disk || '';
   $('maxPortForward').value = c.max_port_forward || 20;
@@ -1224,6 +1229,7 @@ async function clearPlatformToken(btn) {
     await api('DELETE', '/api/platform/token');
     $('token').value = '';
     $('platformEnabled').checked = false;
+    state.hasToken = false;
     applyPlatformEnabledUI();
     if (state.config) state.config.token = '';
     state.snapshot = confSnapshot();
@@ -1263,11 +1269,14 @@ async function saveConfig(btn) {
     try {
       await api('POST', '/api/config', body);
       state.config = { ...(state.config || {}), ...body };
+      // 后端把空 Token 视为"未修改"，因此只有非空提交才算新增了凭据。
+      if (body.token) state.hasToken = true;
       $('webPass').value = '';
       state.snapshot = confSnapshot();
       syncDirty();
       applyBrand(body.site_name);
       renderHostKv();
+      applyPlatformEnabledUI();
       // 平台开关是热生效的（后端 10 秒内断开/重连），保存后立刻刷新一次胶囊，
       // 不让用户盯着「连接中」等下一轮轮询。
       updateConnection();
@@ -1645,6 +1654,8 @@ function connectWS(vmId) {
   term.onResize(({ cols, rows }) => {
     if (termWs?.readyState === WebSocket.OPEN) termWs.send(JSON.stringify({ type: 'resize', cols, rows }));
   });
+  // withBusy 结束时会把按钮无条件恢复为可用，这里按最新状态再矫正一次。
+  applyPlatformEnabledUI();
 }
 
 function closeConsole() {

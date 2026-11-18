@@ -356,6 +356,14 @@ func (a *Agent) run() {
 
 		err := a.connectAndLoop()
 
+		// 连接存活期间开关被关掉时，watchPlatformAddr 会主动取消流，这里拿到的
+		// 错误只是取消的结果。这种断开是用户预期内的，不能记成"连接失败，N 秒后重试"，
+		// 否则日志里会持续出现误导性的失败重连。
+		if !a.cfg.Get().PlatformEnabledOn() {
+			log.Printf("[Agent] platform access disabled; connection closed, entering standalone mode")
+			continue
+		}
+
 		a.mu.RLock()
 		everConnected := a.lastConnected.After(beforeConnect)
 		a.mu.RUnlock()

@@ -193,14 +193,16 @@ write_agent_token() {
 # 用法：set_platform_enabled on|off
 set_platform_enabled() {
     local mode=$1 v
-    [ "$(id -u)" = "0" ] || die "$(t "Platform switch requires root." "平台开关需要 root 权限。")"
-    [ -f "$AGENT_CONFIG_FILE" ] || die "$(t "Agent config not found: $AGENT_CONFIG_FILE" "未找到 Agent 配置: $AGENT_CONFIG_FILE")"
-    command -v jq >/dev/null 2>&1 || die "jq is required"
+    # 参数先校验：非法值应当在任何环境检查之前就报出来，
+    # 否则机器上没装过 Agent 时会被"配置文件不存在"掩盖。
     case "$mode" in
         on) v=true ;;
         off) v=false ;;
         *) die "$(t "--platform accepts only on|off" "--platform 只接受 on 或 off")" ;;
     esac
+    [ "$(id -u)" = "0" ] || die "$(t "Platform switch requires root." "平台开关需要 root 权限。")"
+    [ -f "$AGENT_CONFIG_FILE" ] || die "$(t "Agent config not found: $AGENT_CONFIG_FILE" "未找到 Agent 配置: $AGENT_CONFIG_FILE")"
+    command -v jq >/dev/null 2>&1 || die "jq is required"
     jq --argjson v "$v" '.platform_enabled = $v' "$AGENT_CONFIG_FILE" > "$AGENT_CONFIG_FILE.tmp"
     chmod 600 "$AGENT_CONFIG_FILE.tmp"
     mv "$AGENT_CONFIG_FILE.tmp" "$AGENT_CONFIG_FILE"
@@ -325,6 +327,12 @@ TOKEN_ACTION=""
 TOKEN_VALUE="${TOKEN_VALUE:-}"
 INITIAL_TOKEN="${NARWHAL_AGENT_TOKEN:-}"
 GENERATE_TOKEN=0
+# 是否由人显式提供了 Token（环境变量 / --token / --generate-token / 交互输入）。
+# 仅用于决定新装默认是否接入平台：安装器在未提供时会自动生成一个 Token，
+# 但"自动生成"不等于这台机器真的要接平台——没有显式提供时默认独立模式，
+# 避免装完就对着默认地址反复试连。
+TOKEN_EXPLICIT=0
+if [ -n "$INITIAL_TOKEN" ]; then TOKEN_EXPLICIT=1; fi
 # 平台接入开关的一次性操作（on/off）。空表示不改，保持配置里现有的值。
 PLATFORM_ACTION="${PLATFORM_ACTION:-}"
 SKIP_IPV6_PROBE="${SKIP_IPV6_PROBE:-0}"
@@ -506,8 +514,8 @@ while [[ $# -gt 0 ]]; do
         --ipv6-iface) [ $# -ge 2 ] || die "--ipv6-iface requires a value"; IPV6_IFACE="$2"; shift 2 ;;
         --ipv6-routed) IPV6_ROUTED=1; shift ;;
         --skip-ipv6-probe) SKIP_IPV6_PROBE=1; shift ;;
-        --token) [ $# -ge 2 ] || die "--token requires a value"; INITIAL_TOKEN="$2"; TOKEN_VALUE="$2"; shift 2 ;;
-        --generate-token) GENERATE_TOKEN=1; shift ;;
+        --token) [ $# -ge 2 ] || die "--token requires a value"; INITIAL_TOKEN="$2"; TOKEN_VALUE="$2"; TOKEN_EXPLICIT=1; shift 2 ;;
+        --generate-token) GENERATE_TOKEN=1; TOKEN_EXPLICIT=1; shift ;;
         -y|--yes|--non-interactive) NON_INTERACTIVE=1; shift ;;
         --menu) FORCE_MENU=1; shift ;;
         --update-only) UPDATE_ONLY=1; shift ;;
@@ -1423,11 +1431,14 @@ write_config_file() {
     local web_pass="${10:-}"
     local agent_token="${11:-}"
 
-    # 装完默认是否接入平台：只有提供了 Token 才置 true。
-    # 不写这个字段会按 nil 处理成「接入平台」，与初始 token 为空的实际行为不符，
-    # 会让面板显示「已启用」但状态却是「未配置 Token」。
+    # 装完默认是否接入平台：只有人显式提供了 Token 才置 true。
+    # 安装器在未提供时会自动生成 Token（写进配置供日后注册），但自动生成
+    # 不代表这台机器要接平台，默认按独立模式处理；否则装完就会对着默认地址
+    # 反复试连并刷 401 日志。需要接入时用 `--platform on` 或面板开关打开。
     local platform_enabled=false
-    [ -n "$agent_token" ] && platform_enabled=true
+    if [ "$TOKEN_EXPLICIT" = "1" ] && [ -n "$agent_token" ]; then
+        platform_enabled=true
+    fi
 
     mkdir -p "$AGENT_CONFIG_DIR"
     # 目录同时存放二进制、配置、数据库与 install.sh，收紧为仅属主可进入，
@@ -2195,6 +2206,7 @@ if [ "$GENERATE_TOKEN" = "1" ]; then
 elif [ -z "$INITIAL_TOKEN" ] && [ "$NON_INTERACTIVE" != "1" ] && [ -t 0 ]; then
     read -rsp "$(t "Integration Token (leave blank to generate): " "对接 Token（留空自动生成）: ")" INITIAL_TOKEN
     echo
+    if [ -n "$INITIAL_TOKEN" ]; then TOKEN_EXPLICIT=1; fi
 fi
 [ -n "$INITIAL_TOKEN" ] || INITIAL_TOKEN=$(generate_agent_token)
 validate_agent_token "$INITIAL_TOKEN" || die "$(t "Invalid integration Token." "无效的对接 Token。")"
@@ -2237,6 +2249,10 @@ log "$(t "Token:        $INITIAL_TOKEN" "对接 Token:    $INITIAL_TOKEN")"
 echo ""
 log "$(t "Token rotation: bash install.sh --rotate-token" "Token 轮换:    bash install.sh --rotate-token")"
 log "$(t "Custom Token:  bash install.sh --rotate-token --token '<new-token>'" "自定义 Token:   bash install.sh --rotate-token --token '<新Token>'")"
-log "$(t "Standalone:    bash install.sh --platform off" "独立模式:      bash install.sh --platform off")"
+if [ "$TOKEN_EXPLICIT" = "1" ]; then
+    log "$(t "Platform:     enabled  (standalone: bash install.sh --platform off)" "平台接入:     已启用（切独立模式: bash install.sh --platform off）")"
+else
+    log "$(t "Platform:     standalone  (connect: bash install.sh --platform on)" "平台接入:     独立模式（接入平台: bash install.sh --platform on）")"
+fi
 log "$(t "Network:      IPv4 NAT=on, IPv6=$IPV6_MODE" "网络模式:      IPv4 NAT=开启, IPv6=$IPV6_MODE")"
 log "========================================"
