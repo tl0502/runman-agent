@@ -100,3 +100,10 @@ type VMNetStats struct {
 	InBytes  int64  // 累计入站字节数（计数器值）
 	OutBytes int64  // 累计出站字节数（计数器值）
 }
+
+// Process 表示容器内运行的一个进程（供巡查黑名单匹配 / 查杀）。
+type Process struct {
+	PID  int
+	Comm string // 进程名（ps 的 comm 字段）
+	Args string // 完整命令行
+}

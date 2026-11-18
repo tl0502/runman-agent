@@ -81,6 +81,11 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
         虚拟机
       </button>
+      <button class="seg" role="tab" data-view="patrol" aria-selected="false">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-search"/></svg>
+        巡查
+        <span class="seg-dot" id="patrolDot"></span>
+      </button>
       <button class="seg" role="tab" data-view="firewall" aria-selected="false">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg>
         防火墙
@@ -530,6 +535,238 @@
           <span class="empty-title">暂无事件</span>
           <span class="empty-sub">登录成功、失败与封禁操作都会记录在这里。</span>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════ 巡查 ═══════════════════════════════════ -->
+  <section class="view" id="view-patrol" hidden>
+    <div class="page-head">
+      <div class="row" style="align-items:center; gap:14px">
+        <h1 class="page-title">巡查</h1>
+        <nav class="patrol-tabs" id="patrolTabs" role="tablist">
+          <button type="button" class="pt-tab" role="tab" data-ptab="overview" aria-selected="true">总览</button>
+          <button type="button" class="pt-tab" role="tab" data-ptab="config" aria-selected="false">配置</button>
+        </nav>
+      </div>
+      <div class="page-actions">
+        <button class="icon-btn" id="patrolRefresh" title="刷新">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- ── 总览 ── -->
+    <div class="ptab" id="ptab-overview">
+      <div class="grid grid-3">
+        <div class="card metric">
+          <div class="metric-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
+            监控 VM
+          </div>
+          <div class="metric-value"><span class="num" id="pMonVm">0</span><span class="unit">台</span></div>
+          <div class="metric-meta"><span id="pMonVmMeta">—</span></div>
+        </div>
+        <div class="card metric">
+          <div class="metric-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-warn"/></svg>
+            异常 VM
+          </div>
+          <div class="metric-value"><span class="num" id="pEvtNum">0</span><span class="unit">台</span></div>
+          <div class="metric-meta"><span id="pEvtMeta">待处理</span></div>
+        </div>
+        <div class="card metric">
+          <div class="metric-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chart"/></svg>
+            运行状态
+          </div>
+          <div class="metric-value" id="pStatusVal"><span class="dot dot-ok"></span>正常</div>
+          <div class="metric-meta"><span id="pStatusMeta">—</span></div>
+        </div>
+      </div>
+
+      <div class="card mt-16">
+        <div class="card-head">
+          <span class="card-title">异常 VM</span>
+          <span class="badge badge-quiet" id="pVmCount">0</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr><th>VM</th><th>异常</th><th style="text-align:right">操作</th></tr>
+            </thead>
+            <tbody id="pVmTbody"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="pVmEmpty" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>
+          <span class="empty-title">当前没有异常的 VM</span>
+          <span class="empty-sub">限速中或被巡查停机的 VM 会显示在这里。</span>
+        </div>
+      </div>
+
+      <div class="card mt-16">
+        <div class="card-head">
+          <span class="card-title">监控事件</span>
+          <div class="evt-filters">
+            <select class="input" id="pEvtSev">
+              <option value="">全部严重度</option>
+              <option value="bad">严重</option>
+              <option value="warn">警告</option>
+              <option value="info">信息</option>
+            </select>
+            <select class="input" id="pEvtCheck">
+              <option value="">全部检查项</option>
+              <option value="bandwidth">带宽</option>
+              <option value="connections">连接</option>
+              <option value="resources_cpu">CPU</option>
+              <option value="resources_mem">内存</option>
+              <option value="resources_disk">磁盘</option>
+              <option value="process">进程</option>
+            </select>
+            <button class="btn btn-quiet btn-sm" id="pEvtSort">最新优先</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr><th>时间</th><th>严重度</th><th>VM</th><th>事件</th></tr>
+            </thead>
+            <tbody id="pEvtTbody"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="pEvtEmpty" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-clock"/></svg>
+          <span class="empty-title">暂无巡查事件</span>
+          <span class="empty-sub">触发限速、停止、重启、杀进程等动作会记录在这里。</span>
+        </div>
+        <div class="pager" id="pEvtPager" hidden>
+          <span class="dim small" id="pEvtTotal">共 0 条</span>
+          <button class="btn btn-quiet btn-sm" id="pEvtPrev">上一页</button>
+          <span class="dim small tnum" id="pEvtPage">1 / 1</span>
+          <button class="btn btn-quiet btn-sm" id="pEvtNext">下一页</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 配置 ── -->
+    <div class="ptab" id="ptab-config" hidden>
+      <div class="patrol-config">
+        <nav class="patrol-nav" id="patrolNav">
+          <button type="button" class="pn active" data-pcat="basic">基础设置</button>
+          <button type="button" class="pn" data-pcat="network">网络监控</button>
+          <button type="button" class="pn" data-pcat="resource">资源监控</button>
+          <button type="button" class="pn" data-pcat="process">进程黑名单</button>
+          <button type="button" class="pn" data-pcat="notify">通知渠道</button>
+        </nav>
+        <form class="patrol-form" id="patrolForm" autocomplete="off">
+          <section class="pcat" data-pcat="basic">
+            <div class="pcat-head">
+              <span class="pcat-title">基础设置</span>
+              <label class="check"><input type="checkbox" id="pEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用巡查</label>
+            </div>
+            <div class="form-grid cols-2">
+              <div class="field">
+                <label for="pInterval">巡查间隔 <span class="hint">秒</span></label>
+                <input class="input tnum" type="number" id="pInterval" min="5" max="86400">
+                <span class="hint">每轮对所有运行中的 VM 做一次探测</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="pcat" data-pcat="network" hidden>
+            <div class="pcat-head"><span class="pcat-title">网络监控</span></div>
+
+            <div class="cfg-group">
+              <div class="cfg-group-head">
+                <span>带宽占用</span>
+                <label class="check"><input type="checkbox" id="pbEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
+              </div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="pbThreshold">占用阈值 <span class="hint">% 上限</span></label><input class="input tnum" type="number" id="pbThreshold" min="1" max="100"></div>
+                <div class="field"><label for="pbDuration">持续时间 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="pbDuration" min="1"></div>
+                <div class="field"><label for="pbThrottle">限速到 <span class="hint">% 上限</span></label><input class="input tnum" type="number" id="pbThrottle" min="1" max="100"></div>
+                <div class="field"><label for="pbRelease">自动恢复 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="pbRelease" min="1"></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>带宽占用达到分配上限的 <b>阈值 %</b> 并持续 <b>N 分钟</b>，则限速到上限的 <b>限速 %</b>，<b>M 分钟</b>后自动恢复。</span></div>
+            </div>
+
+            <div class="cfg-group">
+              <div class="cfg-group-head">
+                <span>活跃连接</span>
+                <label class="check"><input type="checkbox" id="pcEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
+              </div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="pcIn">入方向阈值 <span class="hint">连接数</span></label><input class="input tnum" type="number" id="pcIn" min="1"></div>
+                <div class="field"><label for="pcOut">出方向阈值 <span class="hint">连接数</span></label><input class="input tnum" type="number" id="pcOut" min="1"></div>
+                <div class="field"><label for="pcDuration">持续时间 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="pcDuration" min="1"></div>
+                <div class="field"><label for="pcThrottle">同步限速 <span class="hint">% 上限</span></label><input class="input tnum" type="number" id="pcThrottle" min="1" max="100"></div>
+                <div class="field span-2"><label for="pcRelease">限速解除 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="pcRelease" min="1"></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>入/出方向活跃连接数超阈值并持续 <b>N 分钟</b>，则<b>停止 VM</b> 并同步限速，<b>M 分钟</b>后解除限速（VM 保持停止，需人工重启）。</span></div>
+            </div>
+          </section>
+
+          <section class="pcat" data-pcat="resource" hidden>
+            <div class="pcat-head">
+              <span class="pcat-title">资源监控</span>
+              <label class="check"><input type="checkbox" id="prEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
+            </div>
+            <div class="cfg-group">
+              <div class="cfg-group-head"><span>CPU / 内存</span></div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="prCpu">CPU 阈值 <span class="hint">% 配额</span></label><input class="input tnum" type="number" id="prCpu" min="1" max="100"></div>
+                <div class="field"><label for="prCpuMin">CPU 持续 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prCpuMin" min="1"></div>
+                <div class="field"><label for="prMem">内存阈值 <span class="hint">%</span></label><input class="input tnum" type="number" id="prMem" min="1" max="100"></div>
+                <div class="field"><label for="prMemMin">内存持续 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prMemMin" min="1"></div>
+                <div class="field"><label for="prCooldown">重启冷却 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prCooldown" min="1"></div>
+                <div class="field"><label for="prAction">超限动作</label><select class="input" id="prAction"><option value="restart">自动重启</option><option value="stop">关机</option><option value="alert">仅告警</option></select></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>CPU/内存超阈值持续 <b>N 分钟</b> 后执行「超限动作」；两次自动动作间隔不小于「重启冷却」。</span></div>
+            </div>
+            <div class="cfg-group">
+              <div class="cfg-group-head"><span>磁盘</span></div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="prDisk">磁盘阈值 <span class="hint">%</span></label><input class="input tnum" type="number" id="prDisk" min="1" max="100"></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>磁盘超阈值<b>仅告警</b>、不自动处置，只在事件日志记录。</span></div>
+            </div>
+          </section>
+
+          <section class="pcat" data-pcat="process" hidden>
+            <div class="pcat-head">
+              <span class="pcat-title">进程黑名单</span>
+              <label class="check"><input type="checkbox" id="ppEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
+            </div>
+            <div class="field">
+              <label for="ppInput">黑名单关键词 <span class="hint">命中即杀</span></label>
+              <div class="tags-editor">
+                <div class="tag-list" id="ppTagList"></div>
+                <textarea class="tag-input" id="ppInput" rows="1" placeholder="回车添加；可粘贴逗号/换行分隔的多个关键词批量导入" autocomplete="off" spellcheck="false"></textarea>
+              </div>
+              <span class="hint">全局一份。容器内进程名或命令行命中任意关键词即被 kill，只记日志不通知 Telegram。</span>
+            </div>
+          </section>
+
+          <section class="pcat" data-pcat="notify" hidden>
+            <div class="pcat-head">
+              <span class="pcat-title">通知渠道</span>
+              <label class="check"><input type="checkbox" id="tgEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用 Telegram</label>
+            </div>
+            <div class="form-grid cols-2">
+              <div class="field">
+                <label for="tgToken">Bot Token</label>
+                <input class="input mono" type="password" id="tgToken" placeholder="123456:ABC-xyz" autocomplete="off">
+                <span class="hint">BotFather 生成的 token，默认脱敏</span>
+              </div>
+              <div class="field">
+                <label for="tgChat">Chat ID</label>
+                <input class="input mono" id="tgChat" placeholder="-100123456789">
+                <span class="hint">接收告警的会话/群组 ID</span>
+              </div>
+            </div>
+          </section>
+        </form>
       </div>
     </div>
   </section>

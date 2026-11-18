@@ -131,6 +131,36 @@ type LoginBan struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// PatrolEvent 巡查事件日志。Check 取值：
+// bandwidth / connections / resources_cpu / resources_mem / resources_disk / process。
+// Action 取值：throttle / release / stop_vm / restart_vm / kill_process / alert。
+type PatrolEvent struct {
+	ID     int64     `gorm:"primaryKey;autoIncrement" json:"id"`
+	TS     time.Time `gorm:"index" json:"ts"`
+	VMID   string    `gorm:"index" json:"vm_id"`
+	Check  string    `json:"check"`
+	Action string    `json:"action"`
+	Detail string    `json:"detail"`
+}
+
+// PatrolThrottle 记录某个 VM 当前生效的限速（幂等重放，重启后仍生效）。
+// ReleaseAt 到期后自动恢复原上限。VM 停止期间 veth 不存在，tc 无法打上去，
+// 由巡查每轮重放，VM 重新拉起后自动补上。
+type PatrolThrottle struct {
+	VMID      string    `gorm:"primaryKey"`
+	RatePct   int       // 当前限速占分配上限的百分比
+	ReleaseAt time.Time // 到期时间
+	Reason    string    // 触发原因（bandwidth / connections）
+}
+
+// PatrolStop 记录某个 VM 被巡查主动停机（连接超限 / 资源超限关机动作）。
+// 这是「当前未解决」状态：VM 恢复运行（用户手动启动）后由巡查每轮清除。
+type PatrolStop struct {
+	VMID      string `gorm:"primaryKey"`
+	Reason    string // connections / resources
+	StoppedAt time.Time
+}
+
 type DB struct {
 	orm *gorm.DB
 	// ciMu 序列化自定义镜像列表的读改写，防止并发拉取状态更新互相覆盖
@@ -162,7 +192,7 @@ func Init(path string) (*DB, error) {
 		sqlDB.SetMaxOpenConns(1)
 	}
 
-	if err := db.AutoMigrate(&Traffic{}, &VMConfig{}, &PodmanVMConfig{}, &CloudHVVMConfig{}, &IncusVMConfig{}, &PortForward{}, &VMIPLimit{}, &WGBinding{}, &System{}, &LoginLog{}, &LoginBan{}); err != nil {
+	if err := db.AutoMigrate(&Traffic{}, &VMConfig{}, &PodmanVMConfig{}, &CloudHVVMConfig{}, &IncusVMConfig{}, &PortForward{}, &VMIPLimit{}, &WGBinding{}, &System{}, &LoginLog{}, &LoginBan{}, &PatrolEvent{}, &PatrolThrottle{}, &PatrolStop{}); err != nil {
 		return nil, fmt.Errorf("automigrate: %w", err)
 	}
 
@@ -254,6 +284,87 @@ func (d *DB) ListActiveLoginBans() []LoginBan {
 	now := time.Now()
 	out := []LoginBan{}
 	d.orm.Where("until IS NULL OR until = ? OR until > ?", time.Time{}, now).Order("created_at DESC").Find(&out)
+	return out
+}
+
+// 巡查事件 + 限速状态
+
+const patrolEventKeep = 2000 // 事件保留条数，超出自动轮转
+
+// InsertPatrolEvent 记录一条巡查事件并轮转超量历史。
+func (d *DB) InsertPatrolEvent(vmID, check, action, detail string) {
+	d.orm.Create(&PatrolEvent{TS: time.Now(), VMID: vmID, Check: check, Action: action, Detail: detail})
+	d.orm.Where("id NOT IN (?)",
+		d.orm.Model(&PatrolEvent{}).Select("id").Order("id DESC").Limit(patrolEventKeep),
+	).Delete(&PatrolEvent{})
+}
+
+// PatrolEventQuery 是巡查事件的筛选/排序条件。
+type PatrolEventQuery struct {
+	Check   string   // 精确匹配 check（空 = 全部）
+	Actions []string // 匹配 action IN (...)；空 = 全部
+	VMID    string   // vm_id LIKE 模糊匹配；空 = 全部
+	Sort    string   // "asc" 按时间正序，其余（含空）按最新在前
+}
+
+// QueryPatrolEvents 按条件分页查询巡查事件，返回 items 与总数。
+func (d *DB) QueryPatrolEvents(q PatrolEventQuery, offset, limit int) ([]PatrolEvent, int64, error) {
+	tx := d.orm.Model(&PatrolEvent{})
+	if q.Check != "" {
+		tx = tx.Where("check = ?", q.Check)
+	}
+	if len(q.Actions) > 0 {
+		tx = tx.Where("action IN ?", q.Actions)
+	}
+	if q.VMID != "" {
+		tx = tx.Where("vm_id LIKE ?", "%"+q.VMID+"%")
+	}
+	var total int64
+	if err := tx.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	order := "id DESC"
+	if q.Sort == "asc" {
+		order = "id ASC"
+	}
+	out := []PatrolEvent{}
+	if err := tx.Order(order).Offset(offset).Limit(limit).Find(&out).Error; err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
+// SavePatrolThrottle 写入/刷新一条限速状态。
+func (d *DB) SavePatrolThrottle(vmID string, ratePct int, releaseAt time.Time, reason string) error {
+	return d.orm.Save(&PatrolThrottle{VMID: vmID, RatePct: ratePct, ReleaseAt: releaseAt, Reason: reason}).Error
+}
+
+// DeletePatrolThrottle 解除限速状态。
+func (d *DB) DeletePatrolThrottle(vmID string) error {
+	return d.orm.Delete(&PatrolThrottle{}, "vm_id = ?", vmID).Error
+}
+
+// ListPatrolThrottles 返回全部生效中的限速状态。
+func (d *DB) ListPatrolThrottles() []PatrolThrottle {
+	out := []PatrolThrottle{}
+	d.orm.Find(&out)
+	return out
+}
+
+// SavePatrolStop 写入一条「被巡查停机」状态。
+func (d *DB) SavePatrolStop(vmID, reason string) error {
+	return d.orm.Save(&PatrolStop{VMID: vmID, Reason: reason, StoppedAt: time.Now()}).Error
+}
+
+// DeletePatrolStop 清除「被停机」状态。
+func (d *DB) DeletePatrolStop(vmID string) error {
+	return d.orm.Delete(&PatrolStop{}, "vm_id = ?", vmID).Error
+}
+
+// ListPatrolStops 返回全部「被巡查停机」状态。
+func (d *DB) ListPatrolStops() []PatrolStop {
+	out := []PatrolStop{}
+	d.orm.Find(&out)
 	return out
 }
 

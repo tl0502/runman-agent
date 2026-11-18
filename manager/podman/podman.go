@@ -4,6 +4,7 @@ package podman
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -838,6 +839,134 @@ func (m *Manager) getIPsFromInspect(inspect *define.InspectContainerData) (ipv4,
 		return nil, nil, fmt.Errorf("no ipv4 or ipv6 network found")
 	}
 	return ipv4, ipv6, nil
+}
+
+// execCapture 在容器内执行一条命令并返回合并后的 stdout/stderr 文本。
+func (m *Manager) execCapture(id string, cmd []string) (string, error) {
+	execID, err := containers.ExecCreate(m.timeoutCtx(), id, &handlers.ExecCreateConfig{
+		ExecOptions: dockerContainer.ExecOptions{
+			AttachStdout: true,
+			AttachStderr: true,
+			Cmd:          cmd,
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	attachCtx, cancel := context.WithCancel(m.ctx)
+	defer cancel()
+	if err := containers.ExecStartAndAttach(attachCtx, execID,
+		new(containers.ExecStartAndAttachOptions).
+			WithAttachOutput(true).
+			WithAttachError(true).
+			WithOutputStream(&buf).
+			WithErrorStream(&buf)); err != nil {
+		return buf.String(), err
+	}
+	return buf.String(), nil
+}
+
+// ListProcesses 枚举容器内正在运行的进程（供巡查黑名单匹配）。
+func (m *Manager) ListProcesses(_ context.Context, vmID string) ([]manager.Process, error) {
+	out, err := m.execCapture(vmID, []string{"ps", "-eo", "pid=,comm=,args="})
+	if err != nil {
+		return nil, err
+	}
+	var procs []manager.Process
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		comm := fields[1]
+		args := ""
+		if len(fields) > 2 {
+			args = strings.Join(fields[2:], " ")
+		}
+		procs = append(procs, manager.Process{PID: pid, Comm: comm, Args: args})
+	}
+	return procs, nil
+}
+
+// KillProcess 杀掉容器内指定 PID 的进程（SIGKILL）。
+func (m *Manager) KillProcess(_ context.Context, vmID string, pid int) error {
+	return m.execInContainer(vmID, []string{"kill", "-9", strconv.Itoa(pid)})
+}
+
+// GetVMDiskUsage 返回容器根文件系统（overlay）当前占用字节数（inspect SizeRootFs）。
+func (m *Manager) GetVMDiskUsage(_ context.Context, vmID string) (int64, error) {
+	inspect, err := containers.Inspect(m.timeoutCtx(), vmID, nil)
+	if err != nil {
+		return 0, err
+	}
+	return inspect.SizeRootFs, nil
+}
+
+// GetVMIP 返回容器的内网 IPv4（优先），无 IPv4 时尝试 IPv6。
+func (m *Manager) GetVMIP(_ context.Context, vmID string) (string, error) {
+	inspect, err := containers.Inspect(m.timeoutCtx(), vmID, nil)
+	if err != nil {
+		return "", err
+	}
+	ipv4, ipv6, err := m.getIPsFromInspect(inspect)
+	if err != nil {
+		return "", err
+	}
+	if ipv4 != nil {
+		return ipv4.String(), nil
+	}
+	return ipv6.String(), nil
+}
+
+// GetVMVeth 返回容器在宿主机侧的 veth 接口名，用于 tc 限速。
+// 原理：宿主侧 veth 的 /sys/class/net/<veth>/iflink 等于容器内 eth0 的 ifindex。
+// 通过 nsenter 进入容器网络命名空间读取 eth0 的 ifindex，再在宿主机侧反查。
+func (m *Manager) GetVMVeth(_ context.Context, vmID string) (string, error) {
+	inspect, err := containers.Inspect(m.timeoutCtx(), vmID, nil)
+	if err != nil {
+		return "", err
+	}
+	if inspect.State == nil || inspect.State.Pid <= 0 {
+		return "", fmt.Errorf("container %s is not running", vmID)
+	}
+	pid := inspect.State.Pid
+
+	// 读容器内 eth0 的 ifindex（在容器 netns 内）。
+	nsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(nsCtx, "nsenter", "-t", strconv.Itoa(pid), "-n",
+		"cat", "/sys/class/net/eth0/ifindex").Output()
+	if err != nil {
+		return "", fmt.Errorf("nsenter read eth0 ifindex: %w", err)
+	}
+	peerIdx := strings.TrimSpace(string(out))
+	if peerIdx == "" {
+		return "", fmt.Errorf("empty eth0 ifindex")
+	}
+
+	// 宿主机侧反查：iflink == peerIdx 的网卡即宿主侧 veth。
+	entries, err := os.ReadDir("/sys/class/net")
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "veth") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join("/sys/class/net", e.Name(), "iflink"))
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(string(b)) == peerIdx {
+			return e.Name(), nil
+		}
+	}
+	return "", fmt.Errorf("host veth not found for %s (peer ifindex %s)", vmID, peerIdx)
 }
 
 // GetVMNetStats 获取 VM 的网络流量统计（用于流量统计服务）

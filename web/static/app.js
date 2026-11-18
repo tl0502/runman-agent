@@ -138,7 +138,7 @@ $('themeBtn').addEventListener('click', () => {
 });
 
 /* ── 视图路由 ─────────────────────────────────────────────────────────────── */
-const VIEWS = ['login', 'overview', 'vms', 'firewall', 'security', 'settings'];
+const VIEWS = ['login', 'overview', 'vms', 'firewall', 'security', 'patrol', 'settings'];
 
 function setView(name, { push = true } = {}) {
   if (!VIEWS.includes(name)) name = 'overview';
@@ -167,7 +167,9 @@ function setView(name, { push = true } = {}) {
   if (name === 'vms') renderVMs();
   if (name === 'firewall') refreshFirewall();
   if (name === 'security') refreshSecurity();
+  if (name === 'patrol') { clearPatrolDot(); refreshPatrol(); loadPatrolConfigRemote(); }
   if (name === 'settings') syncDirty();
+  updateSavebar();
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
 
@@ -1118,6 +1120,387 @@ $('formRule').addEventListener('submit', async (e) => {
   } catch (err) { $('ruleErr').textContent = err.message; $('ruleErr').classList.add('show'); }
 });
 
+/* ══════════════════════════════ 巡查 ═══════════════════════════════════════ */
+const PATROL_SEEN_KEY = 'run-patrol-seen';
+const PATROL_PAGE_SIZE = 20;
+
+const patrolState = {
+  tab: 'overview',
+  cat: 'basic',
+  vms: [],
+  events: [],
+  anomalies: [],
+  blacklist: [],
+  evtFilter: { severity: '', check: '', sort: 'desc', page: 1 },
+  evtTotal: 0,
+  snapshot: '',
+  dirty: false,
+};
+
+function patrolCheckMeta(check) {
+  switch (check) {
+    case 'bandwidth':     return '带宽';
+    case 'connections':   return '连接';
+    case 'resources_cpu': return 'CPU';
+    case 'resources_mem': return '内存';
+    case 'resources_disk':return '磁盘';
+    case 'process':       return '进程';
+    default:              return check || '—';
+  }
+}
+
+function anomalyReasonLabel(a) {
+  if (a.type === 'stopped') return a.reason === 'resources' ? '资源超限停机' : '连接超限停机';
+  return a.reason === 'connections' ? '连接数超限' : '带宽超限';
+}
+
+function patrolActionMeta(action) {
+  switch (action) {
+    case 'throttle':     return { label: '限速', cls: 'badge-warn' };
+    case 'release':      return { label: '解除', cls: 'badge-quiet' };
+    case 'stop_vm':      return { label: '停止', cls: 'badge-bad' };
+    case 'restart_vm':   return { label: '重启', cls: 'badge-blue' };
+    case 'kill_process': return { label: '杀进程', cls: 'badge-bad' };
+    case 'alert':        return { label: '告警', cls: 'badge-warn' };
+    case 'recovered':    return { label: '恢复', cls: 'badge-ok' };
+    default:             return { label: action || '—', cls: 'badge-quiet' };
+  }
+}
+
+// 事件严重度：stop/kill 为严重，throttle/restart/alert 为警告，release/recovered 为信息。
+function patrolSeverity(action) {
+  switch (action) {
+    case 'stop_vm':
+    case 'kill_process': return { label: '严重', cls: 'badge-bad' };
+    case 'throttle':
+    case 'restart_vm':
+    case 'alert':        return { label: '警告', cls: 'badge-warn' };
+    default:             return { label: '信息', cls: 'badge-quiet' };
+  }
+}
+
+function patrolLastSeen() {
+  return Number(localStorage.getItem(PATROL_SEEN_KEY)) || 0;
+}
+function setPatrolSeen(id) {
+  localStorage.setItem(PATROL_SEEN_KEY, String(id || 0));
+}
+
+// checkPatrolDot 全局轮询最新事件，有未读就在「巡查」tab 上挂红点。
+async function checkPatrolDot() {
+  try {
+    const d = await api('GET', '/api/patrol/events?page=1&page_size=1');
+    const latest = d && d.items && d.items.length ? d.items[0].id : 0;
+    if (latest > patrolLastSeen()) {
+      $('patrolDot').classList.add('on');
+    }
+  } catch { /* 会话失效走全局 401 */ }
+}
+
+function clearPatrolDot() {
+  $('patrolDot').classList.remove('on');
+}
+
+// markPatrolSeen 拉取全局最新事件 id 并记为已读，清除红点。
+async function markPatrolSeen() {
+  try {
+    const d = await api('GET', '/api/patrol/events?page=1&page_size=1');
+    const latest = d && d.items && d.items.length ? d.items[0].id : 0;
+    if (latest) setPatrolSeen(latest);
+  } catch { /* 忽略 */ }
+  clearPatrolDot();
+}
+
+function overallPatrolStatus() {
+  const n = new Set(patrolState.anomalies.map((a) => a.vm_id)).size;
+  if (n === 0) return { label: '正常', dot: 'dot-ok' };
+  return { label: '异常', dot: 'dot-bad' };
+}
+
+function renderPatrolOverview() {
+  const vms = patrolState.vms;
+  const running = vms.filter((v) => v.status === 2).length;
+  $('pMonVm').textContent = vms.length;
+  $('pMonVmMeta').textContent = `运行中 ${running}`;
+
+  const bad = new Set(patrolState.anomalies.map((a) => a.vm_id)).size;
+  $('pEvtNum').textContent = bad;
+
+  const st = overallPatrolStatus();
+  $('pStatusVal').innerHTML = `<span class="dot ${st.dot}"></span>${st.label}`;
+  $('pStatusMeta').textContent = bad ? '存在未解决异常' : '全部正常';
+
+  renderPatrolAnomalies();
+  renderPatrolEvents();
+}
+
+function renderPatrolAnomalies() {
+  const list = patrolState.anomalies;
+  const tbody = $('pVmTbody');
+  $('pVmEmpty').hidden = list.length > 0;
+  $('pVmCount').textContent = new Set(list.map((a) => a.vm_id)).size;
+  if (!list.length) { tbody.innerHTML = ''; return; }
+  // 按 VM 合并：被停机优先于限速（限速会到时自动解除，停机需人工启动）
+  const byVm = new Map();
+  for (const a of list) {
+    const cur = byVm.get(a.vm_id);
+    if (!cur || (a.type === 'stopped' && cur.type !== 'stopped')) byVm.set(a.vm_id, a);
+  }
+  tbody.innerHTML = [...byVm.values()].map((a) => {
+    const sev = a.type === 'stopped' ? { label: '异常', cls: 'badge-bad' } : { label: '警告', cls: 'badge-warn' };
+    const reason = anomalyReasonLabel(a);
+    let action;
+    if (a.type === 'stopped') {
+      action = `<button class="btn btn-ghost btn-sm" data-start="${esc(a.vm_id)}">启动</button>`;
+    } else {
+      const left = (a.release_at || 0) - nowSec();
+      const rel = left > 0 ? `${Math.ceil(left / 60)} 分钟后解除` : '即将解除';
+      action = `<span class="dim small">${rel}</span>
+        <button class="act danger" data-release="${esc(a.vm_id)}" title="解除限速"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg></button>`;
+    }
+    return `<tr>
+      <td class="mono-cell">${esc(a.vm_id)}</td>
+      <td><span class="badge ${sev.cls}">${sev.label}</span><span class="dim small"> ${esc(reason)}</span></td>
+      <td style="text-align:right">${action}</td>
+    </tr>`;
+  }).join('');
+  qsa('[data-release]').forEach((btn) => btn.addEventListener('click', async () => {
+    if (!confirm(`解除 ${btn.dataset.release} 的限速？`)) return;
+    try {
+      await api('POST', `/api/patrol/throttles/${encodeURIComponent(btn.dataset.release)}/release`);
+      toast('已解除限速');
+      refreshPatrol();
+    } catch (e) { toastErr(e); }
+  }));
+  qsa('[data-start]').forEach((btn) => btn.addEventListener('click', async () => {
+    if (!confirm(`启动 ${btn.dataset.start}？`)) return;
+    try {
+      await api('POST', `/api/vms/${encodeURIComponent(btn.dataset.start)}/start`);
+      toast('已启动');
+      refreshPatrol();
+    } catch (e) { toastErr(e); }
+  }));
+}
+
+function renderPatrolEvents() {
+  const list = patrolState.events;
+  const tbody = $('pEvtTbody');
+  $('pEvtEmpty').hidden = list.length > 0;
+  const total = patrolState.evtTotal;
+  const f = patrolState.evtFilter;
+  const totalPages = Math.max(1, Math.ceil(total / PATROL_PAGE_SIZE));
+
+  const pager = $('pEvtPager');
+  pager.hidden = total <= 0;
+  $('pEvtTotal').textContent = `共 ${total} 条`;
+  $('pEvtPage').textContent = `${f.page} / ${totalPages}`;
+  $('pEvtPrev').disabled = f.page <= 1;
+  $('pEvtNext').disabled = f.page >= totalPages;
+
+  if (!list.length) { tbody.innerHTML = ''; return; }
+  tbody.innerHTML = list.map((e) => {
+    const sev = patrolSeverity(e.action);
+    const t = new Date(e.ts);
+    return `<tr>
+      <td class="dim small" title="${t.toLocaleString()}">${ago(t.getTime() / 1000)}</td>
+      <td><span class="badge ${sev.cls}">${sev.label}</span></td>
+      <td class="mono-cell">${e.vm_id ? esc(e.vm_id) : '—'}</td>
+      <td class="dim small">${e.detail ? esc(e.detail) : esc(patrolCheckMeta(e.check))}</td>
+    </tr>`;
+  }).join('');
+}
+
+// loadEvents 按当前筛选/排序/分页条件拉取事件并渲染。
+async function loadEvents() {
+  const f = patrolState.evtFilter;
+  const qs = new URLSearchParams({ page: f.page, page_size: PATROL_PAGE_SIZE, sort: f.sort });
+  if (f.severity) qs.set('severity', f.severity);
+  if (f.check) qs.set('check', f.check);
+  try {
+    const d = await api('GET', `/api/patrol/events?${qs}`);
+    patrolState.events = (d && d.items) || [];
+    patrolState.evtTotal = (d && d.total) || 0;
+    renderPatrolEvents();
+  } catch { /* 会话失效走全局 401 */ }
+}
+
+async function refreshPatrol() {
+  if (state.view !== 'patrol') return;
+  try {
+    const [vms, anomalies] = await Promise.all([
+      api('GET', '/api/vms'),
+      api('GET', '/api/patrol/anomalies'),
+    ]);
+    patrolState.vms = (vms || []).filter(Boolean);
+    patrolState.anomalies = anomalies || [];
+    renderPatrolOverview();
+    markPatrolSeen();
+  } catch { /* 会话失效走全局 401 */ }
+  await loadEvents();
+}
+
+async function loadPatrolConfigRemote() {
+  try {
+    loadPatrolConfig(await api('GET', '/api/patrol/config'));
+  } catch { /* 会话失效走全局 401 */ }
+}
+
+function setPatrolTab(tab) {
+  if (tab === 'overview' && patrolState.dirty) {
+    if (!confirm('有未保存的改动，确定离开配置？')) return;
+  }
+  patrolState.tab = tab;
+  $('ptab-overview').hidden = tab !== 'overview';
+  $('ptab-config').hidden = tab !== 'config';
+  qsa('.pt-tab').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.ptab === tab)));
+  updateSavebar();
+}
+
+function setPatrolCat(cat) {
+  patrolState.cat = cat;
+  qsa('#patrolForm .pcat').forEach((s) => { s.hidden = s.dataset.pcat !== cat; });
+  qsa('#patrolNav .pn').forEach((b) => b.classList.toggle('active', b.dataset.pcat === cat));
+}
+
+function loadPatrolConfig(c) {
+  if (!c) return;
+  const p = c.patrol || {};
+  const b = p.bandwidth || {}, n = p.connections || {}, r = p.resources || {}, pr = p.processes || {}, t = c.telegram || {};
+  $('pEnabled').checked = p.enabled == null ? true : !!p.enabled;
+  $('pInterval').value = p.interval_sec || 60;
+  $('pbEnabled').checked = b.enabled == null ? true : !!b.enabled;
+  $('pbThreshold').value = b.threshold_pct ?? 90;
+  $('pbDuration').value = b.duration_min ?? 6;
+  $('pbThrottle').value = b.throttle_pct ?? 10;
+  $('pbRelease').value = b.release_min ?? 60;
+  $('pcEnabled').checked = n.enabled == null ? true : !!n.enabled;
+  $('pcIn').value = n.in_limit ?? 200;
+  $('pcOut').value = n.out_limit ?? 300;
+  $('pcDuration').value = n.duration_min ?? 4;
+  $('pcThrottle').value = n.throttle_pct ?? 10;
+  $('pcRelease').value = n.release_min ?? 60;
+  $('prEnabled').checked = r.enabled == null ? true : !!r.enabled;
+  $('prCpu').value = r.cpu_pct ?? 90;
+  $('prCpuMin').value = r.cpu_min ?? 5;
+  $('prMem').value = r.mem_pct ?? 90;
+  $('prMemMin').value = r.mem_min ?? 5;
+  $('prDisk').value = r.disk_pct ?? 90;
+  $('prAction').value = r.action || 'restart';
+  $('prCooldown').value = r.restart_cooldown_min ?? 60;
+  $('ppEnabled').checked = pr.enabled == null ? true : !!pr.enabled;
+  patrolState.blacklist = (pr.blacklist || []).slice();
+  renderPatrolTags();
+  $('tgEnabled').checked = !!t.enabled;
+  $('tgToken').value = t.bot_token || '';
+  $('tgChat').value = t.chat_id || '';
+  patrolState.snapshot = patrolSnapshot();
+  syncPatrolDirty();
+}
+
+function collectPatrolConfig() {
+  const num = (id) => Math.max(0, Number($(id).value) || 0);
+  return {
+    patrol: {
+      enabled: $('pEnabled').checked,
+      interval_sec: num('pInterval'),
+      bandwidth: {
+        enabled: $('pbEnabled').checked,
+        threshold_pct: num('pbThreshold'), duration_min: num('pbDuration'),
+        throttle_pct: num('pbThrottle'), release_min: num('pbRelease'),
+      },
+      connections: {
+        enabled: $('pcEnabled').checked,
+        in_limit: num('pcIn'), out_limit: num('pcOut'), duration_min: num('pcDuration'),
+        throttle_pct: num('pcThrottle'), release_min: num('pcRelease'),
+      },
+      resources: {
+        enabled: $('prEnabled').checked,
+        cpu_pct: num('prCpu'), cpu_min: num('prCpuMin'),
+        mem_pct: num('prMem'), mem_min: num('prMemMin'),
+        disk_pct: num('prDisk'), action: $('prAction').value,
+        restart_cooldown_min: num('prCooldown'),
+      },
+      processes: {
+        enabled: $('ppEnabled').checked,
+        blacklist: patrolState.blacklist.slice(),
+      },
+    },
+    telegram: {
+      enabled: $('tgEnabled').checked,
+      bot_token: $('tgToken').value.trim(),
+      chat_id: $('tgChat').value.trim(),
+    },
+  };
+}
+
+function patrolSnapshot() {
+  return JSON.stringify(collectPatrolConfig());
+}
+
+function syncPatrolDirty() {
+  const dirty = patrolState.snapshot !== '' && patrolSnapshot() !== patrolState.snapshot;
+  patrolState.dirty = dirty;
+  updateSavebar();
+}
+
+// 黑名单 tag 编辑器：渲染 chip 列表，支持添加/删除。
+function renderPatrolTags() {
+  const box = $('ppTagList');
+  if (!box) return;
+  box.innerHTML = patrolState.blacklist.map((k, i) => `
+    <span class="tag">${esc(k)}<span class="tag-x" data-tag="${i}" title="移除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><use href="#i-x"/></svg></span></span>
+  `).join('');
+  qsa('[data-tag]', box).forEach((x) => x.addEventListener('click', () => {
+    patrolState.blacklist.splice(Number(x.dataset.tag), 1);
+    renderPatrolTags();
+    syncPatrolDirty();
+  }));
+}
+
+function addPatrolTag() {
+  const input = $('ppInput');
+  const raw = (input.value || '').trim();
+  if (!raw) return;
+  // 支持批量导入：按逗号/换行/分号/制表符（含中文标点）拆成多个关键词
+  const items = raw.split(/[\n,，、;；\t]+/).map((s) => s.trim()).filter(Boolean);
+  for (const v of items) {
+    if (patrolState.blacklist.some((k) => k.toLowerCase() === v.toLowerCase())) continue;
+    patrolState.blacklist.push(v);
+  }
+  input.value = '';
+  renderPatrolTags();
+  syncPatrolDirty();
+}
+
+async function savePatrolConfig(btn) {
+  await withBusy(btn, async () => {
+    await api('PUT', '/api/patrol/config', collectPatrolConfig());
+    toast('巡查配置已保存');
+    patrolState.snapshot = patrolSnapshot();
+    syncPatrolDirty();
+  });
+}
+
+qsa('.pt-tab').forEach((b) => b.addEventListener('click', () => setPatrolTab(b.dataset.ptab)));
+qsa('#patrolNav .pn').forEach((b) => b.addEventListener('click', () => setPatrolCat(b.dataset.pcat)));
+$('pEvtSev').addEventListener('change', (e) => { patrolState.evtFilter.severity = e.target.value; patrolState.evtFilter.page = 1; loadEvents(); });
+$('pEvtCheck').addEventListener('change', (e) => { patrolState.evtFilter.check = e.target.value; patrolState.evtFilter.page = 1; loadEvents(); });
+$('pEvtSort').addEventListener('click', () => {
+  const f = patrolState.evtFilter;
+  f.sort = f.sort === 'asc' ? 'desc' : 'asc';
+  f.page = 1;
+  $('pEvtSort').textContent = f.sort === 'asc' ? '最早优先' : '最新优先';
+  loadEvents();
+});
+$('pEvtPrev').addEventListener('click', () => { if (patrolState.evtFilter.page > 1) { patrolState.evtFilter.page--; loadEvents(); } });
+$('pEvtNext').addEventListener('click', () => { patrolState.evtFilter.page++; loadEvents(); });
+$('patrolForm').addEventListener('input', syncPatrolDirty);
+$('patrolForm').addEventListener('change', syncPatrolDirty);
+$('ppInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addPatrolTag(); }
+});
+$('patrolRefresh').addEventListener('click', (e) => withBusy(e.currentTarget, async () => { await refreshPatrol(); toast('已刷新'); }));
+
 /* ══════════════════════════════ 设置 ═══════════════════════════════════════ */
 const CONF_FIELDS = ['siteName', 'token', 'platformAddr', 'monitorNIC', 'monitorDisk', 'maxPortForward',
   'maxForwardIPs', 'trafficResetDay', 'entryHost', 'updateRepo', 'updateBase', 'updateApi', 'netavarkBase',
@@ -1148,7 +1531,19 @@ function confSnapshot() {
 function syncDirty() {
   const dirty = state.snapshot !== undefined && confSnapshot() !== state.snapshot;
   state.dirty = dirty;
-  $('savebar')?.classList.toggle('show', dirty);
+  updateSavebar();
+}
+
+// updateSavebar 统一控制全局 SaveBar 的显示：设置页看设置的未保存、巡查配置页看巡查的未保存，
+// 其它视图下任意一处未保存都提示。
+function updateSavebar() {
+  const onPatrolCfg = state.view === 'patrol' && patrolState.tab === 'config';
+  const onSettings = state.view === 'settings';
+  let show;
+  if (onPatrolCfg) show = patrolState.dirty;
+  else if (onSettings) show = state.dirty;
+  else show = state.dirty || patrolState.dirty;
+  $('savebar')?.classList.toggle('show', !!show);
 }
 
 function loadConfigIntoForm(c) {
@@ -1299,8 +1694,21 @@ async function saveConfig(btn) {
 }
 
 $('btnSaveConf').addEventListener('click', (e) => saveConfig(e.currentTarget));
-$('savebarSave').addEventListener('click', (e) => saveConfig(e.currentTarget));
-$('savebarReset').addEventListener('click', () => $('btnReloadConf').click());
+$('savebarSave').addEventListener('click', (e) => {
+  if (state.view === 'patrol' && patrolState.tab === 'config') {
+    savePatrolConfig(e.currentTarget).catch(toastErr);
+  } else {
+    saveConfig(e.currentTarget);
+  }
+});
+$('savebarReset').addEventListener('click', () => {
+  if (state.view === 'patrol' && patrolState.tab === 'config') {
+    loadPatrolConfigRemote();
+    toast('已放弃改动');
+  } else {
+    $('btnReloadConf').click();
+  }
+});
 $('btnReloadConf').addEventListener('click', async (e) => withBusy(e.currentTarget, async () => {
   try {
     const c = await api('GET', '/api/config');
@@ -1789,6 +2197,8 @@ async function init() {
   if (state.view === 'firewall') refreshFirewall();
   setInterval(() => { if (state.view === 'firewall') checkRfw(); }, 10000);
   setInterval(() => { if (state.view === 'security') refreshSecurity(); }, 10000);
+  checkPatrolDot();
+  setInterval(checkPatrolDot, 10000);
 }
 
 async function updateConnection() {

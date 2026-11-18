@@ -26,6 +26,7 @@ import (
 	"runman-agent/manager/portforward"
 	"runman-agent/manager/wgbind"
 	"runman-agent/monitor"
+	"runman-agent/patrol"
 	"runman-agent/proto/agent"
 	"runman-agent/updater"
 	"sort"
@@ -74,6 +75,7 @@ type Server struct {
 	version      string
 	commit       string
 	updater      *updater.Service
+	patrol       *patrol.Service
 
 	monitorHst map[string][]vmListItem
 	monitorMu  sync.RWMutex
@@ -104,6 +106,11 @@ func NewServer(database *db.DB, mgr manager.VMManager, hostMon *monitor.HostMoni
 		vmSnapshots: make(map[string]*vmNetSnapshot),
 		monitorHst:  make(map[string][]vmListItem),
 	}
+}
+
+// SetPatrol 注入巡查服务引用（非 Podman 后端时为 nil，相关端点返回未启用）。
+func (s *Server) SetPatrol(p *patrol.Service) {
+	s.patrol = p
 }
 
 // authMiddleware 校验 cookie session；未登录返回 401（无 WWW-Authenticate，
@@ -239,6 +246,13 @@ func (s *Server) ListenAndServe(addr string) error {
 	// 大盘监控
 	mux.HandleFunc("GET /api/monitor/latest", s.handleMonitorLatest)
 	mux.HandleFunc("GET /api/monitor/history", s.handleMonitorHistory)
+
+	// 自动巡查
+	mux.HandleFunc("GET /api/patrol/events", s.handlePatrolEvents)
+	mux.HandleFunc("GET /api/patrol/anomalies", s.handlePatrolAnomalies)
+	mux.HandleFunc("GET /api/patrol/throttles", s.handlePatrolThrottles)
+	mux.HandleFunc("POST /api/patrol/throttles/{vmID}/release", s.handlePatrolRelease)
+	mux.HandleFunc("/api/patrol/config", s.handlePatrolConfig)
 
 	// 启动后台监控收集
 	go s.startMonitorLoop()
@@ -401,6 +415,189 @@ func (s *Server) handleSecurityLog(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	jsonOK(w, s.db.ListLoginLog(limit))
+}
+
+// ─── 自动巡查 ──────────────────────────────────────────────────────────────────
+
+// handlePatrolEvents 返回巡查事件日志，支持筛选/排序/分页：
+//
+//	severity: bad(严重) / warn(警告) / info(信息)
+//	check:    bandwidth / connections / resources_cpu / resources_mem / resources_disk / process
+//	vm_id:    模糊匹配 VM ID
+//	sort:     asc（时间正序）；缺省最新在前
+//	page / page_size: 分页（page 从 1 起）
+func (s *Server) handlePatrolEvents(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	page := 1
+	if v := q.Get("page"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			page = n
+		}
+	}
+	pageSize := 20
+	if v := q.Get("page_size"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			pageSize = n
+		}
+	}
+
+	query := db.PatrolEventQuery{
+		Check: q.Get("check"),
+		VMID:  q.Get("vm_id"),
+		Sort:  q.Get("sort"),
+	}
+	switch q.Get("severity") {
+	case "bad":
+		query.Actions = []string{"stop_vm", "kill_process"}
+	case "warn":
+		query.Actions = []string{"throttle", "restart_vm", "alert"}
+	case "info":
+		query.Actions = []string{"release", "recovered"}
+	}
+
+	items, total, err := s.db.QueryPatrolEvents(query, (page-1)*pageSize, pageSize)
+	if err != nil {
+		jsonErr(w, err, http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, map[string]interface{}{
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+		"items":     items,
+	})
+}
+
+type patrolThrottleView struct {
+	VMID      string `json:"vm_id"`
+	RatePct   int    `json:"rate_pct"`
+	ReleaseAt int64  `json:"release_at"` // unix 秒
+	Reason    string `json:"reason"`
+}
+
+// handlePatrolThrottles 返回当前生效中的限速状态。
+func (s *Server) handlePatrolThrottles(w http.ResponseWriter, _ *http.Request) {
+	out := []patrolThrottleView{}
+	if s.patrol == nil {
+		jsonOK(w, out)
+		return
+	}
+	for _, t := range s.patrol.ActiveThrottles() {
+		out = append(out, patrolThrottleView{VMID: t.VMID, RatePct: t.RatePct, ReleaseAt: t.ReleaseAt.Unix(), Reason: t.Reason})
+	}
+	jsonOK(w, out)
+}
+
+// patrolAnomalyView 是「异常 VM」面板的条目：限速中 / 被停机两类当前未解决的异常。
+type patrolAnomalyView struct {
+	VMID      string `json:"vm_id"`
+	Type      string `json:"type"`   // throttle | stopped
+	Reason    string `json:"reason"` // bandwidth | connections | resources
+	RatePct   int    `json:"rate_pct,omitempty"`
+	ReleaseAt int64  `json:"release_at,omitempty"`
+	StoppedAt int64  `json:"stopped_at,omitempty"`
+}
+
+// handlePatrolAnomalies 返回当前未解决的异常（限速 + 被停机）合并列表。
+func (s *Server) handlePatrolAnomalies(w http.ResponseWriter, _ *http.Request) {
+	out := []patrolAnomalyView{}
+	if s.patrol == nil {
+		jsonOK(w, out)
+		return
+	}
+	for _, t := range s.patrol.ActiveThrottles() {
+		out = append(out, patrolAnomalyView{VMID: t.VMID, Type: "throttle", Reason: t.Reason, RatePct: t.RatePct, ReleaseAt: t.ReleaseAt.Unix()})
+	}
+	for _, st := range s.patrol.ActiveStops() {
+		out = append(out, patrolAnomalyView{VMID: st.VMID, Type: "stopped", Reason: st.Reason, StoppedAt: st.StoppedAt.Unix()})
+	}
+	jsonOK(w, out)
+}
+
+// handlePatrolRelease 人工解除某个 VM 的限速。
+func (s *Server) handlePatrolRelease(w http.ResponseWriter, r *http.Request) {
+	if s.patrol == nil {
+		jsonErr(w, fmt.Errorf("巡查未启用"), http.StatusBadRequest)
+		return
+	}
+	s.patrol.ReleaseThrottle(r.PathValue("vmID"))
+	jsonOK(w, map[string]bool{"ok": true})
+}
+
+// handlePatrolConfig 读/写巡查 + Telegram 配置。
+func (s *Server) handlePatrolConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPut || r.Method == http.MethodPost {
+		var req struct {
+			Patrol   config.PatrolConfig   `json:"patrol"`
+			Telegram config.TelegramConfig `json:"telegram"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		normalizePatrol(&req.Patrol)
+		if err := validatePatrol(&req.Patrol); err != nil {
+			jsonErr(w, err, http.StatusBadRequest)
+			return
+		}
+		if err := s.cfg.Update(func(c *config.Config) {
+			c.Patrol = req.Patrol
+			c.Telegram = req.Telegram
+		}); err != nil {
+			jsonErr(w, err, http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	conf := s.cfg.Get()
+	jsonOK(w, map[string]interface{}{
+		"patrol":   conf.Patrol,
+		"telegram": conf.Telegram,
+	})
+}
+
+// normalizePatrol 把面板传来的值夹取到合法区间（所有阈值/时长可配置，但须在安全范围）。
+func normalizePatrol(p *config.PatrolConfig) {
+	clamp := func(v int, lo, hi int) int {
+		if v < lo {
+			return lo
+		}
+		if v > hi {
+			return hi
+		}
+		return v
+	}
+	if p.IntervalSec < 5 {
+		p.IntervalSec = 60
+	}
+	p.Bandwidth.ThresholdPct = clamp(p.Bandwidth.ThresholdPct, 1, 100)
+	p.Bandwidth.DurationMin = clamp(p.Bandwidth.DurationMin, 1, 10080)
+	p.Bandwidth.ThrottlePct = clamp(p.Bandwidth.ThrottlePct, 1, 100)
+	p.Bandwidth.ReleaseMin = clamp(p.Bandwidth.ReleaseMin, 1, 10080)
+	p.Connections.InLimit = clamp(p.Connections.InLimit, 1, 1000000)
+	p.Connections.OutLimit = clamp(p.Connections.OutLimit, 1, 1000000)
+	p.Connections.DurationMin = clamp(p.Connections.DurationMin, 1, 10080)
+	p.Connections.ThrottlePct = clamp(p.Connections.ThrottlePct, 1, 100)
+	p.Connections.ReleaseMin = clamp(p.Connections.ReleaseMin, 1, 10080)
+	p.Resources.CpuPct = clamp(p.Resources.CpuPct, 1, 100)
+	p.Resources.CpuMin = clamp(p.Resources.CpuMin, 1, 10080)
+	p.Resources.MemPct = clamp(p.Resources.MemPct, 1, 100)
+	p.Resources.MemMin = clamp(p.Resources.MemMin, 1, 10080)
+	p.Resources.DiskPct = clamp(p.Resources.DiskPct, 1, 100)
+	p.Resources.RestartCooldownMin = clamp(p.Resources.RestartCooldownMin, 1, 10080)
+	if p.Resources.Action != "restart" && p.Resources.Action != "stop" && p.Resources.Action != "alert" {
+		p.Resources.Action = "restart"
+	}
+}
+
+// validatePatrol 校验面板提交的巡查配置（补充 normalize 未覆盖的硬约束）。
+func validatePatrol(p *config.PatrolConfig) error {
+	if p.IntervalSec < 5 || p.IntervalSec > 86400 {
+		return fmt.Errorf("巡查周期须在 5-86400 秒之间")
+	}
+	return nil
 }
 
 // securityBanView 封禁列表条目：合并 DB 手动封禁与内存自动锁。

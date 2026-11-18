@@ -191,6 +191,77 @@ type Config struct {
 	// 纯 IPv6 容器开关：开启后新建 incus 容器不分配 IPv4，仅配置静态 IPv6
 	// （依赖 IPv6 模式 subnet/snat）。要求宿主机已具备可用 IPv6 子网。
 	IncusIPv6Only bool `json:"incus_ipv6_only"`
+
+	// 自动巡查（巡检）：周期探测 VM 的网络带宽/活跃连接、CPU/内存/磁盘、容器内进程，
+	// 命中规则后限速/停止/重启/杀进程并记录事件、发 Telegram 通知。仅 Podman 后端生效。
+	Patrol PatrolConfig `json:"patrol"`
+
+	// Telegram 通知：巡查与其它告警的推送通道。
+	Telegram TelegramConfig `json:"telegram"`
+}
+
+// PatrolConfig 是自动巡查的全部配置。所有百分比与时长均可配置，不留写死的阈值。
+type PatrolConfig struct {
+	// Enabled 为 nil 时视为 true（默认开启巡查）。false 显式关闭整个巡查。
+	Enabled *bool `json:"enabled"`
+	// IntervalSec 巡查周期（秒），<=0 时回落默认 60。
+	IntervalSec int `json:"interval_sec"`
+
+	Bandwidth   PatrolBandwidth   `json:"bandwidth"`
+	Connections PatrolConnections `json:"connections"`
+	Resources   PatrolResources   `json:"resources"`
+	Processes   PatrolProcesses   `json:"processes"`
+}
+
+// PatrolBandwidth 单容器带宽占用巡查。ThresholdPct 是「占分配上限的百分比」。
+type PatrolBandwidth struct {
+	Enabled *bool `json:"enabled"` // nil 视为 true
+	// ThresholdPct 占用超过分配上限的该百分比即判定为高（0-100）。
+	ThresholdPct int `json:"threshold_pct"`
+	// DurationMin 连续超过阈值的分钟数，达到后触发限速。
+	DurationMin int `json:"duration_min"`
+	// ThrottlePct 限速动作把带宽压到分配上限的该百分比（0-100）。
+	ThrottlePct int `json:"throttle_pct"`
+	// ReleaseMin 限速持续时间（分钟），到期自动恢复原上限，期间可人工恢复。
+	ReleaseMin int `json:"release_min"`
+}
+
+// PatrolConnections 单容器活跃连接数巡查（in/out 两方向，抓发包/PT 类滥用）。
+type PatrolConnections struct {
+	Enabled     *bool `json:"enabled"`      // nil 视为 true
+	InLimit     int   `json:"in_limit"`     // 入方向活跃连接数阈值
+	OutLimit    int   `json:"out_limit"`    // 出方向活跃连接数阈值
+	DurationMin int   `json:"duration_min"` // 连续超限分钟数
+	// ThrottlePct 停止 VM 时同步配的限速（占分配上限百分比），ReleaseMin 分钟后自动解除。
+	ThrottlePct int `json:"throttle_pct"`
+	ReleaseMin  int `json:"release_min"`
+}
+
+// PatrolResources VM 级 CPU/内存/磁盘巡查。Action 取值 restart/stop/alert。
+type PatrolResources struct {
+	Enabled *bool `json:"enabled"` // nil 视为 true
+	CpuPct  int   `json:"cpu_pct"`
+	CpuMin  int   `json:"cpu_min"`
+	MemPct  int   `json:"mem_pct"`
+	MemMin  int   `json:"mem_min"`
+	DiskPct int   `json:"disk_pct"`
+	// Action 是 CPU/内存超限后的动作：restart（自动重启，默认）/ stop（关机）/ alert（仅告警）。
+	Action string `json:"action"`
+	// RestartCooldownMin 两次自动重启动作的最小间隔（分钟），防重启风暴。
+	RestartCooldownMin int `json:"restart_cooldown_min"`
+}
+
+// PatrolProcesses 容器内进程黑名单巡查：命中即杀。Blacklist 为全局一份。
+type PatrolProcesses struct {
+	Enabled   *bool    `json:"enabled"` // nil 视为 true
+	Blacklist []string `json:"blacklist"`
+}
+
+// TelegramConfig 是 Telegram 通知配置。Enabled 为 nil 时视为 false（默认不推送）。
+type TelegramConfig struct {
+	Enabled  *bool  `json:"enabled"`
+	BotToken string `json:"bot_token"`
+	ChatID   string `json:"chat_id"`
 }
 
 // Manager 持有配置文件路径和内存副本，提供并发安全的读写。
@@ -307,6 +378,65 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.IPv6BackupDir == "" {
 		cfg.IPv6BackupDir = "/var/lib/narwhal-agent/backups"
+	}
+	applyPatrolDefaults(&cfg.Patrol)
+}
+
+// applyPatrolDefaults 为巡查各数值字段填充默认值（所有阈值/时长可配置，缺省用默认）。
+func applyPatrolDefaults(p *PatrolConfig) {
+	if p.IntervalSec <= 0 {
+		p.IntervalSec = 60
+	}
+	if p.Bandwidth.ThresholdPct <= 0 {
+		p.Bandwidth.ThresholdPct = 90
+	}
+	if p.Bandwidth.DurationMin <= 0 {
+		p.Bandwidth.DurationMin = 6
+	}
+	if p.Bandwidth.ThrottlePct <= 0 {
+		p.Bandwidth.ThrottlePct = 10
+	}
+	if p.Bandwidth.ReleaseMin <= 0 {
+		p.Bandwidth.ReleaseMin = 60
+	}
+	if p.Connections.InLimit <= 0 {
+		p.Connections.InLimit = 200
+	}
+	if p.Connections.OutLimit <= 0 {
+		p.Connections.OutLimit = 300
+	}
+	if p.Connections.DurationMin <= 0 {
+		p.Connections.DurationMin = 4
+	}
+	if p.Connections.ThrottlePct <= 0 {
+		p.Connections.ThrottlePct = 10
+	}
+	if p.Connections.ReleaseMin <= 0 {
+		p.Connections.ReleaseMin = 60
+	}
+	if p.Resources.CpuPct <= 0 {
+		p.Resources.CpuPct = 90
+	}
+	if p.Resources.CpuMin <= 0 {
+		p.Resources.CpuMin = 5
+	}
+	if p.Resources.MemPct <= 0 {
+		p.Resources.MemPct = 90
+	}
+	if p.Resources.MemMin <= 0 {
+		p.Resources.MemMin = 5
+	}
+	if p.Resources.DiskPct <= 0 {
+		p.Resources.DiskPct = 90
+	}
+	if p.Resources.Action == "" {
+		p.Resources.Action = "restart"
+	}
+	if p.Resources.RestartCooldownMin <= 0 {
+		p.Resources.RestartCooldownMin = 60
+	}
+	if len(p.Processes.Blacklist) == 0 {
+		p.Processes.Blacklist = []string{"xmrig", "minerd", "transmission", "qBittorrent", "aria2c"}
 	}
 }
 
@@ -470,6 +600,16 @@ func (c Config) PidsLimit() int64 {
 		return DefaultContainerPidsLimit
 	}
 	return c.ContainerPidsLimit
+}
+
+// PatrolEnabled 返回巡查总开关，nil 视为 true。
+func (c Config) PatrolEnabled() bool {
+	return c.Patrol.Enabled == nil || *c.Patrol.Enabled
+}
+
+// TelegramEnabled 返回 Telegram 通知开关，nil 视为 false（默认不推送）。
+func (c Config) TelegramEnabled() bool {
+	return c.Telegram.Enabled != nil && *c.Telegram.Enabled
 }
 
 // DropCaps 返回创建容器时额外 drop 的 capability 列表（去空）。
