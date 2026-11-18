@@ -954,7 +954,9 @@ type configRequest struct {
 }
 
 type configResponse struct {
-	Token           string `json:"token"`
+	// 只回传"是否已配置"，不回传 Token 本身。凭据一旦进入响应就会落到浏览器
+	// 内存与开发者工具里，面板并不需要它的明文——留空即"不修改"。
+	HasToken        bool   `json:"has_token"`
 	MonitorNIC      string `json:"monitor_nic"`
 	MonitorDisk     string `json:"monitor_disk"`
 	WebUser         string `json:"web_user"`
@@ -1117,7 +1119,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	conf := s.cfg.Get()
 	_, iconMtime := s.brandIconFile()
 	jsonOK(w, configResponse{
-		Token:            conf.Token,
+		HasToken:         conf.Token != "",
 		MonitorNIC:       conf.MonitorNIC,
 		MonitorDisk:      conf.MonitorDisk,
 		WebUser:          conf.WebUser,

@@ -1153,10 +1153,13 @@ function syncDirty() {
 
 function loadConfigIntoForm(c) {
   $('siteName').value = c.site_name || 'Run';
-  $('token').value = c.token || '';
+  // 服务端只回传是否已配置（has_token），不回传凭据本身：输入框恒为空，
+  // 留空提交即"不修改"，只有真正输入新值才会覆盖。
+  $('token').value = '';
+  $('token').placeholder = c.has_token ? '已配置，留空不修改' : '未配置';
   // 「清除」清的是服务端已保存的凭据，与平台开关无关：独立模式下也要能清掉
   // 遗留 Token，否则只能先打开开关才能清。
-  state.hasToken = !!c.token;
+  state.hasToken = !!c.has_token;
   $('monitorNIC').value = c.monitor_nic || '';
   $('monitorDisk').value = c.monitor_disk || '';
   $('maxPortForward').value = c.max_port_forward || 20;
@@ -1228,10 +1231,11 @@ async function clearPlatformToken(btn) {
   await withBusy(btn, async () => {
     await api('DELETE', '/api/platform/token');
     $('token').value = '';
+    $('token').placeholder = '未配置';
     $('platformEnabled').checked = false;
     state.hasToken = false;
     applyPlatformEnabledUI();
-    if (state.config) state.config.token = '';
+    if (state.config) state.config.has_token = false;
     state.snapshot = confSnapshot();
     syncDirty();
     toast('已清除 Token，切换为独立模式');
@@ -1270,9 +1274,16 @@ async function saveConfig(btn) {
     };
     try {
       await api('POST', '/api/config', body);
+      // 后端把空 Token 视为"未修改"。真提交了新值就落盘并立即从页面抹掉明文，
+      // 只留一句占位提示——回填会让凭据重新暴露在 DOM 里，等于没改。
+      if (body.token) {
+        state.hasToken = true;
+        $('token').value = '';
+        $('token').placeholder = '已配置，留空不修改';
+      }
+      delete body.token;
+      body.has_token = state.hasToken;
       state.config = { ...(state.config || {}), ...body };
-      // 后端把空 Token 视为"未修改"，因此只有非空提交才算新增了凭据。
-      if (body.token) state.hasToken = true;
       $('webPass').value = '';
       state.snapshot = confSnapshot();
       syncDirty();
