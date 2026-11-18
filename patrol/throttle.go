@@ -2,6 +2,7 @@ package patrol
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
@@ -10,19 +11,26 @@ import (
 	"runman-agent/db"
 )
 
+// errThrottleNoEffect 表示限速值不低于容器自身的带宽上限，施加后不会更严格。
+var errThrottleNoEffect = errors.New("throttle rate not below allocated cap")
+
 // applyThrottle 对 VM 施加限速：落库 + 内存 + 立即打 tc。
 // 返回 tc 是否立即生效。VM 已停止 / veth 尚未就绪时 tc 打不上去，
 // 此时状态照样落库，由 reconcile 每轮幂等重放，VM 重新拉起后自动补上；
 // 调用方据此在事件文案里区分「已生效」与「待 VM 运行后生效」，避免假限速。
-func (s *Service) applyThrottle(vmID string, pct int, releaseAt time.Time, reason string) bool {
+func (s *Service) applyThrottle(vmID string, mbps int, releaseAt time.Time, reason string) bool {
 	s.mu.Lock()
-	s.throttles[vmID] = db.PatrolThrottle{VMID: vmID, RatePct: pct, ReleaseAt: releaseAt, Reason: reason}
+	s.throttles[vmID] = db.PatrolThrottle{VMID: vmID, RateMbps: mbps, ReleaseAt: releaseAt, Reason: reason}
 	s.mu.Unlock()
-	if err := s.db.SavePatrolThrottle(vmID, pct, releaseAt, reason); err != nil {
+	if err := s.db.SavePatrolThrottle(vmID, mbps, releaseAt, reason); err != nil {
 		log.Printf("[Patrol] save throttle %s: %v", vmID, err)
 	}
-	if err := s.tcApply(vmID, pct); err != nil {
-		log.Printf("[Patrol] tc throttle %s failed (will retry): %v", vmID, err)
+	if err := s.tcApply(vmID, mbps); err != nil {
+		if errors.Is(err, errThrottleNoEffect) {
+			log.Printf("[Patrol] throttle %s skipped: %v", vmID, err)
+		} else {
+			log.Printf("[Patrol] tc throttle %s failed (will retry): %v", vmID, err)
+		}
 		return false
 	}
 	return true
@@ -65,25 +73,26 @@ func (s *Service) reconcileThrottles() {
 		s.releaseThrottle(id)
 	}
 	for _, t := range active {
-		if err := s.tcApply(t.VMID, t.RatePct); err != nil {
+		if err := s.tcApply(t.VMID, t.RateMbps); err != nil {
 			log.Printf("[Patrol] tc replay %s failed: %v", t.VMID, err)
 		}
 	}
 }
 
-// tcApply 用 tc 把指定 VM 的 veth 限到 cap*pct/100。
-func (s *Service) tcApply(vmID string, pct int) error {
+// tcApply 用 tc 把指定 VM 的 veth 限到绝对速率 mbps（Mbps）。
+// 与分配上限无关：未设带宽上限的容器同样可以限速。
+// 但若容器自身上限更低，限速不会更严格，此时返回 errThrottleNoEffect 跳过。
+func (s *Service) tcApply(vmID string, mbps int) error {
+	if mbps <= 0 {
+		return fmt.Errorf("invalid throttle rate for %s (mbps=%d)", vmID, mbps)
+	}
+	rate := int64(mbps) * 1000000
+	if capBit, err := s.vmCapBps(vmID); err == nil && capBit > 0 && rate >= capBit {
+		return fmt.Errorf("%w (%dMbps >= allocated %dMbps)", errThrottleNoEffect, mbps, capBit/1000000)
+	}
 	veth, err := s.prober.GetVMVeth(context.Background(), vmID)
 	if err != nil {
 		return err
-	}
-	capBit, err := s.vmCapBps(vmID)
-	if err != nil {
-		return err
-	}
-	rate := capBit * int64(pct) / 100
-	if rate <= 0 {
-		return fmt.Errorf("invalid throttle rate for %s (pct=%d)", vmID, pct)
 	}
 	return runTC(veth, rate)
 }

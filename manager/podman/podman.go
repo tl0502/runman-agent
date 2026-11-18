@@ -762,11 +762,16 @@ func (m *Manager) ListVMs(ctx context.Context) ([]*agent.VMSummary, error) {
 				Ips:    ips,
 			}
 			if inspect.State.Running {
-				cpuPct, memUsed, netIn, netOut, _ := m.getUsage(ctx, inspect.Name)
+				cpuPct, memUsed, _, _, _ := m.getUsage(ctx, inspect.Name)
 				s.CpuPct = cpuPct
 				s.RamUsedMb = memUsed / 1024 / 1024
-				s.TrafficInBytes = netIn
-				s.TrafficOutBytes = netOut
+				// 网络累计字节直接读 /proc/<pid>/net/dev，不用 getUsage 的返回值：
+				// getUsage 走 podman Stats 流式接口，并发采样多个容器时全部拿不到
+				// Network 数据（实测 7 台并行全为 0），而巡查的带宽判定依赖这两个字段。
+				if netIn, netOut, pErr := m.getProcNetDev(inspect.Name); pErr == nil {
+					s.TrafficInBytes = netIn
+					s.TrafficOutBytes = netOut
+				}
 			}
 			summaries[i] = s
 		}(i, c.ID)
@@ -935,15 +940,18 @@ func (m *Manager) GetVMVeth(_ context.Context, vmID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("nsenter list container links: %w", err)
 	}
-	// ip -o link show 每行形如 "8: eth0@if44: <BROADCAST,...>" / "1: lo: <LOOPBACK,...>"。
-	// 优先取 eth0 的 ifindex（本项目容器的主接口），没有 eth0 时兜底取第一个非 lo 接口。
-	var primary, fallback string
+	// ip -o link show 每行形如 "2: eth0@if26: <BROADCAST,...>" / "1: lo: <LOOPBACK,...>"。
+	// "@ifNN" 里的 NN 是**对端**接口在本 netns 的 ifindex —— 对容器 eth0 来说就是
+	// 宿主侧 veth 的 ifindex，在宿主 netns 内全局唯一。
+	// 不能用容器自己的 ifindex 反查宿主 iflink：每个 netns 的编号都从 1 开始，
+	// 所有容器的 eth0 都是 2，宿主上所有 veth 的 iflink 也都是 2，会跨容器误匹配
+	// （限速打到别人的网卡上）。实测 veth3/4/5/6 的 iflink 全是 2，对应 peer 26/28/30/32。
+	var primaryPeer, fallbackPeer string
 	for _, line := range strings.Split(string(out), "\n") {
 		colon := strings.Index(line, ": ")
 		if colon <= 0 {
 			continue
 		}
-		idx := strings.TrimSpace(line[:colon])
 		rest := line[colon+2:]
 		end := strings.IndexAny(rest, "@:")
 		if end < 0 {
@@ -953,32 +961,37 @@ func (m *Manager) GetVMVeth(_ context.Context, vmID string) (string, error) {
 		if name == "lo" {
 			continue
 		}
+		peer := ""
+		if at := strings.Index(rest, "@if"); at >= 0 {
+			tail := rest[at+3:]
+			if e := strings.IndexAny(tail, "@:"); e >= 0 {
+				tail = tail[:e]
+			}
+			peer = strings.TrimSpace(tail)
+		}
 		if name == "eth0" {
-			primary = idx
+			primaryPeer = peer
 			break
 		}
-		if fallback == "" {
-			fallback = idx
+		if fallbackPeer == "" {
+			fallbackPeer = peer
 		}
 	}
-	peerIdx := primary
+	peerIdx := primaryPeer
 	if peerIdx == "" {
-		peerIdx = fallback
+		peerIdx = fallbackPeer
 	}
 	if peerIdx == "" {
-		return "", fmt.Errorf("no container interface found for %s", vmID)
+		return "", fmt.Errorf("no veth peer ifindex found for %s", vmID)
 	}
 
-	// 宿主机侧反查：iflink == peerIdx 的网卡即宿主侧 veth。
+	// 宿主侧按 ifindex 精确匹配（该值在宿主 netns 内唯一，不会误中其他容器的网卡）。
 	entries, err := os.ReadDir("/sys/class/net")
 	if err != nil {
 		return "", err
 	}
 	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), "veth") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join("/sys/class/net", e.Name(), "iflink"))
+		b, err := os.ReadFile(filepath.Join("/sys/class/net", e.Name(), "ifindex"))
 		if err != nil {
 			continue
 		}
@@ -989,8 +1002,12 @@ func (m *Manager) GetVMVeth(_ context.Context, vmID string) (string, error) {
 	return "", fmt.Errorf("host veth not found for %s (peer ifindex %s)", vmID, peerIdx)
 }
 
-// GetVMNetStats 获取 VM 的网络流量统计（用于流量统计服务）
+// GetVMNetStats 获取 VM 的网络流量统计（用于流量统计服务）。
+// 优先读 /proc/<pid>/net/dev：与 ListVMs 保持一致，不依赖可能失败的 stats 流。
 func (m *Manager) GetVMNetStats(ctx context.Context, vmID string) (*manager.VMNetStats, error) {
+	if in, out, err := m.getProcNetDev(vmID); err == nil {
+		return &manager.VMNetStats{VMID: vmID, InBytes: in, OutBytes: out}, nil
+	}
 	_, _, netIn, netOut, err := m.getUsage(ctx, vmID)
 	if err != nil {
 		return nil, err

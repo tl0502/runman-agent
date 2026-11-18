@@ -148,7 +148,7 @@ type PatrolEvent struct {
 // 由巡查每轮重放，VM 重新拉起后自动补上。
 type PatrolThrottle struct {
 	VMID      string    `gorm:"primaryKey"`
-	RatePct   int       // 当前限速占分配上限的百分比
+	RateMbps  int       // 当前限速的绝对速率（Mbps）
 	ReleaseAt time.Time // 到期时间
 	Reason    string    // 触发原因（bandwidth / connections）
 }
@@ -335,8 +335,8 @@ func (d *DB) QueryPatrolEvents(q PatrolEventQuery, offset, limit int) ([]PatrolE
 }
 
 // SavePatrolThrottle 写入/刷新一条限速状态。
-func (d *DB) SavePatrolThrottle(vmID string, ratePct int, releaseAt time.Time, reason string) error {
-	return d.orm.Save(&PatrolThrottle{VMID: vmID, RatePct: ratePct, ReleaseAt: releaseAt, Reason: reason}).Error
+func (d *DB) SavePatrolThrottle(vmID string, rateMbps int, releaseAt time.Time, reason string) error {
+	return d.orm.Save(&PatrolThrottle{VMID: vmID, RateMbps: rateMbps, ReleaseAt: releaseAt, Reason: reason}).Error
 }
 
 // DeletePatrolThrottle 解除限速状态。

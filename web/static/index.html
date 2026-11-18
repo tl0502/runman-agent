@@ -685,7 +685,7 @@
               <div class="form-grid cols-2">
                 <div class="field"><label for="pbThreshold">占用阈值 <span class="hint">% 上限</span></label><input class="input tnum" type="number" id="pbThreshold" min="1" max="100"></div>
                 <div class="field"><label for="pbDuration">持续时间 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="pbDuration" min="1"></div>
-                <div class="field"><label for="pbThrottle">限速到 <span class="hint">% 上限</span></label><input class="input tnum" type="number" id="pbThrottle" min="1" max="100"></div>
+                <div class="field"><label for="pbThrottle">限速到 <span class="hint">Mbps</span></label><input class="input tnum" type="number" id="pbThrottle" min="1" max="100000"></div>
                 <div class="field"><label for="pbRelease">自动恢复 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="pbRelease" min="1"></div>
               </div>
               <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>带宽占用达到分配上限的 <b>阈值 %</b> 并持续 <b>N 分钟</b>，则限速到上限的 <b>限速 %</b>，<b>M 分钟</b>后自动恢复。</span></div>
@@ -700,7 +700,7 @@
                 <div class="field"><label for="pcIn">入方向阈值 <span class="hint">连接数</span></label><input class="input tnum" type="number" id="pcIn" min="1"></div>
                 <div class="field"><label for="pcOut">出方向阈值 <span class="hint">连接数</span></label><input class="input tnum" type="number" id="pcOut" min="1"></div>
                 <div class="field"><label for="pcDuration">持续时间 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="pcDuration" min="1"></div>
-                <div class="field"><label for="pcThrottle">同步限速 <span class="hint">% 上限</span></label><input class="input tnum" type="number" id="pcThrottle" min="1" max="100"></div>
+                <div class="field"><label for="pcThrottle">同步限速 <span class="hint">Mbps</span></label><input class="input tnum" type="number" id="pcThrottle" min="1" max="100000"></div>
                 <div class="field span-2"><label for="pcRelease">限速解除 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="pcRelease" min="1"></div>
               </div>
               <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>入/出方向活跃连接数超阈值并持续 <b>N 分钟</b>，则<b>停止 VM</b> 并同步限速，<b>M 分钟</b>后解除限速（VM 保持停止，需人工重启）。</span></div>
@@ -946,8 +946,11 @@
             <label class="check"><input type="checkbox" id="containerIsolate"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 容器间隔离 <span class="hint">开启后容器之间不可互通</span></label>
             <div class="note danger" id="hostfwStatus" hidden>容器网络隔离规则未生效</div>
             <div class="field">
-              <label for="hostAllowPorts">宿主机端口白名单 <span class="hint">留空 = 容器不能访问宿主机端口</span></label>
-              <input class="input mono" id="hostAllowPorts" placeholder="例如 53, 8792">
+              <label for="portInput">宿主机端口白名单 <span class="hint">回车添加，留空 = 不能访问宿主机端口</span></label>
+              <div class="tags-editor">
+                <div class="tag-list" id="portTagList"></div>
+                <textarea class="tag-input" id="portInput" rows="1" placeholder="输入端口号后回车；可粘贴逗号/空格分隔的多个端口批量导入" autocomplete="off" spellcheck="false"></textarea>
+              </div>
             </div>
             <div class="field">
               <label for="containerAllowSubnets">内网子网白名单 <span class="hint">留空 = 容器只能出公网</span></label>

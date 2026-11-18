@@ -115,6 +115,7 @@ const state = {
   drawerTab: 'monitor',
   pgTimers: [],
   pfCache: [],
+  allowPorts: [],
   wgCache: [],
   wgEditId: null,
   imagesAll: [],
@@ -248,9 +249,10 @@ function renderHostKv() {
     ['端口转发上限', `${c.max_port_forward || 20} 条 / VM`],
   ];
   $('hostKv').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
-  // 入口地址展示与心跳上报同优先级：host > public_ipv4 > 自动探测。
-  // 都为空时回落到面板自身访问地址，避免复制按钮拿到「自动探测」这种无效文本。
-  const entryAddr = c.host || c.public_ipv4 || location.host;
+  // 入口地址展示与心跳上报同优先级：host > public_ipv4 > 后端自动探测。
+  // 没有 detected_ipv4 时只能回落到浏览器地址栏，走 SSH 隧道会显示 127.0.0.1。
+  // location.host 仅作最后兜底（复制按钮不能拿到「自动探测」这种无效文本）。
+  const entryAddr = c.host || c.public_ipv4 || c.detected_ipv4 || location.host;
   $('ovHostAddr').textContent = entryAddr;
   $('ovHost').textContent = entryAddr;
   $('ovOs').textContent = d.os || '—';
@@ -1371,13 +1373,13 @@ function loadPatrolConfig(c) {
   $('pbEnabled').checked = b.enabled == null ? true : !!b.enabled;
   $('pbThreshold').value = b.threshold_pct ?? 90;
   $('pbDuration').value = b.duration_min ?? 6;
-  $('pbThrottle').value = b.throttle_pct ?? 10;
+  $('pbThrottle').value = b.throttle_mbps ?? 10;
   $('pbRelease').value = b.release_min ?? 60;
   $('pcEnabled').checked = n.enabled == null ? true : !!n.enabled;
   $('pcIn').value = n.in_limit ?? 200;
   $('pcOut').value = n.out_limit ?? 300;
   $('pcDuration').value = n.duration_min ?? 4;
-  $('pcThrottle').value = n.throttle_pct ?? 10;
+  $('pcThrottle').value = n.throttle_mbps ?? 10;
   $('pcRelease').value = n.release_min ?? 60;
   $('prEnabled').checked = r.enabled == null ? true : !!r.enabled;
   $('prCpu').value = r.cpu_pct ?? 90;
@@ -1407,12 +1409,12 @@ function collectPatrolConfig() {
       bandwidth: {
         enabled: $('pbEnabled').checked,
         threshold_pct: num('pbThreshold'), duration_min: num('pbDuration'),
-        throttle_pct: num('pbThrottle'), release_min: num('pbRelease'),
+        throttle_mbps: num('pbThrottle'), release_min: num('pbRelease'),
       },
       connections: {
         enabled: $('pcEnabled').checked,
         in_limit: num('pcIn'), out_limit: num('pcOut'), duration_min: num('pcDuration'),
-        throttle_pct: num('pcThrottle'), release_min: num('pcRelease'),
+        throttle_mbps: num('pcThrottle'), release_min: num('pcRelease'),
       },
       resources: {
         enabled: $('prEnabled').checked,
@@ -1505,7 +1507,7 @@ $('patrolRefresh').addEventListener('click', (e) => withBusy(e.currentTarget, as
 /* ══════════════════════════════ 设置 ═══════════════════════════════════════ */
 const CONF_FIELDS = ['siteName', 'token', 'platformAddr', 'monitorNIC', 'monitorDisk', 'maxPortForward',
   'maxForwardIPs', 'trafficResetDay', 'entryHost', 'updateRepo', 'updateBase', 'updateApi', 'netavarkBase',
-  'publicIpv4', 'webUser', 'webPass', 'hostAllowPorts', 'containerAllowSubnets'];
+  'publicIpv4', 'webUser', 'webPass', 'containerAllowSubnets'];
 
 // 独立模式下「平台凭据」相关控件保留可见但不可编辑——用户能直接看到重新接入
 // 需要填什么，不用先开开关才知道。开关本身就是这一组字段的生效前提。
@@ -1521,6 +1523,7 @@ function applyPlatformEnabledUI() {
 function confSnapshot() {
   const o = {};
   CONF_FIELDS.forEach((id) => { o[id] = $(id).value; });
+  o.hostAllowPorts = state.allowPorts.join(',');
   o.platformEnabled = $('platformEnabled').checked;
   o.platformInsecure = $('platformInsecure').checked;
   o.containerIsolate = $('containerIsolate').checked;
@@ -1576,7 +1579,8 @@ function loadConfigIntoForm(c) {
   $('platformInsecure').checked = !!c.platform_insecure;
   $('platformInsecureWarn').hidden = !c.platform_insecure;
   $('containerIsolate').checked = c.container_isolate !== false;
-  $('hostAllowPorts').value = (c.host_allow_ports || []).join(', ');
+  state.allowPorts = (c.host_allow_ports || []).map(String);
+  renderPortTags();
   $('containerAllowSubnets').value = (c.container_allow_subnets || []).join(', ');
   state.snapshot = confSnapshot();
   syncDirty();
@@ -1614,9 +1618,47 @@ async function loadNetworkAddresses(selected) {
   syncDirty();
 }
 
+// 宿主机端口白名单 tag 编辑器：与进程黑名单一致的可增删 chip 列表。
+// 支持粘贴逗号/空格/换行/中文标点分隔的多个端口批量导入；
+// 非 1-65535 的非法项直接忽略（旧版靠后端 ParsePortList 静默丢弃，
+// 中文逗号会让整串解析失败，所以入口就拆分干净）。
+function renderPortTags() {
+  const box = $('portTagList');
+  if (!box) return;
+  box.innerHTML = state.allowPorts.map((p, i) => `
+    <span class="tag">${esc(p)}<span class="tag-x" data-port="${i}" title="移除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><use href="#i-x"/></svg></span></span>
+  `).join('');
+  qsa('[data-port]', box).forEach((x) => x.addEventListener('click', () => {
+    state.allowPorts.splice(Number(x.dataset.port), 1);
+    renderPortTags();
+    syncDirty();
+  }));
+}
+
+function addPortTags() {
+  const input = $('portInput');
+  const raw = (input.value || '').trim();
+  if (!raw) return;
+  const items = raw.split(/[\s,，、;；]+/).map((s) => s.trim()).filter(Boolean);
+  for (const v of items) {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1 || n > 65535) continue;
+    const s = String(n);
+    if (!state.allowPorts.includes(s)) state.allowPorts.push(s);
+  }
+  state.allowPorts.sort((a, b) => Number(a) - Number(b));
+  input.value = '';
+  renderPortTags();
+  syncDirty();
+}
+
 CONF_FIELDS.forEach((id) => $(id)?.addEventListener('input', syncDirty));
 $('platformInsecure').addEventListener('change', () => { $('platformInsecureWarn').hidden = !$('platformInsecure').checked; syncDirty(); });
 $('containerIsolate').addEventListener('change', syncDirty);
+$('portInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addPortTags(); }
+});
+$('portInput').addEventListener('blur', addPortTags);
 $('platformEnabled').addEventListener('change', () => { applyPlatformEnabledUI(); syncDirty(); });
 // 清除 Token 是立即生效的后端操作（不是待在表单里保存的字段），
 // 因此完成后要把快照基线一起刷新，否则会留下一个假的「未保存」提示。
@@ -1665,7 +1707,7 @@ async function saveConfig(btn) {
       public_ipv4: $('publicIpv4').value,
       platform_insecure: $('platformInsecure').checked,
       container_isolate: $('containerIsolate').checked,
-      host_allow_ports: $('hostAllowPorts').value.trim(),
+      host_allow_ports: state.allowPorts.join(','),
       container_allow_subnets: $('containerAllowSubnets').value.trim(),
     };
     try {

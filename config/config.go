@@ -220,8 +220,9 @@ type PatrolBandwidth struct {
 	ThresholdPct int `json:"threshold_pct"`
 	// DurationMin 连续超过阈值的分钟数，达到后触发限速。
 	DurationMin int `json:"duration_min"`
-	// ThrottlePct 限速动作把带宽压到分配上限的该百分比（0-100）。
-	ThrottlePct int `json:"throttle_pct"`
+	// ThrottleMbps 限速动作把带宽压到的绝对速率（Mbps），默认 10。
+	// 按绝对值而不是分配上限的百分比：VM 未设带宽上限时同样可以限速。
+	ThrottleMbps int `json:"throttle_mbps"`
 	// ReleaseMin 限速持续时间（分钟），到期自动恢复原上限，期间可人工恢复。
 	ReleaseMin int `json:"release_min"`
 }
@@ -232,9 +233,9 @@ type PatrolConnections struct {
 	InLimit     int   `json:"in_limit"`     // 入方向活跃连接数阈值
 	OutLimit    int   `json:"out_limit"`    // 出方向活跃连接数阈值
 	DurationMin int   `json:"duration_min"` // 连续超限分钟数
-	// ThrottlePct 停止 VM 时同步配的限速（占分配上限百分比），ReleaseMin 分钟后自动解除。
-	ThrottlePct int `json:"throttle_pct"`
-	ReleaseMin  int `json:"release_min"`
+	// ThrottleMbps 停止 VM 时同步施加的限速（Mbps），ReleaseMin 分钟后自动解除。
+	ThrottleMbps int `json:"throttle_mbps"`
+	ReleaseMin   int `json:"release_min"`
 }
 
 // PatrolResources VM 级 CPU/内存/磁盘巡查。Action 取值 restart/stop/alert。
@@ -396,8 +397,8 @@ func applyPatrolDefaults(p *PatrolConfig) {
 	if p.Bandwidth.DurationMin <= 0 {
 		p.Bandwidth.DurationMin = 6
 	}
-	if p.Bandwidth.ThrottlePct <= 0 {
-		p.Bandwidth.ThrottlePct = 10
+	if p.Bandwidth.ThrottleMbps <= 0 {
+		p.Bandwidth.ThrottleMbps = 10
 	}
 	if p.Bandwidth.ReleaseMin <= 0 {
 		p.Bandwidth.ReleaseMin = 60
@@ -411,8 +412,8 @@ func applyPatrolDefaults(p *PatrolConfig) {
 	if p.Connections.DurationMin <= 0 {
 		p.Connections.DurationMin = 4
 	}
-	if p.Connections.ThrottlePct <= 0 {
-		p.Connections.ThrottlePct = 10
+	if p.Connections.ThrottleMbps <= 0 {
+		p.Connections.ThrottleMbps = 10
 	}
 	if p.Connections.ReleaseMin <= 0 {
 		p.Connections.ReleaseMin = 60
@@ -654,21 +655,29 @@ func (c Config) AllowedSubnets() []string {
 	return out
 }
 
-// ParsePortList 把逗号分隔的端口字符串解析成 []int，非法值（非数字、越界）忽略。
+// ParsePortList 把端口列表字符串解析成 []int（去重、升序），非法值（非数字、越界）忽略。
+// 分隔符兼容中文逗号/顿号/分号与空白：用户常从聊天、文档里粘「779，22818」，
+// 旧实现只按 ASCII 逗号切分，中文逗号会让整串 Atoi 失败 → 静默变成空列表，
+// 导致白名单全丢且无任何提示。
 func ParsePortList(s string) []int {
-	parts := strings.Split(s, ",")
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		switch r {
+		case ',', '，', '、', ';', '；', '\t', '\n', '\r', ' ':
+			return true
+		}
+		return false
+	})
+	seen := make(map[int]bool, len(parts))
 	out := make([]int, 0, len(parts))
 	for _, p := range parts {
-		v := strings.TrimSpace(p)
-		if v == "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 || seen[n] {
 			continue
 		}
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > 65535 {
-			continue
-		}
+		seen[n] = true
 		out = append(out, n)
 	}
+	sort.Ints(out)
 	return out
 }
 

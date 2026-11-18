@@ -471,7 +471,7 @@ func (s *Server) handlePatrolEvents(w http.ResponseWriter, r *http.Request) {
 
 type patrolThrottleView struct {
 	VMID      string `json:"vm_id"`
-	RatePct   int    `json:"rate_pct"`
+	RateMbps  int    `json:"rate_mbps"`
 	ReleaseAt int64  `json:"release_at"` // unix 秒
 	Reason    string `json:"reason"`
 }
@@ -484,7 +484,7 @@ func (s *Server) handlePatrolThrottles(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	for _, t := range s.patrol.ActiveThrottles() {
-		out = append(out, patrolThrottleView{VMID: t.VMID, RatePct: t.RatePct, ReleaseAt: t.ReleaseAt.Unix(), Reason: t.Reason})
+		out = append(out, patrolThrottleView{VMID: t.VMID, RateMbps: t.RateMbps, ReleaseAt: t.ReleaseAt.Unix(), Reason: t.Reason})
 	}
 	jsonOK(w, out)
 }
@@ -494,7 +494,7 @@ type patrolAnomalyView struct {
 	VMID      string `json:"vm_id"`
 	Type      string `json:"type"`   // throttle | stopped
 	Reason    string `json:"reason"` // bandwidth | connections | resources
-	RatePct   int    `json:"rate_pct,omitempty"`
+	RateMbps  int    `json:"rate_mbps,omitempty"`
 	ReleaseAt int64  `json:"release_at,omitempty"`
 	StoppedAt int64  `json:"stopped_at,omitempty"`
 }
@@ -507,7 +507,7 @@ func (s *Server) handlePatrolAnomalies(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	for _, t := range s.patrol.ActiveThrottles() {
-		out = append(out, patrolAnomalyView{VMID: t.VMID, Type: "throttle", Reason: t.Reason, RatePct: t.RatePct, ReleaseAt: t.ReleaseAt.Unix()})
+		out = append(out, patrolAnomalyView{VMID: t.VMID, Type: "throttle", Reason: t.Reason, RateMbps: t.RateMbps, ReleaseAt: t.ReleaseAt.Unix()})
 	}
 	for _, st := range s.patrol.ActiveStops() {
 		out = append(out, patrolAnomalyView{VMID: st.VMID, Type: "stopped", Reason: st.Reason, StoppedAt: st.StoppedAt.Unix()})
@@ -574,12 +574,12 @@ func normalizePatrol(p *config.PatrolConfig) {
 	}
 	p.Bandwidth.ThresholdPct = clamp(p.Bandwidth.ThresholdPct, 1, 100)
 	p.Bandwidth.DurationMin = clamp(p.Bandwidth.DurationMin, 1, 10080)
-	p.Bandwidth.ThrottlePct = clamp(p.Bandwidth.ThrottlePct, 1, 100)
+	p.Bandwidth.ThrottleMbps = clamp(p.Bandwidth.ThrottleMbps, 1, 100000)
 	p.Bandwidth.ReleaseMin = clamp(p.Bandwidth.ReleaseMin, 1, 10080)
 	p.Connections.InLimit = clamp(p.Connections.InLimit, 1, 1000000)
 	p.Connections.OutLimit = clamp(p.Connections.OutLimit, 1, 1000000)
 	p.Connections.DurationMin = clamp(p.Connections.DurationMin, 1, 10080)
-	p.Connections.ThrottlePct = clamp(p.Connections.ThrottlePct, 1, 100)
+	p.Connections.ThrottleMbps = clamp(p.Connections.ThrottleMbps, 1, 100000)
 	p.Connections.ReleaseMin = clamp(p.Connections.ReleaseMin, 1, 10080)
 	p.Resources.CpuPct = clamp(p.Resources.CpuPct, 1, 100)
 	p.Resources.CpuMin = clamp(p.Resources.CpuMin, 1, 10080)
@@ -1174,6 +1174,10 @@ type configResponse struct {
 	PlatformInsecure bool   `json:"platform_insecure"`
 	NetavarkBase     string `json:"netavark_base"`
 	PublicIPv4       string `json:"public_ipv4"`
+	// DetectedIPv4 是后端自动探测到的公网 IPv4（只读，不可配置）。
+	// 前端「入口地址」在 host / public_ipv4 都为空时用它，避免回落到浏览器
+	// 地址栏（SSH 隧道访问时会显示成 127.0.0.1）。
+	DetectedIPv4 string `json:"detected_ipv4"`
 
 	AllowInsecureDownload bool `json:"allow_insecure_download"`
 	AllowInternalDownload bool `json:"allow_internal_download"`
@@ -1336,6 +1340,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		PlatformInsecure: conf.PlatformInsecure,
 		NetavarkBase:     conf.NetavarkBase,
 		PublicIPv4:       conf.PublicIPv4,
+		DetectedIPv4:     s.detectedIPv4(),
 
 		AllowInsecureDownload: conf.AllowInsecureDownload,
 		AllowInternalDownload: conf.AllowInternalDownload,
@@ -1344,6 +1349,17 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		HostAllowPorts:        conf.AllowedHostPorts(),
 		ContainerAllowSubnets: conf.AllowedSubnets(),
 	})
+}
+
+// detectedIPv4 取后端自动探测的公网 IPv4；agent 未提供时返回空。
+func (s *Server) detectedIPv4() string {
+	if s.agent == nil {
+		return ""
+	}
+	if p, ok := s.agent.(interface{ DetectedIPv4() string }); ok {
+		return p.DetectedIPv4()
+	}
+	return ""
 }
 
 func (s *Server) handleConnection(w http.ResponseWriter, _ *http.Request) {

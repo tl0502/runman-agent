@@ -222,6 +222,13 @@ func main() {
 	// 云主机/incus 驱动不实现 VMProber，跳过。
 	var patrolSvc *patrol.Service
 	if conf.VirtType == "podman" {
+		// userns=auto 依赖 subuid/subgid 池。我们的 install.sh 会配，官方脚本不会——
+		// 「官方安装 + 覆盖本 fork 二进制」时缺池会导致创建容器失败，启动时幂等补齐。
+		if conf.UsernsEnabled() {
+			if err := podman.EnsureUsernsPool(); err != nil {
+				log.Printf("[Main] ensure userns subuid pool failed (容器创建可能失败): %v", err)
+			}
+		}
 		if pm, ok := rawMgr.(*podman.Manager); ok {
 			patrolSvc = patrol.NewService(svc, pm, database, cfg)
 			patrolSvc.Start(context.Background())
@@ -1148,6 +1155,14 @@ func (a *Agent) detectIPv4() {
 	if changed {
 		log.Printf("Public IPv4: %s", ip)
 	}
+}
+
+// DetectedIPv4 返回自动探测到的公网 IPv4（未探测到则为空）。
+// 面板「入口地址」展示复用它，与上报平台的 entry_host 取值口径一致。
+func (a *Agent) DetectedIPv4() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.entryIPv4
 }
 
 // fetchPublicIPv4 通过 api-ipv4.ip.sb 获取本机公网 IPv4 地址。
