@@ -245,6 +245,9 @@ type PatrolResources struct {
 	MemPct  int   `json:"mem_pct"`
 	MemMin  int   `json:"mem_min"`
 	DiskPct int   `json:"disk_pct"`
+	// DiskAlertIntervalMin 是同一 VM 磁盘告警的最小间隔（分钟），默认 360（6 小时）。
+	// 磁盘超阈值只记面板日志、不发 Telegram。
+	DiskAlertIntervalMin int `json:"disk_alert_interval_min"`
 	// Action 是 CPU/内存超限后的动作：restart（自动重启，默认）/ stop（关机）/ alert（仅告警）。
 	Action string `json:"action"`
 	// RestartCooldownMin 两次自动重启动作的最小间隔（分钟），防重启风暴。
@@ -428,6 +431,9 @@ func applyPatrolDefaults(p *PatrolConfig) {
 	}
 	if p.Resources.DiskPct <= 0 {
 		p.Resources.DiskPct = 90
+	}
+	if p.Resources.DiskAlertIntervalMin <= 0 {
+		p.Resources.DiskAlertIntervalMin = 360
 	}
 	if p.Resources.Action == "" {
 		p.Resources.Action = "restart"

@@ -1385,6 +1385,7 @@ function loadPatrolConfig(c) {
   $('prMem').value = r.mem_pct ?? 90;
   $('prMemMin').value = r.mem_min ?? 5;
   $('prDisk').value = r.disk_pct ?? 90;
+  $('prDiskInterval').value = r.disk_alert_interval_min ?? 360;
   $('prAction').value = r.action || 'restart';
   $('prCooldown').value = r.restart_cooldown_min ?? 60;
   $('ppEnabled').checked = pr.enabled == null ? true : !!pr.enabled;
@@ -1417,7 +1418,7 @@ function collectPatrolConfig() {
         enabled: $('prEnabled').checked,
         cpu_pct: num('prCpu'), cpu_min: num('prCpuMin'),
         mem_pct: num('prMem'), mem_min: num('prMemMin'),
-        disk_pct: num('prDisk'), action: $('prAction').value,
+        disk_pct: num('prDisk'), disk_alert_interval_min: num('prDiskInterval'), action: $('prAction').value,
         restart_cooldown_min: num('prCooldown'),
       },
       processes: {

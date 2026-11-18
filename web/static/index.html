@@ -728,8 +728,9 @@
               <div class="cfg-group-head"><span>磁盘</span></div>
               <div class="form-grid cols-2">
                 <div class="field"><label for="prDisk">磁盘阈值 <span class="hint">%</span></label><input class="input tnum" type="number" id="prDisk" min="1" max="100"></div>
+                <div class="field"><label for="prDiskInterval">告警间隔 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prDiskInterval" min="10" max="10080"></div>
               </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>磁盘超阈值<b>仅告警</b>、不自动处置，只在事件日志记录。</span></div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>磁盘超阈值<b>仅记面板日志</b>、不发 Telegram，也不自动处置。同一 VM 两次告警的间隔不小于「告警间隔」。</span></div>
             </div>
           </section>
 

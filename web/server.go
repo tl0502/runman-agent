@@ -586,6 +586,7 @@ func normalizePatrol(p *config.PatrolConfig) {
 	p.Resources.MemPct = clamp(p.Resources.MemPct, 1, 100)
 	p.Resources.MemMin = clamp(p.Resources.MemMin, 1, 10080)
 	p.Resources.DiskPct = clamp(p.Resources.DiskPct, 1, 100)
+	p.Resources.DiskAlertIntervalMin = clamp(p.Resources.DiskAlertIntervalMin, 10, 10080)
 	p.Resources.RestartCooldownMin = clamp(p.Resources.RestartCooldownMin, 1, 10080)
 	if p.Resources.Action != "restart" && p.Resources.Action != "stop" && p.Resources.Action != "alert" {
 		p.Resources.Action = "restart"

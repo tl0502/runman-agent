@@ -11,9 +11,10 @@ import (
 )
 
 // applyThrottle 对 VM 施加限速：落库 + 内存 + 立即打 tc。
-// VM 已停止时 veth 不存在，tc 打不上去，只落库；后续 reconcile 会幂等重放，
-// VM 重新拉起后自动补上限速。
-func (s *Service) applyThrottle(vmID string, pct int, releaseAt time.Time, reason string) {
+// 返回 tc 是否立即生效。VM 已停止 / veth 尚未就绪时 tc 打不上去，
+// 此时状态照样落库，由 reconcile 每轮幂等重放，VM 重新拉起后自动补上；
+// 调用方据此在事件文案里区分「已生效」与「待 VM 运行后生效」，避免假限速。
+func (s *Service) applyThrottle(vmID string, pct int, releaseAt time.Time, reason string) bool {
 	s.mu.Lock()
 	s.throttles[vmID] = db.PatrolThrottle{VMID: vmID, RatePct: pct, ReleaseAt: releaseAt, Reason: reason}
 	s.mu.Unlock()
@@ -22,7 +23,9 @@ func (s *Service) applyThrottle(vmID string, pct int, releaseAt time.Time, reaso
 	}
 	if err := s.tcApply(vmID, pct); err != nil {
 		log.Printf("[Patrol] tc throttle %s failed (will retry): %v", vmID, err)
+		return false
 	}
+	return true
 }
 
 // releaseThrottle 解除限速：恢复原上限 + 落库删除 + 内存删除 + 记录事件 + 通知。
@@ -74,11 +77,11 @@ func (s *Service) tcApply(vmID string, pct int) error {
 	if err != nil {
 		return err
 	}
-	capBps, err := s.vmCapBps(vmID)
+	capBit, err := s.vmCapBps(vmID)
 	if err != nil {
 		return err
 	}
-	rate := capBps * int64(pct) / 100
+	rate := capBit * int64(pct) / 100
 	if rate <= 0 {
 		return fmt.Errorf("invalid throttle rate for %s (pct=%d)", vmID, pct)
 	}
@@ -102,7 +105,9 @@ func (s *Service) tcRestore(vmID string) error {
 	return runTC(veth, capBps)
 }
 
-// vmCapBps 返回 VM 的分配带宽上限（bytes/s）。无上限（BandwidthMbps<=0）返回 0。
+// vmCapBps 返回 VM 分配带宽上限的数值（bit/s），与 tc 的 "rate <n>bit" 直接对应
+// （netavark 创建容器时同样用 Mbps×1e6 作为 bandwidth_rate）。
+// 无上限（BandwidthMbps<=0）返回 0。
 func (s *Service) vmCapBps(vmID string) (int64, error) {
 	cfg, err := s.db.GetVMConfig(vmID)
 	if err != nil {

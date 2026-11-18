@@ -47,8 +47,13 @@ type vmState struct {
 	connOverSince time.Time // 连接数开始超阈值的时间
 	cpuOverSince  time.Time
 	memOverSince  time.Time
-	diskAlerted   bool      // 磁盘告警去重（只在 ok→bad 转换时告警一次）
-	lastActionAt  time.Time // 最近一次自动动作时间（重启/关机冷却）
+	// lastDiskAlertAt 上次磁盘告警时间。同一 VM 的磁盘告警按配置间隔限频
+	// （默认 6 小时），避免持续超限/在阈值附近抖动时反复刷日志。
+	lastDiskAlertAt time.Time
+	// procErrAt 进程枚举失败最近一次记日志的时间。容器镜像可能没有 ps
+	// （top 依赖容器内 ps），限频记日志让「进程巡查跳过」可见而不是静默。
+	procErrAt    time.Time
+	lastActionAt time.Time // 最近一次自动动作时间（重启/关机冷却）
 }
 
 func NewService(mgr manager.VMManager, prober VMProber, database *db.DB, cfg *config.Manager) *Service {
@@ -169,7 +174,7 @@ func (s *Service) tick() {
 		s.checkBandwidth(conf, vm, st, now)
 		s.checkConnections(conf, vm, connMap, st, now)
 		s.checkResources(conf, vm, st, now)
-		s.checkProcesses(conf, vm)
+		s.checkProcesses(conf, vm, st)
 	}
 }
 

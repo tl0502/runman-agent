@@ -118,8 +118,9 @@ func (s *Service) checkBandwidth(conf config.Config, vm *agent.VMSummary, st *vm
 		return
 	}
 
-	capBps := int64(vmCfg.BandwidthMbps) * 1000000
-	threshold := capBps * int64(bc.ThresholdPct) / 100
+	// capBit 是分配上限的 bit/s 数值（与 tc "rate <n>bit"、netavark bandwidth_rate 一致）。
+	capBit := int64(vmCfg.BandwidthMbps) * 1000000
+	threshold := capBit * int64(bc.ThresholdPct) / 100
 	if rate >= threshold {
 		if st.bwOverSince.IsZero() {
 			st.bwOverSince = now
@@ -128,10 +129,13 @@ func (s *Service) checkBandwidth(conf config.Config, vm *agent.VMSummary, st *vm
 			st.bwOverSince = time.Time{}
 			pct := bc.ThrottlePct
 			release := now.Add(time.Duration(bc.ReleaseMin) * time.Minute)
-			s.applyThrottle(vm.VmId, pct, release, "bandwidth")
-			s.emit(vm.VmId, "bandwidth", "throttle",
-				fmt.Sprintf("带宽占用 %d%% 超阈值 %d%% 持续 %d 分钟，限速到上限 %d%%（%d 分钟后恢复）",
-					rate*100/capBps, bc.ThresholdPct, bc.DurationMin, pct, bc.ReleaseMin), true)
+			applied := s.applyThrottle(vm.VmId, pct, release, "bandwidth")
+			detail := fmt.Sprintf("带宽占用 %d%% 超阈值 %d%% 持续 %d 分钟，限速到上限 %d%%（%d 分钟后恢复）",
+				rate*100/capBit, bc.ThresholdPct, bc.DurationMin, pct, bc.ReleaseMin)
+			if !applied {
+				detail += "；tc 暂未生效（VM 未运行或网卡未就绪），下一轮巡查会重放"
+			}
+			s.emit(vm.VmId, "bandwidth", "throttle", detail, true)
 		}
 	} else {
 		st.bwOverSince = time.Time{}
@@ -165,10 +169,13 @@ func (s *Service) checkConnections(conf config.Config, vm *agent.VMSummary, conn
 			_ = s.db.SavePatrolStop(vm.VmId, "connections")
 			pct := cc.ThrottlePct
 			release := now.Add(time.Duration(cc.ReleaseMin) * time.Minute)
-			s.applyThrottle(vm.VmId, pct, release, "connections")
-			s.emit(vm.VmId, "connections", "stop_vm",
-				fmt.Sprintf("活跃连接 in=%d/out=%d 超限（阈值 in≥%d/out≥%d，持续 %d 分钟），停止 VM 并限速到上限 %d%%（%d 分钟后解除）",
-					c.in, c.out, cc.InLimit, cc.OutLimit, cc.DurationMin, pct, cc.ReleaseMin), true)
+			applied := s.applyThrottle(vm.VmId, pct, release, "connections")
+			detail := fmt.Sprintf("活跃连接 in=%d/out=%d 超限（阈值 in≥%d/out≥%d，持续 %d 分钟），停止 VM 并限速到上限 %d%%（%d 分钟后解除）",
+				c.in, c.out, cc.InLimit, cc.OutLimit, cc.DurationMin, pct, cc.ReleaseMin)
+			if !applied {
+				detail += "；VM 已停止，限速将在重新启动后自动生效"
+			}
+			s.emit(vm.VmId, "connections", "stop_vm", detail, true)
 		}
 	} else {
 		st.connOverSince = time.Time{}
@@ -198,10 +205,8 @@ func (s *Service) checkResources(conf config.Config, vm *agent.VMSummary, st *vm
 		s.resourceGate(vm, st, now, "resources_mem", over, &st.memOverSince, rc.MemMin, rc.Action, rc.RestartCooldownMin,
 			fmt.Sprintf("内存占用 %dMB/%dMB 超阈值 %d%%", vm.RamUsedMb, vmCfg.MemoryMB, rc.MemPct))
 	}
-	// 磁盘（无持续时长，只告警，重启不解决磁盘满）
-	if vmCfg.DiskGB > 0 {
-		s.checkDisk(vm, st, rc.DiskPct)
-	}
+	// 磁盘（无持续时长；只记面板日志、不发 Telegram，按间隔限频）
+	s.checkDisk(vm, st, vmCfg.DiskGB, rc, now)
 }
 
 // resourceGate 处理「持续 durMin 分钟超阈值 → 动作（带冷却）」的通用判定。
@@ -246,31 +251,36 @@ func (s *Service) doResourceAction(vmID, check, action, detail string) {
 	}
 }
 
-func (s *Service) checkDisk(vm *agent.VMSummary, st *vmState, diskPct int) {
-	vmCfg, err := s.db.GetVMConfig(vm.VmId)
-	if err != nil || vmCfg == nil || vmCfg.DiskGB <= 0 {
+// checkDisk 磁盘占用巡查：超阈值只记面板日志，不发 Telegram。
+// 同一 VM 的告警按 DiskAlertIntervalMin 限频（默认 6 小时），
+// 避免持续超限或在阈值附近抖动时反复刷日志。
+func (s *Service) checkDisk(vm *agent.VMSummary, st *vmState, diskGB int64, rc config.PatrolResources, now time.Time) {
+	if diskGB <= 0 {
 		return
 	}
 	used, err := s.prober.GetVMDiskUsage(context.Background(), vm.VmId)
 	if err != nil {
 		return
 	}
-	limit := vmCfg.DiskGB * 1024 * 1024 * 1024
-	over := used*100 >= limit*int64(diskPct)
-	if over {
-		if !st.diskAlerted {
-			st.diskAlerted = true
-			s.emit(vm.VmId, "resources_disk", "alert",
-				fmt.Sprintf("磁盘占用 %.1fGB/%.1fGB（%d%%）超阈值 %d%%",
-					float64(used)/1e9, float64(limit)/1e9, used*100/limit, diskPct), true)
-		}
-	} else {
-		st.diskAlerted = false
+	limit := diskGB * 1024 * 1024 * 1024
+	if used*100 < limit*int64(rc.DiskPct) {
+		return
 	}
+	interval := time.Duration(rc.DiskAlertIntervalMin) * time.Minute
+	if interval <= 0 {
+		interval = 6 * time.Hour
+	}
+	if !st.lastDiskAlertAt.IsZero() && now.Sub(st.lastDiskAlertAt) < interval {
+		return // 限频窗口内，已告警过
+	}
+	st.lastDiskAlertAt = now
+	s.emit(vm.VmId, "resources_disk", "alert",
+		fmt.Sprintf("磁盘占用 %.1fGB/%.1fGB（%d%%）超阈值 %d%%",
+			float64(used)/1e9, float64(limit)/1e9, used*100/limit, rc.DiskPct), false)
 }
 
 // checkProcesses 容器内进程黑名单巡查：命中即杀，只记面板日志不通知 TG。
-func (s *Service) checkProcesses(conf config.Config, vm *agent.VMSummary) {
+func (s *Service) checkProcesses(conf config.Config, vm *agent.VMSummary, st *vmState) {
 	pc := conf.Patrol.Processes
 	if pc.Enabled != nil && !*pc.Enabled {
 		return
@@ -280,6 +290,12 @@ func (s *Service) checkProcesses(conf config.Config, vm *agent.VMSummary) {
 	}
 	procs, err := s.prober.ListProcesses(context.Background(), vm.VmId)
 	if err != nil {
+		// 镜像可能没有 ps（libpod top 依赖容器内 ps）。限频记日志，
+		// 让「该 VM 的进程巡查被跳过」可见，而不是静默失效。
+		if st.procErrAt.IsZero() || time.Since(st.procErrAt) >= time.Hour {
+			st.procErrAt = time.Now()
+			log.Printf("[Patrol] list processes in %s failed (image may lack ps, process check skipped): %v", vm.VmId, err)
+		}
 		return
 	}
 	for _, p := range procs {

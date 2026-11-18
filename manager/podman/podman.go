@@ -868,27 +868,32 @@ func (m *Manager) execCapture(id string, cmd []string) (string, error) {
 }
 
 // ListProcesses 枚举容器内正在运行的进程（供巡查黑名单匹配）。
+// 走 libpod 的 top 接口（内部执行容器内 ps），结果按 tab 分隔，args 不会因空格错位。
+// 注意：镜像没有 ps 时会失败，调用方必须记日志，避免「进程巡查静默失效」。
 func (m *Manager) ListProcesses(_ context.Context, vmID string) ([]manager.Process, error) {
-	out, err := m.execCapture(vmID, []string{"ps", "-eo", "pid=,comm=,args="})
+	rows, err := containers.Top(m.timeoutCtx(), vmID,
+		new(containers.TopOptions).WithDescriptors([]string{"pid", "comm", "args"}))
 	if err != nil {
 		return nil, err
 	}
 	var procs []manager.Process
-	for _, line := range strings.Split(out, "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
+	for i, row := range rows {
+		if i == 0 {
+			continue // 首行是标题
+		}
+		fields := strings.Split(row, "\t")
 		if len(fields) < 2 {
 			continue
 		}
-		pid, err := strconv.Atoi(fields[0])
+		pid, err := strconv.Atoi(strings.TrimSpace(fields[0]))
 		if err != nil {
 			continue
 		}
-		comm := fields[1]
 		args := ""
 		if len(fields) > 2 {
-			args = strings.Join(fields[2:], " ")
+			args = strings.TrimSpace(fields[2])
 		}
-		procs = append(procs, manager.Process{PID: pid, Comm: comm, Args: args})
+		procs = append(procs, manager.Process{PID: pid, Comm: strings.TrimSpace(fields[1]), Args: args})
 	}
 	return procs, nil
 }
@@ -924,8 +929,9 @@ func (m *Manager) GetVMIP(_ context.Context, vmID string) (string, error) {
 }
 
 // GetVMVeth 返回容器在宿主机侧的 veth 接口名，用于 tc 限速。
-// 原理：宿主侧 veth 的 /sys/class/net/<veth>/iflink 等于容器内 eth0 的 ifindex。
-// 通过 nsenter 进入容器网络命名空间读取 eth0 的 ifindex，再在宿主机侧反查。
+// 原理：宿主侧 veth 的 /sys/class/net/<veth>/iflink 等于容器内某接口的 ifindex。
+// nsenter 只切 network namespace，sh/cat 由宿主机提供，因此不依赖容器镜像内的工具；
+// 读取容器 netns 内全部非 lo 接口的 ifindex（不写死 eth0），兼容自定义接口名/IPv6-only。
 func (m *Manager) GetVMVeth(_ context.Context, vmID string) (string, error) {
 	inspect, err := containers.Inspect(m.timeoutCtx(), vmID, nil)
 	if err != nil {
@@ -936,20 +942,24 @@ func (m *Manager) GetVMVeth(_ context.Context, vmID string) (string, error) {
 	}
 	pid := inspect.State.Pid
 
-	// 读容器内 eth0 的 ifindex（在容器 netns 内）。
 	nsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(nsCtx, "nsenter", "-t", strconv.Itoa(pid), "-n",
-		"cat", "/sys/class/net/eth0/ifindex").Output()
+		"sh", "-c", `for f in /sys/class/net/*/ifindex; do v=$(cat "$f" 2>/dev/null); [ -z "$v" ] && continue; [ "$v" = 1 ] && continue; echo "$v"; done`).Output()
 	if err != nil {
-		return "", fmt.Errorf("nsenter read eth0 ifindex: %w", err)
+		return "", fmt.Errorf("nsenter read container ifindex: %w", err)
 	}
-	peerIdx := strings.TrimSpace(string(out))
-	if peerIdx == "" {
-		return "", fmt.Errorf("empty eth0 ifindex")
+	peerIdxs := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if v := strings.TrimSpace(line); v != "" {
+			peerIdxs[v] = true
+		}
+	}
+	if len(peerIdxs) == 0 {
+		return "", fmt.Errorf("no container interface found for %s", vmID)
 	}
 
-	// 宿主机侧反查：iflink == peerIdx 的网卡即宿主侧 veth。
+	// 宿主机侧反查：iflink 命中任一容器接口 ifindex 的 veth 即宿主侧网卡。
 	entries, err := os.ReadDir("/sys/class/net")
 	if err != nil {
 		return "", err
@@ -962,11 +972,11 @@ func (m *Manager) GetVMVeth(_ context.Context, vmID string) (string, error) {
 		if err != nil {
 			continue
 		}
-		if strings.TrimSpace(string(b)) == peerIdx {
+		if peerIdxs[strings.TrimSpace(string(b))] {
 			return e.Name(), nil
 		}
 	}
-	return "", fmt.Errorf("host veth not found for %s (peer ifindex %s)", vmID, peerIdx)
+	return "", fmt.Errorf("host veth not found for %s", vmID)
 }
 
 // GetVMNetStats 获取 VM 的网络流量统计（用于流量统计服务）
