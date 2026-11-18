@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/containers/podman/v5/libpod/define"
@@ -43,6 +44,10 @@ const (
 	SocketPath  = "unix:///run/podman/podman.sock"
 	NetworkName = "narwhal-net"
 )
+
+// netdevErrLoggedAt 记录上次 /proc/<pid>/net/dev 读取失败的时间（unix 秒）。
+// ListVMs 每次列表请求都会尝试采样，失败时限频记录，避免刷屏。
+var netdevErrLoggedAt atomic.Int64
 
 func ptr[T any](v T) *T { return &v }
 
@@ -685,18 +690,13 @@ func (m *Manager) getUsage(_ context.Context, vmID string) (cpuPct float32, memU
 	return
 }
 
-// getProcNetDev 从容器网络命名空间 /proc/<pid>/net/dev 读取累计流量字节数（Podman 4.x 兼容回退）
-func (m *Manager) getProcNetDev(vmID string) (in, out int64, err error) {
-	inspect, err := containers.Inspect(m.timeoutCtx(), vmID, nil)
-	if err != nil {
-		return 0, 0, err
+// readProcNetDev 从指定 PID 的 /proc/<pid>/net/dev 汇总非 lo 接口的累计字节。
+// PID 必须是容器主进程在宿主 PID 命名空间里的 PID。
+func readProcNetDev(pid int) (in, out int64, err error) {
+	if pid <= 0 {
+		return 0, 0, fmt.Errorf("invalid pid %d", pid)
 	}
-	if inspect.State == nil || inspect.State.Pid <= 0 {
-		return 0, 0, fmt.Errorf("container %s is not running", vmID)
-	}
-
-	path := fmt.Sprintf("/proc/%d/net/dev", inspect.State.Pid)
-	file, err := os.Open(path)
+	file, err := os.Open(fmt.Sprintf("/proc/%d/net/dev", pid))
 	if err != nil {
 		return 0, 0, err
 	}
@@ -732,6 +732,18 @@ func (m *Manager) getProcNetDev(vmID string) (in, out int64, err error) {
 	return in, out, scanner.Err()
 }
 
+// getProcNetDev 按 container id 取进程 PID 后读取 /proc/<pid>/net/dev（Podman 4.x 兼容回退）。
+func (m *Manager) getProcNetDev(vmID string) (in, out int64, err error) {
+	inspect, err := containers.Inspect(m.timeoutCtx(), vmID, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	if inspect.State == nil || inspect.State.Pid <= 0 {
+		return 0, 0, fmt.Errorf("container %s is not running", vmID)
+	}
+	return readProcNetDev(inspect.State.Pid)
+}
+
 func (m *Manager) ListVMs(ctx context.Context) ([]*agent.VMSummary, error) {
 	list, err := containers.List(m.timeoutCtx(), &containers.ListOptions{All: ptr(true)})
 	if err != nil {
@@ -765,12 +777,15 @@ func (m *Manager) ListVMs(ctx context.Context) ([]*agent.VMSummary, error) {
 				cpuPct, memUsed, _, _, _ := m.getUsage(ctx, inspect.Name)
 				s.CpuPct = cpuPct
 				s.RamUsedMb = memUsed / 1024 / 1024
-				// 网络累计字节直接读 /proc/<pid>/net/dev，不用 getUsage 的返回值：
-				// getUsage 走 podman Stats 流式接口，并发采样多个容器时全部拿不到
-				// Network 数据（实测 7 台并行全为 0），而巡查的带宽判定依赖这两个字段。
-				if netIn, netOut, pErr := m.getProcNetDev(inspect.Name); pErr == nil {
+				// 网络累计字节直接读 /proc/<pid>/net/dev，不重复 Inspect：
+				// 这里已经拿到了 inspect，直接用它带的 PID。
+				if netIn, netOut, pErr := readProcNetDev(inspect.State.Pid); pErr == nil {
 					s.TrafficInBytes = netIn
 					s.TrafficOutBytes = netOut
+				} else if now := time.Now().Unix(); now-netdevErrLoggedAt.Load() > 300 {
+					// 限频 5 分钟，避免每轮列表请求刷屏
+					netdevErrLoggedAt.Store(now)
+					log.Printf("[Podman] read netdev for %s (pid %d) failed: %v", inspect.Name, inspect.State.Pid, pErr)
 				}
 			}
 			summaries[i] = s
