@@ -23,6 +23,9 @@ type VMProber interface {
 	GetVMDiskUsage(ctx context.Context, vmID string) (int64, error)
 	GetVMVeth(ctx context.Context, vmID string) (string, error)
 	GetVMIP(ctx context.Context, vmID string) (string, error)
+	// EnsureEgressTbf 施加/清除容器内出方向限速（rateBps<=0 表示清除），
+	// 与 GetVMVeth 上的下载方向限速合成双向控制。
+	EnsureEgressTbf(ctx context.Context, vmID string, rateBps int64) error
 }
 
 // Service 是巡查引擎：ticker 周期巡检，判定 + 动作 + 落库都在本进程内完成，

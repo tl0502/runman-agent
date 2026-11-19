@@ -114,7 +114,15 @@ func (s *Service) tcApply(vmID string, mbps int) error {
 	if err != nil {
 		return err
 	}
-	return runTC(veth, rate)
+	if err := runTC(veth, rate); err != nil {
+		return err
+	}
+	// 上传方向：容器内 egress tbf 同步压到限速值。发包攻击是出方向流量，
+	// 只限宿主 veth（下载方向）压不住，两个方向必须都打上。
+	if err := s.prober.EnsureEgressTbf(context.Background(), vmID, rate); err != nil {
+		return err
+	}
+	return nil
 }
 
 // tcRestore 恢复 VM 的原带宽上限：有上限则 tc 改回原上限，无上限则删掉 qdisc。
@@ -129,9 +137,14 @@ func (s *Service) tcRestore(vmID string) error {
 	}
 	if capBps <= 0 {
 		// 原本没限速：直接删掉覆盖上去的 qdisc。
-		return exec.Command("tc", "qdisc", "del", "dev", veth, "root").Run()
+		if err := exec.Command("tc", "qdisc", "del", "dev", veth, "root").Run(); err != nil {
+			return err
+		}
+	} else if err := runTC(veth, capBps); err != nil {
+		return err
 	}
-	return runTC(veth, capBps)
+	// 容器内出方向同样恢复套餐值（无套餐则清除限速）。
+	return s.prober.EnsureEgressTbf(context.Background(), vmID, capBps)
 }
 
 // vmCapBps 返回 VM 分配带宽上限的数值（bit/s），与 tc 的 "rate <n>bit" 直接对应

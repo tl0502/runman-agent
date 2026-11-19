@@ -1019,6 +1019,118 @@ func (m *Manager) GetVMVeth(_ context.Context, vmID string) (string, error) {
 	return "", fmt.Errorf("host veth not found for %s (peer ifindex %s)", vmID, peerIdx)
 }
 
+// EnsureEgressTbf 在容器 netns 内对出方向接口施加/清除 tbf 限速（上传方向）。
+// netavark 的 bandwidth_rate 装在宿主 veth root，只覆盖下载方向；出方向在此补齐，
+// 与套餐上限、巡查限速共用一个入口。rateBps<=0 表示清除（对应套餐「不限」）。
+// 幂等可反复调用；容器未运行返回错误，由调用方决定是否重试。
+func (m *Manager) EnsureEgressTbf(_ context.Context, vmID string, rateBps int64) error {
+	inspect, err := containers.Inspect(m.timeoutCtx(), vmID, nil)
+	if err != nil {
+		return err
+	}
+	if inspect.State == nil || inspect.State.Pid <= 0 {
+		return fmt.Errorf("container %s is not running", vmID)
+	}
+	// host/none/container 网络没有独立 netns 边界，往里打 tbf 会限到宿主机
+	// 或别的容器，与 GetVMVeth 的防护口径一致：直接拒绝。
+	if inspect.HostConfig != nil {
+		switch inspect.HostConfig.NetworkMode {
+		case "host", "none", "container":
+			return fmt.Errorf("container %s uses %s network, egress shaping not applicable", vmID, inspect.HostConfig.NetworkMode)
+		}
+	}
+	pid := inspect.State.Pid
+	iface, err := containerPrimaryIface(pid)
+	if err != nil {
+		return err
+	}
+
+	nsArgs := []string{"-t", strconv.Itoa(pid), "-n", "tc", "qdisc"}
+	var args []string
+	if rateBps > 0 {
+		burst := rateBps / 10
+		if burst < 1000000 {
+			burst = 1000000
+		}
+		args = append(nsArgs, "replace", "dev", iface, "root", "tbf",
+			"rate", fmt.Sprintf("%dbit", rateBps),
+			"burst", fmt.Sprintf("%db", burst),
+			"latency", "50ms")
+	} else {
+		args = append(nsArgs, "del", "dev", iface, "root")
+	}
+	execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(execCtx, "nsenter", args...).CombinedOutput()
+	if err != nil {
+		// 清除时 root qdisc 本就不存在属正常状态，不算失败。
+		msg := string(out)
+		if rateBps <= 0 && (strings.Contains(msg, "No such file") || strings.Contains(msg, "Cannot find")) {
+			return nil
+		}
+		return fmt.Errorf("nsenter tc (pid %d, %s): %w: %s", pid, iface, err, strings.TrimSpace(msg))
+	}
+	return nil
+}
+
+// containerPrimaryIface 返回容器 netns 内的主网络接口名（eth0 优先，其次第一个非 lo）。
+// 与 GetVMVeth 同源：nsenter 只切 network namespace，ip(8) 走 netlink，
+// netlink 随 netns 隔离，因此查询到的就是容器内的接口。
+func containerPrimaryIface(pid int) (string, error) {
+	out, err := containerLinkOut(pid)
+	if err != nil {
+		return "", err
+	}
+	iface, err := parsePrimaryIface(string(out))
+	if err != nil {
+		return "", fmt.Errorf("pid %d: %w", pid, err)
+	}
+	return iface, nil
+}
+
+// containerLinkOut 在容器 netns 内执行 ip -o link show 并返回原始输出。
+func containerLinkOut(pid int) ([]byte, error) {
+	nsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(nsCtx, "nsenter", "-t", strconv.Itoa(pid), "-n",
+		"ip", "-o", "link", "show").Output()
+	if err != nil {
+		return nil, fmt.Errorf("nsenter list container links: %w", err)
+	}
+	return out, nil
+}
+
+// parsePrimaryIface 从 ip -o link show 输出中选出容器内主接口：
+// 每行形如 "2: eth0@if26: <BROADCAST,...>"，跳过 lo，eth0 优先，其次第一个非 lo。
+func parsePrimaryIface(out string) (string, error) {
+	fallback := ""
+	for _, line := range strings.Split(out, "\n") {
+		colon := strings.Index(line, ": ")
+		if colon <= 0 {
+			continue
+		}
+		rest := line[colon+2:]
+		end := strings.IndexAny(rest, "@:")
+		if end < 0 {
+			continue
+		}
+		name := rest[:end]
+		if name == "lo" {
+			continue
+		}
+		if name == "eth0" {
+			return name, nil
+		}
+		if fallback == "" {
+			fallback = name
+		}
+	}
+	if fallback != "" {
+		return fallback, nil
+	}
+	return "", fmt.Errorf("no usable interface found")
+}
+
 // GetVMNetStats 获取 VM 的网络流量统计（用于流量统计服务）。
 // 优先读 /proc/<pid>/net/dev：与 ListVMs 保持一致，不依赖可能失败的 stats 流。
 func (m *Manager) GetVMNetStats(ctx context.Context, vmID string) (*manager.VMNetStats, error) {

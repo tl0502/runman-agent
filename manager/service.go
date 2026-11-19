@@ -63,6 +63,12 @@ func (s *VMService) CreateVM(ctx context.Context, req *agent.CmdCreateVM) error 
 	if s.OnCreated != nil {
 		s.OnCreated(ctx, req.VmId, int(req.BandwidthMbps))
 	}
+
+	// 出方向套餐上限：netavark 只装下载方向（宿主 veth root tbf），
+	// 容器内 egress 在此补齐，使「带宽上限」真实约束双向流量。
+	if conf.BandwidthMbps > 0 {
+		s.ensureEgressCap(ctx, req.VmId, int64(conf.BandwidthMbps)*1000000)
+	}
 	return nil
 }
 
@@ -73,6 +79,11 @@ func (s *VMService) StartVM(ctx context.Context, vmID string) error {
 		log.Printf("[StartVM] error: vmID=%s, err=%v", vmID, err)
 	} else {
 		log.Printf("[StartVM] success: vmID=%s", vmID)
+		// 容器 netns 随重启重建，容器内出方向限速丢失，按套餐重装
+		// （下载方向由 netavark 在 start 时自动恢复，无需处理）。
+		if conf, cfgErr := s.db.GetVMConfig(vmID); cfgErr == nil && conf != nil && conf.BandwidthMbps > 0 {
+			s.ensureEgressCap(ctx, vmID, int64(conf.BandwidthMbps)*1000000)
+		}
 	}
 	return err
 }
@@ -118,7 +129,31 @@ func (s *VMService) DeleteVM(ctx context.Context, vmID string) error {
 
 func (s *VMService) ReinstallVM(ctx context.Context, req *agent.CmdReinstallVM) error {
 	// 驱动层会处理特定驱动配置的复用与重新分配，并负责保存 VMConfig
-	return s.mgr.ReinstallVM(ctx, req)
+	if err := s.mgr.ReinstallVM(ctx, req); err != nil {
+		return err
+	}
+	// 重建后的容器 netns 是新的，按套餐重装出方向限速
+	if conf, err := s.db.GetVMConfig(req.VmId); err == nil && conf != nil && conf.BandwidthMbps > 0 {
+		s.ensureEgressCap(ctx, req.VmId, int64(conf.BandwidthMbps)*1000000)
+	}
+	return nil
+}
+
+// EnsureEgressTbf 转发到驱动的出方向限速能力。仅 podman 实现 EgressShaper；
+// 其他驱动没有 tbf 语义，静默跳过（行为与历史一致，只依赖 netavark/systemd 的下载侧）。
+func (s *VMService) EnsureEgressTbf(ctx context.Context, vmID string, rateBps int64) error {
+	if es, ok := s.mgr.(EgressShaper); ok {
+		return es.EnsureEgressTbf(ctx, vmID, rateBps)
+	}
+	return nil
+}
+
+// ensureEgressCap 按套餐在容器内补装出方向限速。失败只记日志不阻塞生命周期操作：
+// 下载方向不受影响，上传缺口由启动期全量补装兜底。
+func (s *VMService) ensureEgressCap(ctx context.Context, vmID string, rateBps int64) {
+	if err := s.EnsureEgressTbf(ctx, vmID, rateBps); err != nil {
+		log.Printf("[EgressTbf] %s: %v", vmID, err)
+	}
 }
 
 func (s *VMService) ResetPassword(ctx context.Context, vmID, password string) error {

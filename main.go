@@ -176,6 +176,32 @@ func main() {
 		svc.ResumeCustomImagePulls()
 	}
 
+	// 启动期全量补装容器内出方向限速（历史存量 + 运行期安装失败的兜底）。
+	// 延迟 20 秒：给 Autostart / 容器自启留出时间，未 RUNNING 的容器由 StartVM 路径覆盖。
+	if conf.VirtType == "podman" {
+		go func() {
+			time.Sleep(20 * time.Second)
+			vms, err := svc.ListVMs(context.Background())
+			if err != nil {
+				log.Printf("[EgressTbf] startup ensure: list VMs: %v", err)
+				return
+			}
+			for _, vm := range vms {
+				if vm.Status != agent.VMStatus_VM_STATUS_RUNNING {
+					continue
+				}
+				vmConf, err := database.GetVMConfig(vm.VmId)
+				if err != nil || vmConf == nil || vmConf.BandwidthMbps <= 0 {
+					continue
+				}
+				if err := svc.EnsureEgressTbf(context.Background(), vm.VmId, int64(vmConf.BandwidthMbps)*1000000); err != nil {
+					log.Printf("[EgressTbf] startup ensure %s: %v", vm.VmId, err)
+				}
+			}
+			log.Printf("[EgressTbf] startup ensure done")
+		}()
+	}
+
 	// 虚拟化驱动自启动：agent 启动后延迟 5 秒让网络就绪，然后启动所有记录为 running 的 VM
 	if conf.VirtType == "cloudhv" || conf.VirtType == "incus" {
 		go func() {

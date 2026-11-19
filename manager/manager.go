@@ -94,6 +94,14 @@ type ImagePuller interface {
 	PullImage(ctx context.Context, ref string) error
 }
 
+// EgressShaper 是可选能力接口：支持约束容器出方向（上传）速率的驱动实现它。
+// netavark 装在宿主 veth 上的 bandwidth_rate 只覆盖下载方向，出方向由驱动在
+// 容器 netns 内补装 tbf 实现，二者合成双向带宽控制。
+// rateBps<=0 表示清除容器内限速（对应套餐「不限」）。
+type EgressShaper interface {
+	EnsureEgressTbf(ctx context.Context, vmID string, rateBps int64) error
+}
+
 // VMNetStats 表示 VM 的网络流量统计
 type VMNetStats struct {
 	VMID     string // VM ID
