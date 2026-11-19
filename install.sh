@@ -41,6 +41,8 @@ die() { log "$1" >&2; exit 1; }
 # 回滚时按备份快照逐一恢复，便于本机/容器 IPv6 分配策略试错后快速还原。
 
 backup_ipv6_config() {
+    # 备份目录在 /var/lib 下，只有 root 能写。
+    [ "$(id -u)" = "0" ] || die "$(t "IPv6 config backup requires root." "IPv6 配置备份需要 root 权限。")"
     local ts; ts=$(date +%Y%m%d-%H%M%S)
     local dir="$BACKUP_DIR/ipv6-$ts"
     mkdir -p "$dir"
@@ -71,6 +73,8 @@ backup_ipv6_config() {
 }
 
 restore_ipv6_config() {
+    # 回滚会改写 /etc 下的 sysctl 与网卡配置、重启 journald，必须 root。
+    [ "$(id -u)" = "0" ] || die "$(t "IPv6 config rollback requires root." "IPv6 配置回滚需要 root 权限。")"
     local target="${1:-$(cat "$BACKUP_DIR/latest" 2>/dev/null)}"
     [ -n "$target" ] && [ -d "$target" ] || { log "$(t "No IPv6 backup found" "未找到 IPv6 备份")"; return 1; }
     # 元数据只读取固定的 0/1 标记，不 source 文件，避免环境值被当成 shell 执行。
@@ -440,6 +444,9 @@ PYEOF
 }
 
 restart_agent_services() {
+    # systemctl restart 与 podman network 都要求 root；先拦住，给出明确原因，
+    # 而不是让 polkit / Permission denied 抛一堆看不懂的报错。
+    [ "$(id -u)" = "0" ] || die "$(t "Restarting the Agent requires root." "重启 Agent 需要 root 权限。")"
     [ -f "$AGENT_BINARY" ] || die "$(t "Agent is not installed." "Agent 尚未安装。")"
     ensure_podman_network_from_config
     systemctl restart "$AGENT_SERVICE"
@@ -448,18 +455,53 @@ restart_agent_services() {
     show_agent_status
 }
 
+# 读取 config.json 里的面板密码哈希（config.json 是 0600 root:root，需 root 才能读）。
+read_config_pass_hash() {
+    [ -f "$AGENT_CONFIG_FILE" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    jq -r '.web_pass_hash // ""' "$AGENT_CONFIG_FILE" 2>/dev/null || true
+}
+
 reset_panel_password() {
+    # config.json 是 0600 root:root，Agent 也由 root 拉起：非 root 执行读不到配置，
+    # 而失败信息一旦被重定向吞掉，脚本就会静默退出、用户以为已经改好了。
+    [ "$(id -u)" = "0" ] || die "$(t "Resetting the panel password requires root." "重置面板密码需要 root 权限。")"
     [ -x "$AGENT_BINARY" ] && [ -f "$AGENT_CONFIG_FILE" ] \
         || die "$(t "Agent is not installed." "Agent 尚未安装。")"
     [ "$NON_INTERACTIVE" != "1" ] && [ -t 0 ] \
         || die "$(t "Panel password reset requires an interactive terminal." "重置面板密码需要交互式终端。")"
-    local first second
+    local first second pwd_bytes
     read -rsp "$(t "New panel password (minimum 8 characters): " "新面板密码（至少 8 个字符）: ")" first; echo
     read -rsp "$(t "Confirm new panel password: " "再次输入新面板密码: ")" second; echo
     [ "$first" = "$second" ] || die "$(t "Passwords do not match." "两次密码不一致。")"
     [ "${#first}" -ge 8 ] || die "$(t "Password must contain at least 8 characters." "密码至少需要 8 个字符。")"
-    "$AGENT_BINARY" --config "$AGENT_CONFIG_FILE" --reset-password "$first" >/dev/null
-    systemctl restart "$AGENT_SERVICE"
+    # bcrypt 只吃 72 字节以内，超长会被静默截断成空哈希——这里提前挡住。
+    pwd_bytes=$(printf '%s' "$first" | wc -c | tr -d ' ')
+    [ "$pwd_bytes" -le 72 ] || die "$(t "Password must be at most 72 bytes (bcrypt limit)." "密码最多 72 字节（bcrypt 上限）。")"
+
+    # 记录旧哈希，事后比对：只有配置真的变了才算成功。
+    local before after output
+    before=$(read_config_pass_hash)
+
+    # 密码走环境变量而不是命令行：命令行参数会出现在 ps 输出里，对所有本机用户可见。
+    # Agent 的日志走 stdout，必须连 stderr 一起收，否则失败原因会被吃掉。
+    if ! output="$(NARWHAL_AGENT_RESET_PASSWORD="$first" "$AGENT_BINARY" --config "$AGENT_CONFIG_FILE" 2>&1)"; then
+        log "$(t "Failed to reset panel password: ${output:-unknown error}" "重置面板密码失败：${output:-未知错误}")" >&2
+        exit 1
+    fi
+
+    after=$(read_config_pass_hash)
+    if [ -z "$after" ]; then
+        log "$(t "Could not verify config.json (jq missing); relying on the Agent exit code." "无法校验 config.json（缺少 jq），仅以 Agent 退出码为准。")" >&2
+    elif [ "$after" = "$before" ]; then
+        log "$(t "The Agent exited successfully but config.json was not updated." "Agent 退出成功，但 config.json 未发生变化。")" >&2
+        exit 1
+    fi
+
+    if ! systemctl restart "$AGENT_SERVICE"; then
+        log "$(t "Password updated, but restarting the Agent failed." "密码已更新，但重启 Agent 失败。")" >&2
+        exit 1
+    fi
     log "$(t "Panel password reset; Agent restarted." "面板密码已重置，Agent 已重启。")"
 }
 

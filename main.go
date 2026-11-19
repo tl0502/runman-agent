@@ -103,19 +103,29 @@ func main() {
 	log.Printf("narwhal cloud-agent %s", version)
 
 	// 如果指定了重置密码，更新配置并退出
-	if *resetPwd != "" {
+	// 密码优先走环境变量：命令行参数会出现在 ps 输出里，对所有本机用户可见。
+	resetPlain := *resetPwd
+	if resetPlain == "" {
+		resetPlain = os.Getenv("NARWHAL_AGENT_RESET_PASSWORD")
+	}
+	if resetPlain != "" {
+		// 该分支的日志必须走 stderr：安装器会丢弃 stdout，
+		// 错误留在 stdout 会被静默吞掉，用户只看到脚本无输出退出。
+		log.SetOutput(os.Stderr)
 		cfg, err := config.Load(*configPath)
 		if err != nil {
 			log.Fatalf("load config: %v", err)
 		}
-		err = cfg.Update(func(c *config.Config) {
-			c.WebPassHash = *resetPwd // config.Load 会在下次启动或本次保存时处理加密（或者我们直接在此处理）
-		})
+		// 直接写 bcrypt 哈希：明文密码不落盘，也不必二次 Load 触发加密。
+		hash, err := config.HashPassword(resetPlain)
 		if err != nil {
+			log.Fatalf("hash password: %v", err)
+		}
+		if err := cfg.Update(func(c *config.Config) {
+			c.WebPassHash = hash
+		}); err != nil {
 			log.Fatalf("update password: %v", err)
 		}
-		// 再次 Load 以触发 config.go 中的自动加密逻辑并写回
-		_, _ = config.Load(*configPath)
 		fmt.Println("Password updated successfully.")
 		return
 	}

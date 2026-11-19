@@ -279,6 +279,18 @@ type Manager struct {
 	cfg  Config
 }
 
+// HashPassword 生成 bcrypt 哈希，供 CLI / 安装器直接写盘使用。
+// 直接存哈希可以避免明文密码短暂落在配置文件里，也不必依赖二次 Load 触发自动加密。
+// bcrypt 只接受 72 字节以内的密码，超长会返回错误——不能静默忽略，
+// 否则会把密码写成空哈希，等于把面板密码清空。
+func HashPassword(plain string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
 // Load 从 JSON 配置文件加载配置到内存。
 func Load(path string) (*Manager, error) {
 	data, err := os.ReadFile(path)
@@ -296,8 +308,12 @@ func Load(path string) (*Manager, error) {
 	// 如果密码不是加密的（即首次安装由安装脚本写入的明文），自动进行 bcrypt 加密并写回
 	if cfg.WebPassHash != "" && !strings.HasPrefix(cfg.WebPassHash, "$2") {
 		err = m.Update(func(c *Config) {
-			hash, _ := bcrypt.GenerateFromPassword([]byte(c.WebPassHash), bcrypt.DefaultCost)
-			c.WebPassHash = string(hash)
+			hash, herr := HashPassword(c.WebPassHash)
+			if herr != nil {
+				// 哈希失败时保留原值：写成空串等于把密码清空。
+				return
+			}
+			c.WebPassHash = hash
 		})
 		if err != nil {
 			return nil, err

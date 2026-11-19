@@ -10,7 +10,7 @@
 
 ## What Is This
 
-The Agent is a daemon running on the host (bare metal) that slices server resources into NAT VPS instances — managing container lifecycle, port forwarding, traffic accounting — and connects to the platform over a gRPC bidirectional stream (see [PROTOCOL.en.md](PROTOCOL.en.md)). It also ships a local web panel (default `:8792`).
+The Agent is a daemon running on the host (bare metal) that slices server resources into NAT VPS instances — managing container lifecycle, port forwarding, traffic accounting — and connects to the platform over a gRPC bidirectional stream (see [PROTOCOL.en.md](PROTOCOL.en.md)). It also ships a local web panel (`:8792`).
 
 ```
 Your server ──► Runman Agent ──► NAT VPS instances (containers on narwhal-net 10.91.0.0/20)
@@ -24,7 +24,7 @@ Your server ──► Runman Agent ──► NAT VPS instances (containers on na
 |---|---|
 | **Podman backend only** | The installer rejects `--virt incus/cloudhv`; leftover incus/cloudhv Go code is unmaintained |
 | **Custom netavark** | Uses [tl0502/netavark-Runman](https://github.com/tl0502/netavark-Runman) (adds a `snat_ipv6` option); auto-replaces `/usr/libexec/podman/netavark` on install/update |
-| **Container network isolation & whitelists** | Bridge-family nft rules isolate containers from each other; host port whitelist + private-subnet whitelist (v0.5.x) |
+| **Container network isolation & whitelists** | Bridge-family nft rules isolate containers from each other; host port whitelist + private-subnet whitelist |
 | **Elastic IP model** | New `public_ipv4` config: all containers share one host IPv4 for ingress listening and egress SNAT |
 | **Security hardening** | `userns=auto`, `no_new_privs`, pids limit, fine-grained capabilities (on by default) |
 | **White-label branding** | Panel site name and site icon (favicon) replaceable via panel/API |
@@ -45,46 +45,50 @@ Your server ──► Runman Agent ──► NAT VPS instances (containers on na
 ## Install
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/tl0502/runman-agent/main/install.sh)
+curl -fsSL -o /tmp/runman-install.sh https://raw.githubusercontent.com/tl0502/runman-agent/main/install.sh
+sudo bash /tmp/runman-install.sh
 ```
 
-Or from the latest release:
+Latest release:
 
 ```bash
-bash <(curl -fsSL https://github.com/tl0502/runman-agent/releases/latest/download/install.sh)
+curl -fsSL -o /tmp/runman-install.sh https://github.com/tl0502/runman-agent/releases/latest/download/install.sh
+sudo bash /tmp/runman-install.sh
 ```
+
+> Always download to a file first: under `sudo`, `bash <(curl ...)` loses the script (fd closed) and curl reports `(23)` when the script exits early.
+> Installing and the management menu items need root — run the whole script with sudo.
 
 The installer downloads Agent and rfw binaries from `tl0502/runman-agent` Releases and the custom netavark from `tl0502/netavark-Runman`. Pin a version with `AGENT_RELEASE_TAG=vX.Y.Z`; point at a mirror with `RUNMAN_AGENT_DOWNLOAD_BASE` and `NETAVARK_BASE`.
 
 ### One-shot examples
 
 ```bash
-# IPv4 NAT only
-bash install.sh zh --virt podman --nat4 --non-interactive --generate-token
+# IPv4 NAT (default)
+sudo bash /tmp/runman-install.sh zh --non-interactive --generate-token
 
 # NAT4 + IPv6 SNAT (single public IPv6)
-bash install.sh zh --virt podman --data-size 3G --ipv6-mode snat \
+sudo bash /tmp/runman-install.sh zh --data-size 3G --ipv6-mode snat \
   --non-interactive --generate-token
 
 # NAT4 + manual routed /64 (HE 6in4, WireGuard, provider static route)
-bash install.sh zh --virt podman --nat4 --non-interactive \
-  --ipv6-mode subnet --ipv6-addr 2001:db8:100::1 \
-  --ipv6-subnet 2001:db8:100::/64 --ipv6-iface wg6 --ipv6-routed
+sudo bash /tmp/runman-install.sh zh --ipv6-mode subnet --ipv6-addr 2001:db8:100::1 \
+  --ipv6-subnet 2001:db8:100::/64 --ipv6-iface wg6 --ipv6-routed --non-interactive
 
 # Podman registry mirror (leave empty if docker.io is reachable)
-bash install.sh zh --virt podman --data-size 8G --ipv6-mode none \
+sudo bash /tmp/runman-install.sh zh --data-size 8G \
   --podman-registry-mirror https://mirror.example.com --non-interactive
 
 # Detect/validate IPv6 without installing anything
-bash install.sh zh --detect-ipv6 --non-interactive
-bash install.sh zh --validate-ipv6 --ipv6-mode subnet \
+sudo bash /tmp/runman-install.sh zh --detect-ipv6
+sudo bash /tmp/runman-install.sh zh --validate-ipv6 --ipv6-mode subnet \
   --ipv6-addr 2001:db8:100::1 --ipv6-subnet 2001:db8:100::/64 \
   --ipv6-iface wg6 --ipv6-routed
 ```
 
 ### Main menu
 
-Run `bash install.sh zh` with no arguments:
+Run with no arguments (or add `--menu`):
 
 | # | Action |
 |---:|---|
@@ -120,14 +124,12 @@ Under the elastic IP model, `public_ipv4` is exactly the `entry_host` reported t
 
 ## Container Network Isolation & Access Control
 
-On by default since v0.5.x, implemented entirely via `runman-hostfw` nft tables (**not** netavark isolate — without br_netfilter, same-bridge traffic never hits the FORWARD hook, so isolate does not apply):
+On by default, implemented entirely via `runman-hostfw` nft tables (**not** netavark isolate — without br_netfilter, same-bridge traffic never hits the FORWARD hook, so isolate does not apply):
 
 | Table | Purpose |
 |---|---|
 | `inet runman-hostfw` | INPUT host port whitelist (`host_allow_ports`) + FORWARD private-subnet blocking (`container_allow_subnets`) |
 | `bridge runman-hostfw` | Inter-container isolation: `meta ibrname == obrname drop` — containers reach only the gateway and outbound |
-
-Defaults:
 
 - `container_isolate` (default true): containers cannot reach each other;
 - `host_allow_ports`: TCP ports containers may reach on the host; empty means no host access at all;
@@ -164,12 +166,12 @@ Auto-detection distinguishes native on-link prefixes from tunnel-link prefixes (
 
 ## Updates & Releases
 
-- **Release flow**: push tag `v*` (e.g. `v0.5.3`) → GitHub Actions runs Go + installer tests → builds amd64/arm64 → publishes the Release. `main` builds continuously as `continuous-<commit>`.
+- **Release flow**: push tag `v*` (e.g. `v0.7.2`) → GitHub Actions runs Go + installer tests → builds amd64/arm64 → publishes the Release. `main` builds continuously as `dev-<commit>` and publishes no Release.
 - **Agent self-update**: checks `tl0502/runman-agent` every 6 hours, applies new versions after a random 24–72h delay via `--update-only --non-interactive`; the source is overridable via `update_repo` / `update_base_url` / `update_api_url`.
 - **Agent-only upgrade** (keeps networking and workloads):
 
 ```bash
-bash install.sh zh --update-only
+sudo bash /tmp/runman-install.sh zh --update-only
 journalctl -u narwhal-agent-update --no-pager   # auto-update task log
 ```
 
@@ -187,35 +189,26 @@ journalctl -u narwhal-agent-update --no-pager   # auto-update task log
 | Systemd services | `narwhal-agent.service` (optional `rfw.service`) |
 | Custom netavark | `/usr/libexec/podman/netavark` (replaced by installer) |
 
-**Web panel**: `http://<server-ip>:8792`
+**Web panel**: https://\<server-ip\>:8792 (self-signed certificate — trust it in the browser; user `admin`, password printed in the install log)
 
 ## Key Config Fields (`/opt/narwhal-agent/config.json`)
 
-### Platform & updates
-
-| Field | Purpose |
-|---|---|
-| `token` | Platform integration token (`--show-token` / `--rotate-token`) |
-| `platform_addr` | Platform gRPC address; changes reconnect automatically |
-| `platform_insecure` | Skip gRPC TLS verification (self-signed/IP-only setups) |
-| `update_repo` / `update_base_url` / `update_api_url` | Self-update source (default `tl0502/runman-agent`) |
-| `netavark_base` | Custom netavark download base |
-| `virt_type` | Fixed to `podman` |
-| `web` / `web_user` / `web_pass_hash` | Panel listen address, username, bcrypt hash |
-| `monitor_nic` / `monitor_disk` | Traffic/disk accounting targets |
-| `max_port_forward` / `max_forward_ips` | Per-VM port-forward and source-IP limits |
-| `traffic_reset_day` | Monthly traffic reset day (1-28) |
-
-### Added by this fork
-
-| Field | Purpose |
-|---|---|
-| `public_ipv4` | Elastic IP: shared ingress listen + egress SNAT address; empty keeps legacy behavior |
-| `site_name` | Panel brand name (site icon lives in the config dir, set via panel/API) |
-| `container_isolate` | Inter-container isolation (default true) |
-| `host_allow_ports` | Host TCP port whitelist for containers |
-| `container_allow_subnets` | Private-subnet whitelist for containers (CIDRs) |
-| `container_no_new_privs` / `container_userns` / `container_pids_limit` / `container_drop_caps` / `container_add_caps` | Container hardening |
+| Group | Field | Purpose |
+|---|---|---|
+| Platform | `token` | Platform integration token (`--show-token` / `--rotate-token`) |
+| Platform | `platform_addr` | Platform gRPC address; changes reconnect automatically |
+| Platform | `platform_insecure` | Skip gRPC TLS verification (self-signed/IP-only setups) |
+| Updates | `update_repo` / `update_base_url` / `update_api_url` | Self-update source (default `tl0502/runman-agent`) |
+| Updates | `netavark_base` | Custom netavark download base |
+| Panel | `web` / `web_user` / `web_pass_hash` | Listen address, username, bcrypt hash |
+| Panel | `site_name` | Panel brand name (site icon set via panel/API) |
+| Container | `virt_type` | Fixed to `podman` |
+| Container | `container_isolate` / `host_allow_ports` / `container_allow_subnets` | See "Container Network Isolation & Access Control" |
+| Container | `container_userns` / `container_no_new_privs` / `container_pids_limit` / `container_drop_caps` / `container_add_caps` | See "Security Hardening" |
+| Image | `public_ipv4` | Elastic IP: shared ingress listen + egress SNAT address; empty keeps legacy behavior |
+| Accounting | `monitor_nic` / `monitor_disk` | Traffic/disk accounting targets |
+| Accounting | `max_port_forward` / `max_forward_ips` | Per-VM port-forward and source-IP limits |
+| Accounting | `traffic_reset_day` | Monthly traffic reset day (1-28) |
 
 ## Service Management & Troubleshooting
 
@@ -238,7 +231,7 @@ Common issues:
 
 Platform integration uses the gRPC bidirectional `AgentGateway` stream; see [PROTOCOL.en.md](PROTOCOL.en.md) for the full protocol and a minimal Go implementation.
 
-**Compatibility rule**: platform-facing API semantics must not change; new capabilities are added exclusively as optional fields so legacy clients are unaffected. Agent implementers only need PROTOCOL.md — fork backend differences are irrelevant to the wire protocol.
+**Compatibility rule**: platform-facing API semantics must not change; new capabilities are added exclusively as optional fields so legacy clients are unaffected. Agent implementers only need PROTOCOL.en.md — fork backend differences are irrelevant to the wire protocol.
 
 ## Local Development
 

@@ -10,7 +10,7 @@
 
 ## 这是什么
 
-Agent 是运行在宿主机（母鸡）上的后台守护进程，负责将服务器资源切分成 NAT VPS 实例，管理容器生命周期、端口转发、流量统计，并通过 gRPC 双向流对接平台（协议见 [PROTOCOL.md](PROTOCOL.md)）。同时提供本地 Web 管理面板（默认 `:8792`）。
+Agent 是运行在宿主机（母鸡）上的后台守护进程，把服务器资源切分成 NAT VPS 实例：管理容器生命周期、端口转发、流量统计，并通过 gRPC 双向流对接平台（协议见 [PROTOCOL.md](PROTOCOL.md)）。同时提供本地 Web 管理面板（`:8792`）。
 
 ```
 你的服务器 ──► Runman Agent ──► NAT VPS 实例（容器，narwhal-net 10.91.0.0/20 内网）
@@ -24,7 +24,7 @@ Agent 是运行在宿主机（母鸡）上的后台守护进程，负责将服�
 |---|---|
 | **只维护 Podman 后端** | 安装器拒绝 `--virt incus/cloudhv`；Go 代码中保留的 incus/cloudhv 分支不再维护 |
 | **自建 netavark** | 使用 [tl0502/netavark-Runman](https://github.com/tl0502/netavark-Runman)（新增 `snat_ipv6` 选项），安装/更新时自动替换 `/usr/libexec/podman/netavark` |
-| **容器网络隔离与白名单** | bridge 家族 nft 规则实现容器间隔离；宿主机端口白名单 + 内网网段白名单（v0.5.x） |
+| **容器网络隔离与白名单** | bridge 家族 nft 规则实现容器间隔离；宿主机端口白名单 + 内网网段白名单 |
 | **弹性 IP 模型** | 新增 `public_ipv4`：所有容器共用一个宿主机 IPv4 做入口监听 + 出口 SNAT |
 | **安全加固** | userns=auto、no_new_privs、pids 上限、capabilities 精细控制（默认开启） |
 | **品牌自定义** | 面板站点名称、站点图标（favicon）可通过面板/API 替换 |
@@ -45,46 +45,50 @@ Agent 是运行在宿主机（母鸡）上的后台守护进程，负责将服�
 ## 安装
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/tl0502/runman-agent/main/install.sh)
+curl -fsSL -o /tmp/runman-install.sh https://raw.githubusercontent.com/tl0502/runman-agent/main/install.sh
+sudo bash /tmp/runman-install.sh
 ```
 
-或使用最新 Release 的安装脚本：
+最新 Release 版本：
 
 ```bash
-bash <(curl -fsSL https://github.com/tl0502/runman-agent/releases/latest/download/install.sh)
+curl -fsSL -o /tmp/runman-install.sh https://github.com/tl0502/runman-agent/releases/latest/download/install.sh
+sudo bash /tmp/runman-install.sh
 ```
 
-安装器从 `tl0502/runman-agent` Releases 下载 Agent 与 rfw 二进制，从 `tl0502/netavark-Runman` 下载自建 netavark。需要固定版本时设置 `AGENT_RELEASE_TAG=vX.Y.Z`；自建下载源设置 `RUNMAN_AGENT_DOWNLOAD_BASE=https://...` 与 `NETAVARK_BASE=https://...`。
+> 先落地成文件再执行：`bash <(curl ...)` 在 sudo 下会因 fd 被关闭而读不到脚本，脚本提前退出时 curl 还会报 `(23)`。
+> 安装与菜单中的管理操作需要 root，请用 sudo 执行整个脚本。
+
+安装器从 `tl0502/runman-agent` Releases 下载 Agent 与 rfw 二进制，从 `tl0502/netavark-Runman` 下载自建 netavark。固定版本设 `AGENT_RELEASE_TAG=vX.Y.Z`；自建下载源设 `RUNMAN_AGENT_DOWNLOAD_BASE` 与 `NETAVARK_BASE`。
 
 ### 一键参数示例
 
 ```bash
-# 仅 IPv4 NAT
-bash install.sh zh --virt podman --nat4 --non-interactive --generate-token
+# IPv4 NAT（默认）
+sudo bash /tmp/runman-install.sh zh --non-interactive --generate-token
 
-# NAT4 + IPv6 SNAT（单个公网 IPv6 场景）
-bash install.sh zh --virt podman --data-size 3G --ipv6-mode snat \
+# NAT4 + IPv6 SNAT（单个公网 IPv6）
+sudo bash /tmp/runman-install.sh zh --data-size 3G --ipv6-mode snat \
   --non-interactive --generate-token
 
 # NAT4 + 手工路由 /64（HE 6in4、WireGuard、供应商静态路由）
-bash install.sh zh --virt podman --nat4 --non-interactive \
-  --ipv6-mode subnet --ipv6-addr 2001:db8:100::1 \
-  --ipv6-subnet 2001:db8:100::/64 --ipv6-iface wg6 --ipv6-routed
+sudo bash /tmp/runman-install.sh zh --ipv6-mode subnet --ipv6-addr 2001:db8:100::1 \
+  --ipv6-subnet 2001:db8:100::/64 --ipv6-iface wg6 --ipv6-routed --non-interactive
 
 # Podman registry mirror（能直连 docker.io 就留空）
-bash install.sh zh --virt podman --data-size 8G --ipv6-mode none \
+sudo bash /tmp/runman-install.sh zh --data-size 8G \
   --podman-registry-mirror https://mirror.example.com --non-interactive
 
-# 只做 IPv6 探测/验证，不安装任何组件
-bash install.sh zh --detect-ipv6 --non-interactive
-bash install.sh zh --validate-ipv6 --ipv6-mode subnet \
+# 只探测 / 验证 IPv6，不安装任何组件
+sudo bash /tmp/runman-install.sh zh --detect-ipv6
+sudo bash /tmp/runman-install.sh zh --validate-ipv6 --ipv6-mode subnet \
   --ipv6-addr 2001:db8:100::1 --ipv6-subnet 2001:db8:100::/64 \
   --ipv6-iface wg6 --ipv6-routed
 ```
 
 ### 总菜单
 
-无参数执行 `bash install.sh zh` 进入菜单：
+无参数执行（或加 `--menu`）进入菜单：
 
 | 菜单 | 操作 | 是否修改系统 |
 |---:|---|---|
@@ -104,36 +108,34 @@ bash install.sh zh --validate-ipv6 --ipv6-mode subnet \
 
 ## 弹性 IP 模型（重要）
 
-容器本身始终使用 `narwhal-net`（`10.91.0.0/20`）内网地址。新增配置 `public_ipv4` 指定一个宿主机 IPv4 后：
+容器始终使用 `narwhal-net`（`10.91.0.0/20`）内网地址。设置 `public_ipv4` 后：
 
 - **入口**：所有端口映射只在该地址上监听；
 - **出口**：容器出站流量统一 SNAT 成该地址；
 - **入口与出口必须是同一个 IP**。
 
-上报给平台的 `entry_host`（入口地址）取值优先级：
+上报给平台的 `entry_host` 取值优先级：
 
 ```
 host（手动入口，支持 DDNS 域名） > public_ipv4 > 自动探测公网 IPv4（api-ipv4.ip.sb）
 ```
 
-弹性 IP 场景下，`public_ipv4` 正是上报给平台的 `entry_host`。`public_ipv6` 为预留字段，当前版本未实现。
+弹性 IP 场景下 `public_ipv4` 正是上报的 `entry_host`。`public_ipv6` 为预留字段，当前版本未实现。
 
 ## 容器网络隔离与访问控制
 
-v0.5.x 起默认开启，全部通过 `runman-hostfw` nft 表实现（**不使用 netavark isolate**——br_netfilter 未加载时同桥流量不过 FORWARD hook，isolate 不生效）：
+默认开启，全部通过 `runman-hostfw` nft 表实现（**不使用 netavark isolate**——br_netfilter 未加载时同桥流量不过 FORWARD hook，isolate 不生效）：
 
 | 表 | 作用 |
 |---|---|
 | `inet runman-hostfw` | INPUT 宿主机端口白名单（`host_allow_ports`）+ FORWARD 内网网段拦截（`container_allow_subnets`） |
 | `bridge runman-hostfw` | 容器间隔离：`meta ibrname == obrname drop`，容器只能访问网关与出站 |
 
-行为约定：
-
 - `container_isolate`（默认 true）：容器之间不能互相访问；
-- `host_allow_ports`：允许容器访问的宿主机 TCP 端口白名单，为空时容器不能主动访问宿主机任何端口；
-- `container_allow_subnets`：允许访问的内网网段白名单（CIDR），为空时容器默认不能访问任何私有网段（10/8、172.16/12、192.168/16、169.254/16），只能出公网。
+- `host_allow_ports`：容器可访问的宿主机 TCP 端口白名单，为空时不能主动访问宿主机任何端口；
+- `container_allow_subnets`：可访问的内网网段白名单（CIDR），为空时默认拦截所有私有网段（10/8、172.16/12、192.168/16、169.254/16），只能出公网。
 
-> 技术坑：netavark setup 时若链已存在会跳过重建，重装网络必须先 `nft delete table inet netavark` 再 reload。菜单 **3** 已内置该修复逻辑。
+> 技术坑：netavark setup 时若链已存在会跳过重建，重装网络必须先 `nft delete table inet netavark` 再 reload。菜单 **3** 已内置该修复。
 
 ## 安全加固
 
@@ -141,10 +143,10 @@ v0.5.x 起默认开启，全部通过 `runman-hostfw` nft 表实现（**不使�
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
-| `container_userns` | true | `userns=auto`，容器内 root 映射为宿主机非特权 uid，逃逸后拿不到宿主 root（依赖 `/etc/subuid`、`/etc/subgid`） |
+| `container_userns` | true | `userns=auto`，容器内 root 映射为宿主机非特权 uid（依赖 `/etc/subuid`、`/etc/subgid`） |
 | `container_no_new_privs` | true | 阻断 setuid 提权 |
 | `container_pids_limit` | 2048 | cgroup pids 上限 |
-| `container_drop_caps` / `container_add_caps` | 空 | 创建容器时额外 drop/add 的 capabilities（注意：systemd + sshd 镜像对默认 capability 集依赖较强，激进 drop 需先测试） |
+| `container_drop_caps` / `container_add_caps` | 空 | 额外 drop/add 的 capabilities（systemd + sshd 镜像对默认 capability 集依赖较强，激进 drop 需先测试） |
 
 ## IPv6
 
@@ -154,7 +156,7 @@ v0.5.x 起默认开启，全部通过 `runman-hostfw` nft 表实现（**不使�
 | `snat` | 单个 `/128` 或前缀 `/65`–`/127` | 容器使用 ULA `fd91:cafe:cafe:10::/64`，经宿主机公网 IPv6 SNAT 出站（自建 netavark `snat_ipv6=false` 配合） |
 | `subnet` | 前缀 ≤ `/64` | 从路由 `/64` 按 offset 切分 `/112` 子网给容器，容器获得独立公网 IPv6 |
 
-自动探测会区分原生二层前缀与隧道链路前缀（HE 6in4、WireGuard），手工 `/64` 支持 `--ipv6-routed` 标记路由/隧道场景。改动前自动备份 sysctl/网卡配置到 `/var/lib/narwhal-agent/backups/`，支持一键回滚。
+自动探测区分原生二层前缀与隧道链路前缀（HE 6in4、WireGuard），手工 `/64` 支持 `--ipv6-routed` 标记路由/隧道场景。改动前自动备份 sysctl/网卡配置到 `/var/lib/narwhal-agent/backups/`，支持一键回滚。
 
 ## 品牌自定义
 
@@ -164,12 +166,12 @@ v0.5.x 起默认开启，全部通过 `runman-hostfw` nft 表实现（**不使�
 
 ## 更新与发布
 
-- **发布流程**：push tag `v*`（如 `v0.5.3`）→ GitHub Actions 自动跑 Go 测试 + 安装器测试 → 构建 amd64/arm64 → 发布 Release。`main` 分支持续构建为 `dev-<commit>`（仅用于验证，不产生 Release）。
+- **发布流程**：push tag `v*`（如 `v0.7.2`）→ GitHub Actions 自动跑 Go 测试 + 安装器测试 → 构建 amd64/arm64 → 发布 Release。`main` 持续构建为 `dev-<commit>`，不产生 Release。
 - **Agent 自更新**：默认每 6 小时检查 `tl0502/runman-agent`，发现新版本随机延迟 24–72 小时执行 `--update-only --non-interactive`；更新来源可用 `update_repo` / `update_base_url` / `update_api_url` 指向镜像。
 - **仅升级 Agent**（保留网络与业务）：
 
 ```bash
-bash install.sh zh --update-only
+sudo bash /tmp/runman-install.sh zh --update-only
 journalctl -u narwhal-agent-update --no-pager   # 自动更新任务日志
 ```
 
@@ -187,35 +189,26 @@ journalctl -u narwhal-agent-update --no-pager   # 自动更新任务日志
 | Systemd 服务 | `narwhal-agent.service`（rfw 可选：`rfw.service`） |
 | 自建 netavark | `/usr/libexec/podman/netavark`（安装器替换） |
 
-**Web 管理面板**：`http://<服务器IP>:8792`
+**Web 管理面板**：https://\<服务器IP\>:8792 （自签证书，浏览器需手动信任；用户名 `admin`，密码在安装结束日志中打印）
 
 ## 关键配置字段（`/opt/narwhal-agent/config.json`）
 
-### 平台与更新
-
-| 字段 | 说明 |
-|---|---|
-| `token` | 平台对接 Token（首装写入，`--show-token` / `--rotate-token` 管理） |
-| `platform_addr` | 平台 gRPC 地址，改动后自动重连，无需重启 |
-| `platform_insecure` | 跳过 gRPC 证书校验（仅自签/IP 场景） |
-| `update_repo` / `update_base_url` / `update_api_url` | 自更新来源（默认 `tl0502/runman-agent`） |
-| `netavark_base` | 自建 netavark 下载基址 |
-| `virt_type` | 固定 `podman` |
-| `web` / `web_user` / `web_pass_hash` | 面板监听、用户名、bcrypt 密码哈希 |
-| `monitor_nic` / `monitor_disk` | 流量/磁盘统计目标 |
-| `max_port_forward` / `max_forward_ips` | 每 VM 端口转发数与来源 IP 数上限 |
-| `traffic_reset_day` | 每月流量重置日（1-28） |
-
-### 本 fork 新增
-
-| 字段 | 说明 |
-|---|---|
-| `public_ipv4` | 弹性 IP：入口监听 + 出口 SNAT 共用地址；为空保持旧行为 |
-| `site_name` | 面板品牌名（另有站点图标，存配置目录，经面板/API 设置） |
-| `container_isolate` | 容器间隔离（默认 true） |
-| `host_allow_ports` | 容器可访问的宿主机 TCP 端口白名单 |
-| `container_allow_subnets` | 容器可访问的内网网段白名单（CIDR） |
-| `container_no_new_privs` / `container_userns` / `container_pids_limit` / `container_drop_caps` / `container_add_caps` | 容器安全加固 |
+| 分组 | 字段 | 说明 |
+|---|---|---|
+| 平台 | `token` | 平台对接 Token（首装写入，`--show-token` / `--rotate-token` 管理） |
+| 平台 | `platform_addr` | 平台 gRPC 地址，改动后自动重连，无需重启 |
+| 平台 | `platform_insecure` | 跳过 gRPC 证书校验（仅自签/IP 场景） |
+| 更新 | `update_repo` / `update_base_url` / `update_api_url` | 自更新来源（默认 `tl0502/runman-agent`） |
+| 更新 | `netavark_base` | 自建 netavark 下载基址 |
+| 面板 | `web` / `web_user` / `web_pass_hash` | 监听地址、用户名、bcrypt 密码哈希 |
+| 面板 | `site_name` | 面板品牌名（站点图标经面板/API 设置） |
+| 容器 | `virt_type` | 固定 `podman` |
+| 容器 | `container_isolate` / `host_allow_ports` / `container_allow_subnets` | 见「容器网络隔离与访问控制」 |
+| 容器 | `container_userns` / `container_no_new_privs` / `container_pids_limit` / `container_drop_caps` / `container_add_caps` | 见「安全加固」 |
+| 镜像 | `public_ipv4` | 弹性 IP：入口监听 + 出口 SNAT 共用地址；为空保持旧行为 |
+| 统计 | `monitor_nic` / `monitor_disk` | 流量/磁盘统计目标 |
+| 统计 | `max_port_forward` / `max_forward_ips` | 每 VM 端口转发数与来源 IP 数上限 |
+| 统计 | `traffic_reset_day` | 每月流量重置日（1-28） |
 
 ## 服务管理与排查
 
@@ -223,7 +216,7 @@ journalctl -u narwhal-agent-update --no-pager   # 自动更新任务日志
 systemctl status narwhal-agent          # Agent 状态
 journalctl -u narwhal-agent -f          # 实时日志
 systemctl restart narwhal-agent
-systemctl status rfw                   # rfw 防火墙
+systemctl status rfw                    # rfw 防火墙
 ```
 
 常见问题：
@@ -238,7 +231,7 @@ systemctl status rfw                   # rfw 防火墙
 
 平台对接走 gRPC 双向流（`AgentGateway`），完整协议与最小实现示例见 [PROTOCOL.md](PROTOCOL.md)。
 
-**兼容性红线**：对接 API 口径不能改；新增能力一律以可选字段形式添加，保证旧客户端零影响。Agent 端实现者按 PROTOCOL.md 对接即可，无需关心本 fork 的后端差异。
+**兼容性红线**：对接 API 口径不能改；新增能力一律以可选字段形式添加，保证旧客户端零影响。Agent 端实现者只需按 PROTOCOL.md 对接，本 fork 的后端差异与协议无关。
 
 ## 本地开发
 
