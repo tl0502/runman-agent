@@ -176,40 +176,16 @@ func main() {
 		svc.ResumeCustomImagePulls()
 	}
 
-	// 启动期全量补装容器内出方向限速（历史存量 + 运行期安装失败的兜底）。
-	// 延迟 20 秒给 Autostart / 容器自启留出时间；list 或单容器失败最多重试 3 轮，
-	// 避免 podman 就绪慢时存量容器永久缺失上传限速（否则只有下次重启才被补上）。
+	// 出方向限速 reconcile：启动 20 秒后首轮，此后每 5 分钟一轮（幂等）。
+	// 覆盖不经 Agent 的 netns 重建（如 podman 按 RestartPolicy 自愈重启）；
+	// 巡查限速中的容器跳过——其值可能严于套餐，由 patrol 的重放机制维护。
 	if conf.VirtType == "podman" {
 		go func() {
 			time.Sleep(20 * time.Second)
-			for attempt := 1; attempt <= 3; attempt++ {
-				vms, err := svc.ListVMs(context.Background())
-				if err != nil {
-					log.Printf("[EgressTbf] startup ensure (attempt %d): list VMs: %v", attempt, err)
-					time.Sleep(60 * time.Second)
-					continue
-				}
-				failed := 0
-				for _, vm := range vms {
-					if vm.Status != agent.VMStatus_VM_STATUS_RUNNING {
-						continue
-					}
-					vmConf, err := database.GetVMConfig(vm.VmId)
-					if err != nil || vmConf == nil || vmConf.BandwidthMbps <= 0 {
-						continue
-					}
-					if err := svc.EnsureEgressTbf(context.Background(), vm.VmId, int64(vmConf.BandwidthMbps)*1000000); err != nil {
-						failed++
-						log.Printf("[EgressTbf] startup ensure %s (attempt %d): %v", vm.VmId, attempt, err)
-					}
-				}
-				if failed == 0 {
-					log.Printf("[EgressTbf] startup ensure done")
-					return
-				}
-				time.Sleep(30 * time.Second)
+			for {
+				ensureEgressCaps(svc, database)
+				time.Sleep(5 * time.Minute)
 			}
-			log.Printf("[EgressTbf] startup ensure gave up after 3 attempts")
 		}()
 	}
 
@@ -1371,6 +1347,36 @@ func (a *Agent) monitorPingTimeout(ctx context.Context, cancel context.CancelFun
 				cancel()
 				return
 			}
+		}
+	}
+}
+
+// ensureEgressCaps 按套餐对全部 RUNNING 容器补装出方向限速（幂等 replace）。
+// 处于巡查限速中的容器跳过：其限速值可能严于套餐，由 patrol 的重放机制维护，
+// 不能被这里的套餐值覆盖。
+func ensureEgressCaps(svc *manager.VMService, database *db.DB) {
+	vms, err := svc.ListVMs(context.Background())
+	if err != nil {
+		log.Printf("[EgressTbf] reconcile: list VMs: %v", err)
+		return
+	}
+	throttled := make(map[string]struct{})
+	for _, t := range database.ListPatrolThrottles() {
+		throttled[t.VMID] = struct{}{}
+	}
+	for _, vm := range vms {
+		if vm.Status != agent.VMStatus_VM_STATUS_RUNNING {
+			continue
+		}
+		if _, ok := throttled[vm.VmId]; ok {
+			continue
+		}
+		vmConf, err := database.GetVMConfig(vm.VmId)
+		if err != nil || vmConf == nil || vmConf.BandwidthMbps <= 0 {
+			continue
+		}
+		if err := svc.EnsureEgressTbf(context.Background(), vm.VmId, int64(vmConf.BandwidthMbps)*1000000); err != nil {
+			log.Printf("[EgressTbf] reconcile %s: %v", vm.VmId, err)
 		}
 	}
 }

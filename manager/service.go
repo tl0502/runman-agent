@@ -110,6 +110,11 @@ func (s *VMService) RestartVM(ctx context.Context, vmID string) error {
 		log.Printf("[RestartVM] error: vmID=%s, err=%v", vmID, err)
 	} else {
 		log.Printf("[RestartVM] success: vmID=%s", vmID)
+		// 重启同样重建 netns，出方向限速按套餐重装（巡查 throttle 未到期时
+		// 由 patrol 的限速重放覆盖回来）。
+		if conf, cfgErr := s.db.GetVMConfig(vmID); cfgErr == nil && conf != nil && conf.BandwidthMbps > 0 {
+			s.ensureEgressCap(ctx, vmID, int64(conf.BandwidthMbps)*1000000)
+		}
 	}
 	return err
 }
