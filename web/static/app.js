@@ -1030,8 +1030,6 @@ $('rfwRefresh').addEventListener('click', (e) => withBusy(e.currentTarget, async
 
 /* ── 安全：登录日志与封禁 ─────────────────────────────────────────────────── */
 let banHours = 0; // 0 = 永久
-let secLogCache = [];
-
 qsa('#banHours .btn').forEach((btn) => btn.addEventListener('click', () => {
   banHours = Number(btn.dataset.h) || 0;
   qsa('#banHours .btn').forEach((b) => b.classList.toggle('active', b === btn));
@@ -1049,37 +1047,11 @@ function banMeta(action) {
   }
 }
 
-function matchesLogFilter(action, f) {
-  if (!f) return true;
-  if (f === 'ok') return action === 'login_ok';
-  if (f === 'fail') return action === 'login_fail';
-  if (f === 'ban') return action !== 'login_ok' && action !== 'login_fail';
-  return true;
-}
-
-function renderSecLog() {
-  const f = $('logFilter').value;
-  const rows = secLogCache.filter((e) => matchesLogFilter(e.action, f));
-  const tbody = $('logTbody');
-  $('logEmpty').hidden = rows.length > 0;
-  if (!rows.length) { tbody.innerHTML = ''; return; }
-  tbody.innerHTML = rows.map((e) => {
-    const m = banMeta(e.action);
-    const t = new Date(e.ts);
-    return `
-    <tr>
-      <td class="dim small" title="${t.toLocaleString()}">${ago(t.getTime() / 1000)}</td>
-      <td><span class="badge ${m.cls}">${m.label}</span></td>
-      <td class="mono-cell">${esc(e.ip)}</td>
-      <td class="dim">${e.user ? esc(e.user) : '—'}</td>
-      <td class="dim small">${e.detail ? esc(e.detail) : ''}</td>
-    </tr>`;
-  }).join('');
-}
-
 function renderBans(bans) {
   const tbody = $('banTbody');
   $('banEmpty').hidden = bans.length > 0;
+  // 空态时收起表头（与巡查异常列表同款处理）
+  $('banTbody').closest('.table-wrap').style.display = bans.length ? '' : 'none';
   $('banCount').textContent = bans.length;
   if (!bans.length) { tbody.innerHTML = ''; return; }
   tbody.innerHTML = bans.map((b) => {
@@ -1128,11 +1100,10 @@ async function refreshSecurity() {
   try {
     const [bans, log] = await Promise.all([
       api('GET', '/api/security/bans'),
-      api('GET', '/api/security/log?limit=200'),
+      api('GET', '/api/security/log?limit=6'),
     ]);
     renderBans(bans || []);
-    secLogCache = log || [];
-    renderSecLog();
+    renderSecLogMini(log || []);
   } catch { /* 会话失效走全局 401 处理 */ }
 }
 
@@ -1147,7 +1118,6 @@ $('btnBan').addEventListener('click', async (e) => {
     refreshSecurity();
   });
 });
-$('logFilter').addEventListener('change', renderSecLog);
 $('secRefresh').addEventListener('click', (e) => withBusy(e.currentTarget, async () => { await refreshSecurity(); toast('已刷新'); }));
 
 $('rIpType').addEventListener('change', (e) => {
@@ -1194,11 +1164,8 @@ const patrolState = {
   tab: 'overview',
   cat: 'basic',
   vms: [],
-  events: [],
   anomalies: [],
   blacklist: [],
-  evtFilter: { severity: '', check: '', sort: 'desc', page: 1 },
-  evtTotal: 0,
 };
 
 function patrolCheckMeta(check) {
@@ -1292,16 +1259,16 @@ function renderPatrolOverview() {
 
   const st = overallPatrolStatus();
   $('pStatusVal').innerHTML = `<span class="dot ${st.dot}"></span>${st.label}`;
-  $('pStatusMeta').textContent = bad ? '存在未解决异常' : '全部正常';
 
   renderPatrolAnomalies();
-  renderPatrolEvents();
 }
 
 function renderPatrolAnomalies() {
   const list = patrolState.anomalies;
   const tbody = $('pVmTbody');
   $('pVmEmpty').hidden = list.length > 0;
+  // 空态时收起表头：图标空态 + 表头并存是重复噪音
+  $('pVmTbody').closest('.table-wrap').style.display = list.length ? '' : 'none';
   $('pVmCount').textContent = new Set(list.map((a) => a.vm_id)).size;
   if (!list.length) { tbody.innerHTML = ''; return; }
   // 按 VM 合并：被停机优先于限速（限速会到时自动解除，停机需人工启动）
@@ -1346,61 +1313,250 @@ function renderPatrolAnomalies() {
   }));
 }
 
-function renderPatrolEvents() {
-  const list = patrolState.events;
-  const tbody = $('pEvtTbody');
-  $('pEvtEmpty').hidden = list.length > 0;
-  const total = patrolState.evtTotal;
-  const f = patrolState.evtFilter;
-  const totalPages = Math.max(1, Math.ceil(total / PATROL_PAGE_SIZE));
-
-  const pager = $('pEvtPager');
-  pager.hidden = total <= 0;
-  $('pEvtTotal').textContent = `共 ${total} 条`;
-  $('pEvtPage').textContent = `${f.page} / ${totalPages}`;
-  $('pEvtPrev').disabled = f.page <= 1;
-  $('pEvtNext').disabled = f.page >= totalPages;
-
-  if (!list.length) { tbody.innerHTML = ''; return; }
-  tbody.innerHTML = list.map((e) => {
-    const sev = patrolSeverity(e.action);
-    const t = new Date(e.ts);
-    return `<tr>
-      <td class="dim small" title="${t.toLocaleString()}">${ago(t.getTime() / 1000)}</td>
-      <td><span class="badge ${sev.cls}">${sev.label}</span></td>
-      <td class="mono-cell">${e.vm_id ? esc(e.vm_id) : '—'}</td>
-      <td class="dim small">${e.detail ? esc(e.detail) : esc(patrolCheckMeta(e.check))}</td>
-    </tr>`;
-  }).join('');
-}
-
-// loadEvents 按当前筛选/排序/分页条件拉取事件并渲染。
-async function loadEvents() {
-  const f = patrolState.evtFilter;
-  const qs = new URLSearchParams({ page: f.page, page_size: PATROL_PAGE_SIZE, sort: f.sort });
-  if (f.severity) qs.set('severity', f.severity);
-  if (f.check) qs.set('check', f.check);
-  try {
-    const d = await api('GET', `/api/patrol/events?${qs}`);
-    patrolState.events = (d && d.items) || [];
-    patrolState.evtTotal = (d && d.total) || 0;
-    renderPatrolEvents();
-  } catch { /* 会话失效走全局 401 */ }
-}
-
 async function refreshPatrol() {
   if (state.view !== 'patrol') return;
   try {
-    const [vms, anomalies] = await Promise.all([
+    const [vms, anomalies, mini] = await Promise.all([
       api('GET', '/api/vms'),
       api('GET', '/api/patrol/anomalies'),
+      api('GET', '/api/events/feed?source=patrol&page_size=6'),
     ]);
     patrolState.vms = (vms || []).filter(Boolean);
     patrolState.anomalies = anomalies || [];
     renderPatrolOverview();
+    renderPatrolMini((mini && mini.items) || []);
     markPatrolSeen();
   } catch { /* 会话失效走全局 401 */ }
-  await loadEvents();
+}
+
+/* ══════════════════════════════ 通知（统一事件流） ════════════════════════ */
+// 巡查事件 + 安全登录日志的归并视图：来源/严重度筛选 + 分页，
+// 数据来自 GET /api/events/feed（两源按时间归并排序）。
+const FEED_PAGE_SIZE = 20;
+
+// 面板左列的事件摘要：复用小窗的紧凑行样式。
+function miniFeedRow(e) {
+  const sevCls = e.sev === 'bad' ? 'dot-bad' : e.sev === 'warn' ? 'dot-warn' : 'dot-ok';
+  const what = e.source === 'patrol'
+    ? (e.detail || patrolCheckMeta(e.type))
+    : [banMeta(e.action).label, e.detail].filter(Boolean).join(' · ');
+  const who = e.source === 'patrol' ? '巡查 · ' + (e.actor || '') : '安全 · ' + e.actor;
+  const t = new Date(e.ts);
+  return `<div class="np-row">
+    <span class="np-sev ${sevCls}"></span>
+    <div class="np-main">
+      <span class="np-what">${esc(what)}</span>
+      <span class="np-meta">${esc(who)}</span>
+    </div>
+    <span class="np-time">${ago(t.getTime() / 1000)}</span>
+  </div>`;
+}
+
+function renderPatrolMini(items) {
+  const box = $('patrolMini');
+  if (!items.length) { box.innerHTML = '<div class="np-empty">暂无巡查事件</div>'; return; }
+  box.innerHTML = items.map(miniFeedRow).join('');
+}
+
+function renderSecLogMini(log) {
+  const box = $('secLogMini');
+  const rows = (log || []).slice(0, 6);
+  if (!rows.length) { box.innerHTML = '<div class="np-empty">暂无登录记录</div>'; return; }
+  // /api/security/log 返回原始登录日志，这里归一成 feed 形状复用同一套行渲染。
+  const sevOf = { auto_ban: 'bad', login_blocked: 'bad', manual_ban: 'bad', login_fail: 'warn', login_ok: 'info', unban: 'info' };
+  box.innerHTML = rows.map((e) => miniFeedRow({
+    ts: e.ts, source: 'security', type: e.action, action: e.action,
+    sev: sevOf[e.action] || 'info', actor: e.ip, user: e.user || '', detail: e.detail || '',
+  })).join('');
+}
+// 筛选状态按来源各自保留：切 Tab 不互删对方的筛选条件。
+const notifState = { source: '', sev: '', check: '', secType: '', time: '', q: '', page: 1, total: 0, items: [] };
+
+const FEED_SEV = {
+  bad:  { label: '严重', cls: 'badge-bad' },
+  warn: { label: '警告', cls: 'badge-warn' },
+  info: { label: '信息', cls: 'badge-quiet' },
+};
+
+function renderNotifications() {
+  const list = notifState.items;
+  const tbody = $('nfTbody');
+  $('nfEmpty').hidden = list.length > 0;
+  const totalPages = Math.max(1, Math.ceil(notifState.total / FEED_PAGE_SIZE));
+  const pager = $('nfPager');
+  pager.hidden = notifState.total <= 0;
+  $('nfTotal').textContent = `共 ${notifState.total} 条`;
+  $('nfPage').textContent = `${notifState.page} / ${totalPages}`;
+  $('nfPrev').disabled = notifState.page <= 1;
+  $('nfNext').disabled = notifState.page >= totalPages;
+  if (!list.length) { tbody.innerHTML = ''; return; }
+  tbody.innerHTML = list.map((e) => {
+    const sev = FEED_SEV[e.sev] || FEED_SEV.info;
+    const src = e.source === 'patrol'
+      ? '<span class="badge badge-blue">巡查</span>'
+      : '<span class="badge badge-quiet">安全</span>';
+    const actor = e.source === 'patrol'
+      ? (e.actor ? esc(e.actor) : '—')
+      : esc(e.actor) + (e.user ? ` <span class="dim small">${esc(e.user)}</span>` : '');
+    const what = e.source === 'patrol'
+      ? (e.detail ? esc(e.detail) : esc(patrolCheckMeta(e.type)))
+      : [banMeta(e.action).label, e.detail ? esc(e.detail) : ''].filter(Boolean).join(' · ') || '—';
+    const t = new Date(e.ts);
+    return `<tr>
+      <td class="dim small" title="${t.toLocaleString()}">${ago(t.getTime() / 1000)}</td>
+      <td>${src}</td>
+      <td><span class="badge ${sev.cls}">${sev.label}</span></td>
+      <td class="mono-cell">${actor}</td>
+      <td class="dim small">${what}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadNotifications() {
+  const f = notifState;
+  const qs = new URLSearchParams({ page: f.page, page_size: FEED_PAGE_SIZE });
+  if (f.source) qs.set('source', f.source);
+  if (f.source !== 'security' && f.sev) qs.set('severity', f.sev);
+  if (f.source === 'patrol' && f.check) qs.set('check', f.check);
+  if (f.source === 'security' && f.secType) qs.set('sec_type', f.secType);
+  if (f.time) qs.set('since', String(Math.floor(Date.now() / 1000) - Number(f.time)));
+  if (f.q) qs.set('q', f.q);
+  try {
+    const d = await api('GET', `/api/events/feed?${qs}`);
+    notifState.items = (d && d.items) || [];
+    notifState.total = (d && d.total) || 0;
+    renderNotifications();
+  } catch { /* 会话失效走全局 401 */ }
+}
+
+// 子 Tab 切来源：登录=security、巡查=patrol；再次点击已选中的 Tab 回到全部。
+// 筛选维度跟着来源走（各 Tab 有各自的筛选组），切换只改可见性不互删取值。
+function applyNotifFilterVisibility() {
+  const show = (el, on) => { const w = el.closest('.pick'); if (w) w.hidden = !on; };
+  show($('nfSev'), notifState.source !== 'security');
+  show($('nfCheck'), notifState.source === 'patrol');
+  show($('nfSecType'), notifState.source === 'security');
+}
+function syncNotifTabs() {
+  $('nfTabLogin').setAttribute('aria-selected', String(notifState.source === 'security'));
+  $('nfTabPatrol').setAttribute('aria-selected', String(notifState.source === 'patrol'));
+}
+function setNotifSource(src) {
+  notifState.source = notifState.source === src ? '' : src;
+  syncNotifTabs();
+  applyNotifFilterVisibility();
+  notifState.page = 1;
+  loadNotifications();
+}
+$('nfTabLogin').addEventListener('click', () => setNotifSource('security'));
+$('nfTabPatrol').addEventListener('click', () => setNotifSource('patrol'));
+$('nfSev').addEventListener('change', (e) => { notifState.sev = e.target.value; notifState.page = 1; loadNotifications(); });
+$('nfCheck').addEventListener('change', (e) => { notifState.check = e.target.value; notifState.page = 1; loadNotifications(); });
+$('nfSecType').addEventListener('change', (e) => { notifState.secType = e.target.value; notifState.page = 1; loadNotifications(); });
+$('nfTime').addEventListener('change', (e) => { notifState.time = e.target.value; notifState.page = 1; loadNotifications(); });
+// 面板摘要的「查看全部」：打开抽屉并预选对应来源 Tab
+$('nfOpenLogin').addEventListener('click', () => openNotifDrawer('security'));
+$('nfOpenPatrol').addEventListener('click', () => openNotifDrawer('patrol'));
+// 搜索：输入防抖后全字段匹配（巡查 detail/vm_id，安全 detail/ip/user）
+let nfSearchTimer = 0;
+$('nfSearch').addEventListener('input', (e) => {
+  clearTimeout(nfSearchTimer);
+  nfSearchTimer = setTimeout(() => { notifState.q = e.target.value.trim(); notifState.page = 1; loadNotifications(); }, 250);
+});
+$('nfPrev').addEventListener('click', () => { if (notifState.page > 1) { notifState.page--; loadNotifications(); } });
+$('nfNext').addEventListener('click', () => { notifState.page++; loadNotifications(); });
+// ── 铃铛 + 小窗 + 悬浮面板 ──────────────────────────────────────────────────
+function openNotifPop() {
+  $('notifPop').hidden = false;
+  loadNotifPop();
+  markNotifSeen(); // 打开即视为看过，红点消除
+}
+function closeNotifPop() { $('notifPop').hidden = true; }
+
+function openNotifDrawer(source) {
+  closeNotifPop();
+  // 面板摘要的「查看全部」带来源进来，预选对应 Tab
+  if (source) notifState.source = source;
+  syncNotifTabs();
+  applyNotifFilterVisibility();
+  $('nfScrim').hidden = false;
+  requestAnimationFrame(() => $('nfScrim').classList.add('show'));
+  $('nfDrawer').hidden = false;
+  $('nfDrawer').setAttribute('aria-hidden', 'false');
+  requestAnimationFrame(() => $('nfDrawer').classList.add('show'));
+  document.body.style.overflow = 'hidden';
+  loadNotifications();
+}
+function closeNotifDrawer() {
+  $('nfScrim').classList.remove('show');
+  $('nfDrawer').classList.remove('show');
+  $('nfDrawer').setAttribute('aria-hidden', 'true');
+  document.body.style.overflow = '';
+  setTimeout(() => { $('nfScrim').hidden = true; $('nfDrawer').hidden = true; }, 320);
+}
+
+$('bellBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if ($('notifPop').hidden) openNotifPop(); else closeNotifPop();
+});
+// 点击铃铛区域之外关闭小窗
+document.addEventListener('click', (e) => {
+  if (!$('notifPop').hidden && !e.target.closest('.bell-wrap')) closeNotifPop();
+});
+$('nfExpand').addEventListener('click', openNotifDrawer);
+$('nfClose').addEventListener('click', closeNotifDrawer);
+$('nfScrim').addEventListener('click', closeNotifDrawer);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('nfDrawer').hidden) closeNotifDrawer();
+});
+
+// 小窗内容：最近 10 条紧凑列表。
+async function loadNotifPop() {
+  try {
+    const d = await api('GET', '/api/events/feed?page=1&page_size=10');
+    renderNotifPop((d && d.items) || []);
+  } catch { /* 会话失效走全局 401 */ }
+}
+function renderNotifPop(list) {
+  const box = $('nfPopList');
+  $('nfPopEmpty').hidden = list.length > 0;
+  box.innerHTML = list.map((e) => {
+    const sevCls = e.sev === 'bad' ? 'dot-bad' : e.sev === 'warn' ? 'dot-warn' : 'dot-ok';
+    const what = e.source === 'patrol'
+      ? (e.detail || patrolCheckMeta(e.type))
+      : [banMeta(e.action).label, e.detail].filter(Boolean).join(' · ');
+    const who = e.source === 'patrol' ? '巡查 · ' + (e.actor || '') : '安全 · ' + e.actor;
+    const t = new Date(e.ts);
+    return `<div class="np-row">
+      <span class="np-sev ${sevCls}"></span>
+      <div class="np-main">
+        <span class="np-what">${esc(what)}</span>
+        <span class="np-meta">${esc(who)}</span>
+      </div>
+      <span class="np-time">${ago(t.getTime() / 1000)}</span>
+    </div>`;
+  }).join('');
+}
+
+const NOTIF_SEEN_KEY = 'run-notif-seen';
+function notifLastSeen() { return Number(localStorage.getItem(NOTIF_SEEN_KEY)) || 0; }
+
+// checkNotifDot 全局轮询最新事件时间，有新通知就让铃铛标红。
+async function checkNotifDot() {
+  try {
+    const d = await api('GET', '/api/events/feed?page=1&page_size=1');
+    const latest = d && d.items && d.items.length ? Date.parse(d.items[0].ts) : 0;
+    if (latest > notifLastSeen()) $('bellBtn').classList.add('has-new');
+  } catch { /* 会话失效走全局 401 */ }
+}
+// markNotifSeen 记住当前最新事件时间，红点消除。
+async function markNotifSeen() {
+  try {
+    const d = await api('GET', '/api/events/feed?page=1&page_size=1');
+    const latest = d && d.items && d.items.length ? Date.parse(d.items[0].ts) : 0;
+    localStorage.setItem(NOTIF_SEEN_KEY, String(latest));
+    $('bellBtn').classList.remove('has-new');
+  } catch { /* 静默 */ }
 }
 
 // 设置页为整页流：所有分类常显，侧栏是锚点导航。点击=平滑滚动+高亮；
@@ -1587,17 +1743,6 @@ document.addEventListener('scroll', () => {
   clearTimeout(settingsSpyTimer);
   settingsSpyTimer = setTimeout(spySettingsScroll, 100);
 }, { passive: true, capture: true });
-$('pEvtSev').addEventListener('change', (e) => { patrolState.evtFilter.severity = e.target.value; patrolState.evtFilter.page = 1; loadEvents(); });
-$('pEvtCheck').addEventListener('change', (e) => { patrolState.evtFilter.check = e.target.value; patrolState.evtFilter.page = 1; loadEvents(); });
-$('pEvtSort').addEventListener('click', () => {
-  const f = patrolState.evtFilter;
-  f.sort = f.sort === 'asc' ? 'desc' : 'asc';
-  f.page = 1;
-  $('pEvtSort').textContent = f.sort === 'asc' ? '最早优先' : '最新优先';
-  loadEvents();
-});
-$('pEvtPrev').addEventListener('click', () => { if (patrolState.evtFilter.page > 1) { patrolState.evtFilter.page--; loadEvents(); } });
-$('pEvtNext').addEventListener('click', () => { patrolState.evtFilter.page++; loadEvents(); });
 $('patrolForm').addEventListener('input', syncDirty);
 $('patrolForm').addEventListener('change', syncDirty);
 $('ppInput').addEventListener('keydown', (e) => {
@@ -2479,6 +2624,8 @@ async function init() {
   setInterval(() => { if (state.view === 'security') refreshSecurity(); }, 10000);
   checkPatrolDot();
   setInterval(checkPatrolDot, 10000);
+  checkNotifDot();
+  setInterval(checkNotifDot, 10000);
 }
 
 async function updateConnection() {

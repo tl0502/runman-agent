@@ -178,6 +178,8 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/session", s.handleSession)
 	mux.HandleFunc("GET /api/brand", s.handleBrandPublic)
+	// 统一事件流：巡查事件 + 安全登录日志按时间归并
+	mux.HandleFunc("GET /api/events/feed", s.handleEventsFeed)
 	// 安全：登录日志与封禁
 	mux.HandleFunc("GET /api/security/log", s.handleSecurityLog)
 	mux.HandleFunc("GET /api/security/bans", s.handleSecurityBans)
@@ -479,6 +481,162 @@ func (s *Server) handlePatrolEvents(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
+	}
+	jsonOK(w, map[string]interface{}{
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+		"items":     items,
+	})
+}
+
+// ─── 统一事件流 ──────────────────────────────────────────────────────────────
+
+// feedItem 统一事件流条目：两源字段归一到同一个形状。
+type feedItem struct {
+	TS     time.Time `json:"ts"`
+	Source string    `json:"source"` // patrol / security
+	Type   string    `json:"type"`   // 巡查=检查项（bandwidth…）；安全=动作（login_ok…）
+	Action string    `json:"action"`
+	Sev    string    `json:"sev"`            // bad / warn / info
+	Actor  string    `json:"actor"`          // 巡查=vm_id；安全=IP
+	User   string    `json:"user,omitempty"` // 安全侧的登录用户名
+	Detail string    `json:"detail"`
+}
+
+// patrolSevOf 巡查动作 → 严重度（与 handlePatrolEvents 的过滤组保持一致）。
+func patrolSevOf(action string) string {
+	switch action {
+	case "stop_vm", "kill_process":
+		return "bad"
+	case "throttle", "restart_vm", "alert":
+		return "warn"
+	default:
+		return "info"
+	}
+}
+
+// securitySevOf 登录动作 → 严重度：封禁类最重，登录失败次之，其余是流水。
+func securitySevOf(action string) string {
+	switch action {
+	case "auto_ban", "login_blocked", "manual_ban":
+		return "bad"
+	case "login_fail":
+		return "warn"
+	default:
+		return "info"
+	}
+}
+
+// severityActionGroups 把严重度翻译成两源各自的动作过滤组。
+func severityActionGroups(sev string) (patrol, security []string) {
+	switch sev {
+	case "bad":
+		return []string{"stop_vm", "kill_process"}, []string{"auto_ban", "login_blocked", "manual_ban"}
+	case "warn":
+		return []string{"throttle", "restart_vm", "alert"}, []string{"login_fail"}
+	case "info":
+		return []string{"release", "recovered"}, []string{"login_ok", "unban"}
+	}
+	return nil, nil
+}
+
+// handleEventsFeed 返回统一事件流：GET /api/events/feed
+//
+//	source:   空=全部 / patrol / security
+//	severity: bad / warn / info（空=全部）
+//	check:    巡查侧检查项（bandwidth…），来源含巡查时生效
+//	sec_type: 安全侧类型组 ok / fail / ban，来源含安全时覆盖 severity 的安全侧分组
+//	since:    unix 秒，只返回该时刻之后的事件（两源统一语义）
+//	q:        内容搜索（巡查 detail/vm_id，安全 detail/ip/user）
+//	page / page_size: 分页（page 从 1 起）
+//
+// 两源各自按条件取 offset+limit 条，按时间倒序归并后切窗口；
+// total 为两源过滤后的总数之和。
+func (s *Server) handleEventsFeed(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	page := 1
+	if v := q.Get("page"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			page = n
+		}
+	}
+	pageSize := 20
+	if v := q.Get("page_size"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			pageSize = n
+		}
+	}
+	offset := (page - 1) * pageSize
+
+	source := q.Get("source")
+	if source != "" && source != "patrol" && source != "security" {
+		jsonErr(w, fmt.Errorf("source 取值为 patrol / security"), http.StatusBadRequest)
+		return
+	}
+	patrolActions, secActions := severityActionGroups(q.Get("severity"))
+	// 登录侧独立筛选维度（登录 Tab 专用）：类型组语义与旧安全页的筛选一致。
+	if v := q.Get("sec_type"); v != "" {
+		switch v {
+		case "ok":
+			secActions = []string{"login_ok"}
+		case "fail":
+			secActions = []string{"login_fail"}
+		case "ban":
+			secActions = []string{"auto_ban", "login_blocked", "manual_ban", "unban"}
+		}
+	}
+	// 时间筛选（unix 秒）：两源统一语义，只返回该时刻之后的事件。
+	var since int64
+	if v := q.Get("since"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			since = n
+		}
+	}
+	// 内容搜索：巡查匹配 detail/vm_id，安全匹配 detail/ip/user。
+	search := strings.TrimSpace(q.Get("q"))
+	fetchPatrol := source == "" || source == "patrol"
+	fetchSecurity := source == "" || source == "security"
+
+	items := []feedItem{}
+	var total int64
+	// 每侧取各自最新的 offset+pageSize 条（offset=0）：两源最新段合并起来
+	// 必然覆盖全局窗口 [offset, offset+pageSize)，归并后再切片。
+	if fetchPatrol {
+		pItems, pTotal, err := s.db.QueryPatrolEvents(db.PatrolEventQuery{Actions: patrolActions, Check: q.Get("check"), Since: since, Q: search}, 0, offset+pageSize)
+		if err != nil {
+			jsonErr(w, err, http.StatusInternalServerError)
+			return
+		}
+		total += pTotal
+		for _, e := range pItems {
+			items = append(items, feedItem{
+				TS: e.TS, Source: "patrol", Type: e.Check, Action: e.Action,
+				Sev: patrolSevOf(e.Action), Actor: e.VMID, Detail: e.Detail,
+			})
+		}
+	}
+	if fetchSecurity {
+		lItems, lTotal, err := s.db.QueryLoginLogs(db.LoginLogQuery{Actions: secActions, Since: since, Q: search}, 0, offset+pageSize)
+		if err != nil {
+			jsonErr(w, err, http.StatusInternalServerError)
+			return
+		}
+		total += lTotal
+		for _, e := range lItems {
+			items = append(items, feedItem{
+				TS: e.TS, Source: "security", Type: e.Action, Action: e.Action,
+				Sev: securitySevOf(e.Action), Actor: e.IP, User: e.User, Detail: e.Detail,
+			})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].TS.After(items[j].TS) })
+	if offset >= len(items) {
+		items = items[:0]
+	} else if end := offset + pageSize; end < len(items) {
+		items = items[offset:end]
+	} else {
+		items = items[offset:]
 	}
 	jsonOK(w, map[string]interface{}{
 		"total":     total,

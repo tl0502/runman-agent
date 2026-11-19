@@ -308,6 +308,8 @@ type PatrolEventQuery struct {
 	Actions []string // 匹配 action IN (...)；空 = 全部
 	VMID    string   // vm_id LIKE 模糊匹配；空 = 全部
 	Sort    string   // "asc" 按时间正序，其余（含空）按最新在前
+	Since   int64    // unix 秒；>0 时只返回该时间之后的事件（统一事件流的时间筛选）
+	Q       string   // 内容搜索：detail / vm_id 模糊匹配；空 = 不筛
 }
 
 // QueryPatrolEvents 按条件分页查询巡查事件，返回 items 与总数。
@@ -323,6 +325,13 @@ func (d *DB) QueryPatrolEvents(q PatrolEventQuery, offset, limit int) ([]PatrolE
 	if q.VMID != "" {
 		tx = tx.Where("vm_id LIKE ?", "%"+q.VMID+"%")
 	}
+	if q.Since > 0 {
+		tx = tx.Where("ts >= ?", time.Unix(q.Since, 0))
+	}
+	if q.Q != "" {
+		like := "%" + q.Q + "%"
+		tx = tx.Where("(detail LIKE ? OR vm_id LIKE ?)", like, like)
+	}
 	var total int64
 	if err := tx.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -333,6 +342,38 @@ func (d *DB) QueryPatrolEvents(q PatrolEventQuery, offset, limit int) ([]PatrolE
 	}
 	out := []PatrolEvent{}
 	if err := tx.Order(order).Offset(offset).Limit(limit).Find(&out).Error; err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
+// LoginLogQuery 登录日志查询条件。
+type LoginLogQuery struct {
+	Actions []string // 匹配 action IN (...)；空 = 全部
+	Since   int64    // unix 秒；>0 时只返回该时间之后的事件（统一事件流的时间筛选）
+	Q       string   // 内容搜索：detail / ip / user 模糊匹配；空 = 不筛
+}
+
+// QueryLoginLogs 按条件分页查询登录日志，返回 items 与总数。
+// 与 QueryPatrolEvents 同款风格，供统一事件流归并分页使用。
+func (d *DB) QueryLoginLogs(q LoginLogQuery, offset, limit int) ([]LoginLog, int64, error) {
+	tx := d.orm.Model(&LoginLog{})
+	if len(q.Actions) > 0 {
+		tx = tx.Where("action IN ?", q.Actions)
+	}
+	if q.Since > 0 {
+		tx = tx.Where("ts >= ?", time.Unix(q.Since, 0))
+	}
+	if q.Q != "" {
+		like := "%" + q.Q + "%"
+		tx = tx.Where("(detail LIKE ? OR ip LIKE ? OR \"user\" LIKE ?)", like, like, like)
+	}
+	var total int64
+	if err := tx.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	out := []LoginLog{}
+	if err := tx.Order("id DESC").Offset(offset).Limit(limit).Find(&out).Error; err != nil {
 		return nil, 0, err
 	}
 	return out, total, nil

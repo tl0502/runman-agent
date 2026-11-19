@@ -43,6 +43,7 @@
     <g id="i-info"><circle cx="12" cy="12" r="8.8"/><path d="M12 11.2v5.2M12 8h.01"/></g>
     <g id="i-warn"><path d="M12 4.2 3.4 19.6h17.2L12 4.2z"/><path d="M12 10v4.2M12 17.4h.01"/></g>
     <g id="i-clock"><circle cx="12" cy="12" r="8.8"/><path d="M12 7.4V12l3.2 2"/></g>
+    <g id="i-bell"><path d="M6.2 10.2a5.8 5.8 0 0 1 11.6 0c0 3.6 1.2 5 1.8 5.8H4.4c.6-.8 1.8-2.2 1.8-5.8z"/><path d="M10 19.2a2 2 0 0 0 4 0"/></g>
     <g id="i-copy"><rect x="9" y="9" width="11" height="11" rx="2.2"/><path d="M15 5.6A2.6 2.6 0 0 0 12.4 3H5.6A2.6 2.6 0 0 0 3 5.6v6.8A2.6 2.6 0 0 0 5.6 15"/></g>
     <g id="i-play"><path d="M8.5 5.6v12.8L19 12 8.5 5.6z"/></g>
     <g id="i-stop"><rect x="6" y="6" width="12" height="12" rx="2.4"/></g>
@@ -106,6 +107,20 @@
       </button>
       <span class="pill pill-quiet hide-sm" id="virtPill" title="虚拟化类型">VIRT —</span>
       <button class="pill pill-quiet mono" id="versionPill" title="查看版本与更新">v—</button>
+      <div class="bell-wrap">
+        <button class="icon-btn bell-btn" id="bellBtn" title="通知" aria-label="通知">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-bell"/></svg>
+          <span class="bell-dot" id="bellDot"></span>
+        </button>
+        <div class="notif-pop" id="notifPop" hidden>
+          <div class="notif-pop-head">
+            <span class="notif-pop-title">通知</span>
+            <button type="button" class="btn btn-quiet btn-sm" id="nfExpand">展开</button>
+          </div>
+          <div class="notif-pop-list" id="nfPopList"></div>
+          <div class="notif-pop-empty" id="nfPopEmpty" hidden>暂无通知</div>
+        </div>
+      </div>
       <button class="icon-btn" id="themeBtn" title="切换外观" aria-label="切换外观">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-moon"/></svg>
       </button>
@@ -462,25 +477,33 @@
       </div>
     </div>
 
-    <div class="grid">
-      <div class="card">
-        <div class="card-head">
-          <span class="card-title">手动封禁</span>
-        </div>
-        <div class="ban-form">
-          <input class="input" id="banIp" placeholder="IP 地址" autocomplete="off" spellcheck="false">
-          <div class="ban-hours" id="banHours">
-            <button type="button" class="btn" data-h="1">1 小时</button>
-            <button type="button" class="btn" data-h="24">24 小时</button>
-            <button type="button" class="btn" data-h="168">7 天</button>
-            <button type="button" class="btn active" data-h="0">永久</button>
+    <div class="duo-grid">
+      <div class="duo-side">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">手动封禁</span>
           </div>
-          <input class="input" id="banReason" placeholder="原因（可选）" autocomplete="off">
-          <button class="btn btn-bad" id="btnBan">封禁</button>
+          <div class="ban-form">
+            <input class="input" id="banIp" placeholder="IP 地址" autocomplete="off" spellcheck="false">
+            <div class="ban-hours" id="banHours">
+              <button type="button" class="btn" data-h="1">1 小时</button>
+              <button type="button" class="btn" data-h="24">24 小时</button>
+              <button type="button" class="btn" data-h="168">7 天</button>
+              <button type="button" class="btn active" data-h="0">永久</button>
+            </div>
+            <input class="input" id="banReason" placeholder="原因（可选）" autocomplete="off">
+            <button class="btn btn-bad" id="btnBan">封禁</button>
+          </div>
+        </div>
+        <div class="card duo-fill">
+          <div class="card-head">
+            <span class="card-title">登录日志</span>
+            <button type="button" class="btn btn-quiet btn-sm" id="nfOpenLogin">查看全部</button>
+          </div>
+          <div class="nf-mini-list" id="secLogMini"></div>
         </div>
       </div>
-
-      <div class="card">
+      <div class="card duo-main">
         <div class="card-head">
           <span class="card-title">当前封禁</span>
           <span class="badge badge-quiet" id="banCount">0</span>
@@ -505,37 +528,6 @@
           <span class="empty-sub">登录失败 5 次会自动锁定 10 分钟，也可手动封禁。</span>
         </div>
       </div>
-
-      <div class="card">
-        <div class="card-head">
-          <span class="card-title">登录事件</span>
-          <select class="input" id="logFilter">
-            <option value="">全部</option>
-            <option value="ok">成功</option>
-            <option value="fail">失败</option>
-            <option value="ban">封禁相关</option>
-          </select>
-        </div>
-        <div class="table-wrap">
-          <table class="data">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>类型</th>
-                <th>IP</th>
-                <th>用户名</th>
-                <th>详情</th>
-              </tr>
-            </thead>
-            <tbody id="logTbody"></tbody>
-          </table>
-        </div>
-        <div class="empty" id="logEmpty" hidden>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-clock"/></svg>
-          <span class="empty-title">暂无事件</span>
-          <span class="empty-sub">登录成功、失败与封禁操作都会记录在这里。</span>
-        </div>
-      </div>
     </div>
   </section>
 
@@ -550,34 +542,33 @@
       </div>
     </div>
 
-    <div class="grid grid-3">
-        <div class="card metric">
-          <div class="metric-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
-            监控 VM
+    <div class="duo-grid">
+      <div class="duo-side">
+        <div class="card">
+          <div class="card-body patrol-metrics">
+            <div class="pm-row">
+              <span class="pm-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>监控 VM</span>
+              <span class="pm-val"><span class="num" id="pMonVm">0</span><span class="unit">台</span><span class="dim small" id="pMonVmMeta">—</span></span>
+            </div>
+            <div class="pm-row">
+              <span class="pm-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-warn"/></svg>异常 VM</span>
+              <span class="pm-val"><span class="num" id="pEvtNum">0</span><span class="unit">台</span></span>
+            </div>
+            <div class="pm-row">
+              <span class="pm-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chart"/></svg>运行状态</span>
+              <span class="pm-val" id="pStatusVal"><span class="dot dot-ok"></span>正常</span>
+            </div>
           </div>
-          <div class="metric-value"><span class="num" id="pMonVm">0</span><span class="unit">台</span></div>
-          <div class="metric-meta"><span id="pMonVmMeta">—</span></div>
         </div>
-        <div class="card metric">
-          <div class="metric-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-warn"/></svg>
-            异常 VM
+        <div class="card duo-fill">
+          <div class="card-head">
+            <span class="card-title">巡查事件</span>
+            <button type="button" class="btn btn-quiet btn-sm" id="nfOpenPatrol">查看全部</button>
           </div>
-          <div class="metric-value"><span class="num" id="pEvtNum">0</span><span class="unit">台</span></div>
-          <div class="metric-meta"><span id="pEvtMeta">待处理</span></div>
-        </div>
-        <div class="card metric">
-          <div class="metric-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chart"/></svg>
-            运行状态
-          </div>
-          <div class="metric-value" id="pStatusVal"><span class="dot dot-ok"></span>正常</div>
-          <div class="metric-meta"><span id="pStatusMeta">—</span></div>
+          <div class="nf-mini-list" id="patrolMini"></div>
         </div>
       </div>
-
-      <div class="card mt-16">
+      <div class="card duo-main">
         <div class="card-head">
           <span class="card-title">异常 VM</span>
           <span class="badge badge-quiet" id="pVmCount">0</span>
@@ -596,49 +587,7 @@
           <span class="empty-sub">限速中或被巡查停机的 VM 会显示在这里。</span>
         </div>
       </div>
-
-      <div class="card mt-16">
-        <div class="card-head">
-          <span class="card-title">监控事件</span>
-          <div class="evt-filters">
-            <select class="input" id="pEvtSev">
-              <option value="">全部严重度</option>
-              <option value="bad">严重</option>
-              <option value="warn">警告</option>
-              <option value="info">信息</option>
-            </select>
-            <select class="input" id="pEvtCheck">
-              <option value="">全部检查项</option>
-              <option value="bandwidth">带宽</option>
-              <option value="connections">连接</option>
-              <option value="resources_cpu">CPU</option>
-              <option value="resources_mem">内存</option>
-              <option value="resources_disk">磁盘</option>
-              <option value="process">进程</option>
-            </select>
-            <button class="btn btn-quiet btn-sm" id="pEvtSort">最新优先</button>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table class="data">
-            <thead>
-              <tr><th>时间</th><th>严重度</th><th>VM</th><th>事件</th></tr>
-            </thead>
-            <tbody id="pEvtTbody"></tbody>
-          </table>
-        </div>
-        <div class="empty" id="pEvtEmpty" hidden>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-clock"/></svg>
-          <span class="empty-title">暂无巡查事件</span>
-          <span class="empty-sub">触发限速、停止、重启、杀进程等动作会记录在这里。</span>
-        </div>
-        <div class="pager" id="pEvtPager" hidden>
-          <span class="dim small" id="pEvtTotal">共 0 条</span>
-          <button class="btn btn-quiet btn-sm" id="pEvtPrev">上一页</button>
-          <span class="dim small tnum" id="pEvtPage">1 / 1</span>
-          <button class="btn btn-quiet btn-sm" id="pEvtNext">下一页</button>
-        </div>
-      </div>
+    </div>
   </section>
 
   <section class="view" id="view-settings" hidden>
@@ -670,7 +619,6 @@
         <button type="button" class="sn" data-scat="p-network">网络监控</button>
         <button type="button" class="sn" data-scat="p-resource">资源监控</button>
         <button type="button" class="sn" data-scat="p-process">进程黑名单</button>
-        <button type="button" class="sn" data-scat="p-abuse">滥用识别</button>
         <div class="sn-g">通知</div>
         <button type="button" class="sn" data-scat="notify">通知渠道</button>
         <div class="sn-g">连接</div>
@@ -968,7 +916,26 @@
               </div>
               <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>入/出方向活跃连接数超阈值并持续 <b>N 分钟</b>，则<b>停止 VM</b> 并同步限速，<b>M 分钟</b>后解除限速（VM 保持停止，需人工重启）。</span></div>
             </div>
-          </section>
+                      <div class="cfg-group">
+              <div class="cfg-group-head">
+                <span>滥用识别</span>
+                <label class="check"><input type="checkbox" id="paEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
+              </div>
+              <div class="ab-grid">
+                <span class="ab-head">检测项</span><span class="ab-head">阈值</span><span class="ab-head">动作</span>
+                <span class="ab-name">UDP 发包</span><input class="input tnum" type="number" id="paUdpLimit" min="1"><select class="input" id="paUdpAction"><option value="throttle">自动限速</option><option value="alert">仅告警</option><option value="stop">停机</option></select>
+                <span class="ab-name">端口扫描</span><input class="input tnum" type="number" id="paScanLimit" min="1" max="4096"><select class="input" id="paScanAction"><option value="alert">仅告警</option><option value="throttle">自动限速</option><option value="stop">停机</option></select>
+                <span class="ab-name">垃圾邮件</span><input class="input tnum" type="number" id="paSmtpLimit" min="1"><select class="input" id="paSmtpAction"><option value="alert">仅告警</option><option value="throttle">自动限速</option><option value="stop">停机</option></select>
+              </div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="paSmtpPorts">发信端口 <span class="hint">逗号分隔</span></label><input class="input mono" id="paSmtpPorts" placeholder="25, 465, 587"></div>
+                <div class="field"><label for="paDuration">持续时间 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="paDuration" min="1"></div>
+                <div class="field"><label for="paThrottle">限速到 <span class="hint">Mbps · 自动限速动作</span></label><input class="input tnum" type="number" id="paThrottle" min="1" max="100000"></div>
+                <div class="field"><label for="paRelease">自动恢复 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="paRelease" min="1"></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>超阈值持续 <b>N 分钟</b>执行动作；「自动限速」按 <b>限速到</b> 限速、到期自动恢复。UDP 未应答连接同样计数。</span></div>
+            </div>
+</section>
 <section class="scat" data-scat="p-resource">
             <div class="pcat-head">
               <label class="check"><input type="checkbox" id="prEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
@@ -1007,45 +974,7 @@
               <span class="hint">全局匹配，容器内进程名或命令行命中任意关键词即被 kill。</span>
             </div>
           </section>
-<section class="scat" data-scat="p-abuse">
-            <div class="pcat-head">
-              <label class="check"><input type="checkbox" id="paEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
-            </div>
-            <div class="cfg-group">
-              <div class="cfg-group-head"><span>UDP 发包</span></div>
-              <div class="form-grid cols-2">
-                <div class="field"><label for="paUdpLimit">UDP 连接数阈值</label><input class="input tnum" type="number" id="paUdpLimit" min="1"></div>
-                <div class="field"><label for="paUdpAction">动作</label><select class="input" id="paUdpAction"><option value="throttle">自动限速</option><option value="alert">仅告警</option><option value="stop">停机</option></select></div>
-              </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>单向海量 UDP 是发包攻击特征，未应答的连接同样计数。</span></div>
-            </div>
-            <div class="cfg-group">
-              <div class="cfg-group-head"><span>端口扫描</span></div>
-              <div class="form-grid cols-2">
-                <div class="field"><label for="paScanLimit">不同目标数阈值</label><input class="input tnum" type="number" id="paScanLimit" min="1" max="4096"></div>
-                <div class="field"><label for="paScanAction">动作</label><select class="input" id="paScanAction"><option value="alert">仅告警</option><option value="throttle">自动限速</option><option value="stop">停机</option></select></div>
-              </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>短时间主动连接大量不同 IP，多为扫描探测。</span></div>
-            </div>
-            <div class="cfg-group">
-              <div class="cfg-group-head"><span>垃圾邮件</span></div>
-              <div class="form-grid cols-2">
-                <div class="field"><label for="paSmtpPorts">发信端口</label><input class="input mono" id="paSmtpPorts" placeholder="25, 465, 587"></div>
-                <div class="field"><label for="paSmtpLimit">连出次数阈值</label><input class="input tnum" type="number" id="paSmtpLimit" min="1"></div>
-                <div class="field"><label for="paSmtpAction">动作</label><select class="input" id="paSmtpAction"><option value="alert">仅告警</option><option value="throttle">自动限速</option><option value="stop">停机</option></select></div>
-              </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>容器主动连出这些端口视为发信尝试，逗号分隔。</span></div>
-            </div>
-            <div class="cfg-group">
-              <div class="cfg-group-head"><span>动作参数</span></div>
-              <div class="form-grid cols-2">
-                <div class="field"><label for="paDuration">持续时间 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="paDuration" min="1"></div>
-                <div class="field"><label for="paThrottle">限速到 <span class="hint">Mbps</span></label><input class="input tnum" type="number" id="paThrottle" min="1" max="100000"></div>
-                <div class="field"><label for="paRelease">自动恢复 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="paRelease" min="1"></div>
-              </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>超阈值持续 <b>N 分钟</b>执行动作，动作后重新计时；限速到期自动恢复。</span></div>
-            </div>
-          </section>
+
 <section class="scat" data-scat="notify">
             <div class="cfg-group">
               <div class="cfg-group-head">
@@ -1281,6 +1210,75 @@
         </div>
         <p class="dsec-hint">会清空 VM 内全部数据，不可恢复。</p>
       </section>
+    </div>
+  </div>
+</aside>
+
+<!-- ── 通知：铃铛展开的悬浮面板 ────────────────────────────────────────────── -->
+<div class="scrim" id="nfScrim" hidden></div>
+<aside class="drawer drawer-wide" id="nfDrawer" hidden aria-hidden="true" aria-label="通知面板">
+  <div class="drawer-head">
+    <div class="nf-head-row">
+      <h2 class="nf-title">通知</h2>
+      <div class="patrol-tabs nf-tabs" role="group" aria-label="来源筛选">
+        <button type="button" class="pt-tab" id="nfTabLogin" aria-selected="false">登录</button>
+        <button type="button" class="pt-tab" id="nfTabPatrol" aria-selected="false">巡查</button>
+      </div>
+      <span class="spacer"></span>
+      <button class="icon-btn" id="nfClose" title="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="drawer-body">
+    <div class="nf-filterbar">
+      <input class="input nf-search" id="nfSearch" placeholder="搜索" autocomplete="off">
+      <select class="input" id="nfSev">
+        <option value="">全部严重度</option>
+        <option value="bad">严重</option>
+        <option value="warn">警告</option>
+        <option value="info">信息</option>
+      </select>
+      <select class="input" id="nfCheck">
+        <option value="">全部检查项</option>
+        <option value="bandwidth">带宽</option>
+        <option value="connections">连接</option>
+        <option value="resources_cpu">CPU</option>
+        <option value="resources_mem">内存</option>
+        <option value="resources_disk">磁盘</option>
+        <option value="process">进程</option>
+      </select>
+      <select class="input" id="nfSecType">
+        <option value="">全部类型</option>
+        <option value="ok">成功</option>
+        <option value="fail">失败</option>
+        <option value="ban">封禁相关</option>
+      </select>
+      <select class="input" id="nfTime">
+        <option value="">全部时间</option>
+        <option value="86400">最近 24 小时</option>
+        <option value="259200">最近 3 天</option>
+        <option value="604800">最近 7 天</option>
+        <option value="2592000">最近 30 天</option>
+      </select>
+    </div>
+    <div class="table-wrap">
+      <table class="data">
+        <thead>
+          <tr><th>时间</th><th>来源</th><th>严重度</th><th>主体</th><th>事件</th></tr>
+        </thead>
+        <tbody id="nfTbody"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="nfEmpty" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><use href="#i-bell"/></svg>
+      <span class="empty-title">暂无事件</span>
+    </div>
+    <div class="pager" id="nfPager" hidden>
+      <span class="dim small" id="nfTotal">共 0 条</span>
+      <button class="btn btn-quiet btn-sm" id="nfPrev">上一页</button>
+      <span class="dim small tnum" id="nfPage">1 / 1</span>
+      <button class="btn btn-quiet btn-sm" id="nfNext">下一页</button>
     </div>
   </div>
 </aside>

@@ -910,8 +910,8 @@ select.input:disabled { cursor: not-allowed; }
 }
 .pt-tab:hover { color: var(--ink-0); }
 .pt-tab[aria-selected="true"] { color: var(--ink-0); background: var(--card-solid, var(--card)); font-weight: 620; }
-#pStatusVal { align-items: center; font-size: 26px; font-weight: 680; letter-spacing: -.02em; color: var(--ink-0); }
-#pStatusVal .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 9px; flex: none; }
+#pStatusVal { display: inline-flex; align-items: center; font-size: 13.5px; font-weight: 640; color: var(--ink-0); }
+#pStatusVal .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; flex: none; }
 #pStatusVal .dot-ok { background: var(--green); }
 #pStatusVal .dot-bad { background: var(--red); }
 #pStatusVal .dot-warn { background: var(--amber); }
@@ -1754,15 +1754,112 @@ body.logged-out .view:not(#view-login) { display: none !important; }
 
 .ban-form {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 10px;
   padding: 16px 20px;
 }
-.ban-form .input { flex: 1 1 200px; min-width: 140px; }
+.ban-form .input { flex: none; width: 100%; min-width: 0; }
+.ban-form .btn-bad { width: 100%; }
 .ban-hours { display: inline-flex; gap: 6px; flex: none; }
 .ban-hours .btn.active { background: #101114; color: #fff; }
 [data-theme="dark"] .ban-hours .btn.active { background: #f4f5f7; color: #0b0c0e; }
 
 /* 抽屉监控：图表按抽屉高度撑开，避免下方大片留白 */
 #dtab-monitor .chart-box { height: 172px; }
+
+/* ── 通知铃铛 + 小窗 + 悬浮面板 ───────────────────────────────────────────── */
+.bell-wrap { position: relative; }
+.bell-btn { border-radius: 50%; }
+.bell-btn.has-new { color: var(--red); }
+.bell-dot {
+  position: absolute;
+  top: 3px; right: 3px;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--red);
+  opacity: 0;
+  transform: scale(.4);
+  transition: opacity .2s ease, transform .2s ease;
+  pointer-events: none;
+}
+.bell-btn.has-new .bell-dot { opacity: 1; transform: scale(1); }
+
+.notif-pop {
+  position: absolute;
+  top: calc(100% + 10px); right: -6px;
+  width: 360px; max-height: 440px;
+  display: flex; flex-direction: column;
+  background: var(--card-solid);
+  -webkit-backdrop-filter: saturate(180%) blur(30px);
+  backdrop-filter: saturate(180%) blur(30px);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow-card), 0 18px 50px -20px rgba(16, 18, 24, .45);
+  z-index: 60;
+}
+.notif-pop-head {
+  flex: none;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+.notif-pop-title { font-size: 13px; font-weight: 640; }
+.notif-pop-list { overflow-y: auto; padding: 4px 6px; }
+.np-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 8px; border-radius: 9px; }
+.np-row:hover { background: var(--fill); }
+.np-sev { width: 7px; height: 7px; border-radius: 50%; flex: none; margin-top: 6px; }
+.np-sev.dot-bad { background: var(--red); }
+.np-sev.dot-warn { background: var(--amber); }
+.np-sev.dot-ok { background: var(--green); }
+.np-main { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.np-what { font-size: 12.5px; color: var(--ink-0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.np-meta { font-size: 11px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.np-time { font-size: 11px; color: var(--ink-3); flex: none; }
+.notif-pop-empty { padding: 26px 0 30px; text-align: center; font-size: 12px; color: var(--ink-3); }
+
+.drawer-wide { width: min(780px, 100vw); }
+.drawer-wide table.data { min-width: 0; }
+/* 单行头部：标题（加大，压住 Tab 的层级）+ 小号来源 Tab 同排 + 关闭 */
+.nf-head-row { display: flex; align-items: center; gap: 14px; padding: 4px 0 16px; }
+.nf-title { margin: 0; font-size: 22px; font-weight: 680; letter-spacing: -.02em; color: var(--ink-0); }
+.nf-tabs { flex: none; }
+.nf-tabs .pt-tab { font-size: 11.5px; padding: 3px 9px; }
+/* select 被自绘 .pick 组件接管外观，定宽要落在 .pick 容器上 */
+.nf-head-row .pick { width: 150px; flex: none; }
+/* 来源定制的筛选条：全部=严重度+时间；巡查=严重度+检查项+时间；登录=类型+时间 */
+.nf-filterbar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 0 14px; }
+.nf-filterbar .pick { flex: 0 1 150px; }
+.nf-search { width: 170px; flex: none; }
+/* 条目内容换行，杜绝横向滚动；时间列保持单行 */
+.drawer-wide table.data td { white-space: normal; word-break: break-word; }
+.drawer-wide table.data td:first-child { white-space: nowrap; }
+
+/* ── 巡查/安全页：左右双栏——左列操作+摘要，右列主面板占满 ─────────────────── */
+.duo-grid { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 16px; align-items: stretch; }
+.duo-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.duo-side .duo-fill { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.duo-fill .nf-mini-list { flex: 1; overflow-y: auto; padding: 4px 8px 8px; }
+.duo-main { display: flex; flex-direction: column; }
+.duo-main .table-wrap { flex: 1; }
+.duo-main .empty { flex: 1; justify-content: center; }
+@media (max-width: 1040px) {
+  .duo-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 左列状态卡：紧凑指标行 */
+.patrol-metrics { display: grid; padding: 6px 20px; }
+.pm-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 0; }
+.pm-row + .pm-row { border-top: 1px solid var(--hairline); }
+.pm-label { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-2); }
+.pm-label svg { width: 14px; height: 14px; flex: none; }
+.pm-val { display: inline-flex; align-items: baseline; gap: 5px; font-size: 13.5px; font-weight: 640; color: var(--ink-0); }
+.pm-val .num { font-size: 16px; font-weight: 680; }
+.pm-val .unit { font-size: 11px; color: var(--ink-3); font-weight: 500; }
+
+.np-empty { padding: 16px 8px 20px; text-align: center; font-size: 12px; color: var(--ink-3); }
+
+/* 滥用识别：检测项矩阵（名称 | 阈值 | 动作），并入网络监控分组 */
+.ab-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 10px 12px; align-items: center; margin-bottom: 14px; }
+.ab-head { font-size: 11px; font-weight: 600; color: var(--ink-2); }
+.ab-name { font-size: 12.5px; color: var(--ink-1); }
