@@ -11,6 +11,7 @@ import (
 	"runman-agent/config"
 	"runman-agent/db"
 	"runman-agent/manager"
+	"runman-agent/notify"
 	"runman-agent/proto/agent"
 )
 
@@ -26,10 +27,11 @@ type VMProber interface {
 // Service 是巡查引擎：ticker 周期巡检，判定 + 动作 + 落库都在本进程内完成，
 // 不依赖平台。面板与 API 只读它的结果（事件日志 / 限速状态）。
 type Service struct {
-	mgr    manager.VMManager
-	prober VMProber
-	db     *db.DB
-	cfg    *config.Manager
+	mgr      manager.VMManager
+	prober   VMProber
+	db       *db.DB
+	cfg      *config.Manager
+	notifier *notify.Notifier
 
 	mu        sync.Mutex
 	states    map[string]*vmState
@@ -56,12 +58,13 @@ type vmState struct {
 	lastActionAt time.Time // 最近一次自动动作时间（重启/关机冷却）
 }
 
-func NewService(mgr manager.VMManager, prober VMProber, database *db.DB, cfg *config.Manager) *Service {
+func NewService(mgr manager.VMManager, prober VMProber, database *db.DB, cfg *config.Manager, notifier *notify.Notifier) *Service {
 	s := &Service{
 		mgr:       mgr,
 		prober:    prober,
 		db:        database,
 		cfg:       cfg,
+		notifier:  notifier,
 		states:    make(map[string]*vmState),
 		throttles: make(map[string]db.PatrolThrottle),
 		done:      make(chan struct{}),
@@ -208,12 +211,7 @@ func (s *Service) emit(vmID, check, action, detail string, notify bool) {
 }
 
 // notify 发 Telegram 通知（仅当配置了 token/chat_id 且开关开启）。
-// 异步发送：Telegram 网络延迟不应阻塞巡检循环。
+// 通道能力在 notify 包，这里只提交文本；实际发送异步，不阻塞巡检循环。
 func (s *Service) notify(vmID, check, detail string) {
-	conf := s.cfg.Get()
-	if !conf.TelegramEnabled() {
-		return
-	}
-	token, chatID := conf.Telegram.BotToken, conf.Telegram.ChatID
-	go sendTelegram(token, chatID, "巡查告警 ["+vmID+"] ("+check+")\n"+detail)
+	s.notifier.Send(notify.KindPatrol, "巡查告警 ["+vmID+"] ("+check+")\n"+detail)
 }

@@ -1465,6 +1465,7 @@ function loadPatrolConfig(c) {
   patrolState.blacklist = (pr.blacklist || []).slice();
   renderPatrolTags();
   $('tgEnabled').checked = !!t.enabled;
+  $('tgLogin').checked = t.login_enabled == null ? true : !!t.login_enabled;
   // BotToken 不回传明文（与主 Token 同基线）：输入框恒为空，留空提交即"不修改"。
   // 是否已配置看响应顶层的 telegram_has_token（telegram 段里的 bot_token 恒为空串）。
   $('tgToken').value = '';
@@ -1502,6 +1503,7 @@ function collectPatrolConfig() {
     },
     telegram: {
       enabled: $('tgEnabled').checked,
+      login_enabled: $('tgLogin').checked,
       bot_token: $('tgToken').value.trim(),
       chat_id: $('tgChat').value.trim(),
     },
@@ -1789,6 +1791,20 @@ $('platformEnabled').addEventListener('change', () => { applyPlatformEnabledUI()
 // 清除 Token 是立即生效的后端操作（不是待在表单里保存的字段），
 // 因此完成后要把快照基线一起刷新，否则会留下一个假的「未保存」提示。
 $('clearToken').addEventListener('click', (e) => clearPlatformToken(e.currentTarget).catch(toastErr));
+
+// Telegram 通道连通性测试：同步发送、结果就地显示。不受 enabled 开关限制——
+// 配了凭据就能测，用于区分「开关开着但没收到」与「根本发不出去」。
+$('tgTest').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
+  const res = $('tgTestResult');
+  try {
+    await api('POST', '/api/notify/test');
+    res.textContent = '✅ 已发送，请查收 Telegram';
+    res.hidden = false;
+  } catch (err) {
+    res.textContent = '❌ ' + (err?.message || '发送失败');
+    res.hidden = false;
+  }
+}));
 
 async function clearPlatformToken(btn) {
   if (!confirm('清除 Token 并切换为独立模式？')) return;

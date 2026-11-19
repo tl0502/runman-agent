@@ -102,3 +102,81 @@ func TestClearPlatformTokenUpdatesHasToken(t *testing.T) {
 		t.Fatal("has_token should be false after clearing the token")
 	}
 }
+
+// ── Telegram Bot Token：与平台 Token 同基线 ──────────────────────────────────
+
+// setTelegramToken 直接把 bot_token 写进配置，模拟已配置通知通道的机器。
+func setTelegramToken(t *testing.T, s *Server, token string) {
+	t.Helper()
+	if err := s.cfg.UpdateChecked(func(c *config.Config) error {
+		c.Telegram.BotToken = token
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestConfigResponseOmitsTelegramBotToken 验证 GET /api/config 不回传
+// telegram.bot_token 明文，只回 telegram_has_token（凭据与平台 Token 同口径）。
+func TestConfigResponseOmitsTelegramBotToken(t *testing.T) {
+	const tgToken = "secret-bot-token-987654321"
+	s := newConfigTestServer(t)
+	setTelegramToken(t, s, tgToken)
+
+	body := getConfigBody(t, s, tgToken)
+
+	var tg struct {
+		BotToken string `json:"bot_token"`
+	}
+	if err := json.Unmarshal(body["telegram"], &tg); err != nil {
+		t.Fatalf("telegram segment invalid: %v", err)
+	}
+	if tg.BotToken != "" {
+		t.Fatalf("bot_token should be masked, got %q", tg.BotToken)
+	}
+	var has bool
+	if err := json.Unmarshal(body["telegram_has_token"], &has); err != nil {
+		t.Fatalf("telegram_has_token missing: %v", err)
+	}
+	if !has {
+		t.Fatal("telegram_has_token should be true when a token is configured")
+	}
+}
+
+// TestConfigTelegramTokenEmptyPreserves 验证 POST /api/config 的
+// bot_token 留空 = 保留现有值（整体替换语义下防止每次保存清掉 Token）。
+func TestConfigTelegramTokenEmptyPreserves(t *testing.T) {
+	s := newConfigTestServer(t)
+	setTelegramToken(t, s, "original-bot-token")
+
+	postConfig(t, s, map[string]any{
+		"telegram": map[string]any{"enabled": true, "bot_token": "", "chat_id": "-100123"},
+	})
+
+	tg := s.cfg.Get().Telegram
+	if tg.BotToken != "original-bot-token" {
+		t.Fatalf("bot_token should be preserved, got %q", tg.BotToken)
+	}
+	if tg.ChatID != "-100123" {
+		t.Fatalf("chat_id should be updated, got %q", tg.ChatID)
+	}
+}
+
+// TestConfigTelegramLoginNotifyDefaultOn 验证 login_enabled 缺省为开（nil→true）：
+// 通道本身是显式开启的，打开即同意接收各类告警，不应有第二层静默关闭。
+func TestConfigTelegramLoginNotifyDefaultOn(t *testing.T) {
+	s := newConfigTestServer(t)
+	postConfig(t, s, map[string]any{
+		"telegram": map[string]any{"enabled": true, "bot_token": "t", "chat_id": "c"},
+	})
+	if !s.cfg.Get().Telegram.LoginNotifyOn() {
+		t.Fatal("login notifications should default to on when login_enabled omitted")
+	}
+
+	postConfig(t, s, map[string]any{
+		"telegram": map[string]any{"enabled": true, "bot_token": "", "chat_id": "c", "login_enabled": false},
+	})
+	if s.cfg.Get().Telegram.LoginNotifyOn() {
+		t.Fatal("login notifications should be off when login_enabled=false")
+	}
+}

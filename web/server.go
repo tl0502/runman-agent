@@ -27,6 +27,7 @@ import (
 	"runman-agent/manager/portforward"
 	"runman-agent/manager/wgbind"
 	"runman-agent/monitor"
+	"runman-agent/notify"
 	"runman-agent/patrol"
 	"runman-agent/proto/agent"
 	"runman-agent/updater"
@@ -77,6 +78,7 @@ type Server struct {
 	commit       string
 	updater      *updater.Service
 	patrol       *patrol.Service
+	notifier     *notify.Notifier
 
 	monitorHst map[string][]vmListItem
 	monitorMu  sync.RWMutex
@@ -112,6 +114,11 @@ func NewServer(database *db.DB, mgr manager.VMManager, hostMon *monitor.HostMoni
 // SetPatrol 注入巡查服务引用（非 Podman 后端时为 nil，相关端点返回未启用）。
 func (s *Server) SetPatrol(p *patrol.Service) {
 	s.patrol = p
+}
+
+// SetNotifier 注入全局通知器（与巡查共享同一实例，配置实时生效）。
+func (s *Server) SetNotifier(n *notify.Notifier) {
+	s.notifier = n
 }
 
 // authMiddleware 校验 cookie session；未登录返回 401（无 WWW-Authenticate，
@@ -257,6 +264,9 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("POST /api/patrol/throttles/{vmID}/release", s.handlePatrolRelease)
 	mux.HandleFunc("/api/patrol/config", s.handlePatrolConfig)
 
+	// 通知（Agent 侧全局能力，当前通道 Telegram）
+	mux.HandleFunc("POST /api/notify/test", s.handleNotifyTest)
+
 	// 启动后台监控收集
 	go s.startMonitorLoop()
 
@@ -346,6 +356,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if _, banned := s.db.GetLoginBan(ip); banned {
 		if s.sessions.recordBlocked(ip) {
 			s.db.InsertLoginLog("login_blocked", ip, req.User, "封禁中的 IP 尝试登录")
+			s.notifier.Send(notify.KindLogin,
+				"登录告警 ["+req.User+"] ("+ip+")\n封禁中的 IP 仍在尝试登录")
 		}
 		jsonErr(w, fmt.Errorf("用户名或密码错误"), http.StatusUnauthorized)
 		return
@@ -368,8 +380,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			_ = bcrypt.CompareHashAndPassword([]byte(dummyBcryptHash), []byte(req.Password))
 		}
 		if until, locked := s.sessions.recordFail(ip); locked {
-			s.db.InsertLoginLog("auto_ban", ip, req.User,
-				fmt.Sprintf("连续 %d 次失败，锁定至 %s", maxLoginFails, until.Format("15:04:05")))
+			detail := fmt.Sprintf("连续 %d 次失败，锁定至 %s", maxLoginFails, until.Format("15:04:05"))
+			s.db.InsertLoginLog("auto_ban", ip, req.User, detail)
+			s.notifier.Send(notify.KindLogin,
+				"登录告警 ["+req.User+"] ("+ip+")\n"+detail)
 		} else {
 			s.db.InsertLoginLog("login_fail", ip, req.User, "")
 		}
@@ -378,6 +392,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sessions.recordSuccess(ip)
 	s.db.InsertLoginLog("login_ok", ip, req.User, "")
+	s.notifier.Send(notify.KindLogin,
+		"登录通知 ["+req.User+"] ("+ip+")\n面板登录成功")
 
 	token, err := s.sessions.create(req.User)
 	if err != nil {
@@ -528,7 +544,8 @@ func (s *Server) handlePatrolRelease(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]bool{"ok": true})
 }
 
-// handlePatrolConfig 读/写巡查 + Telegram 配置。
+// handlePatrolConfig 读/写巡查 + Telegram 配置（旧端点，前端已改走 /api/config）。
+// bot_token 口径与主配置一致：GET 脱敏回传 + telegram_has_token，PUT 留空 = 保留。
 func (s *Server) handlePatrolConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPut || r.Method == http.MethodPost {
 		var req struct {
@@ -546,7 +563,11 @@ func (s *Server) handlePatrolConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.cfg.Update(func(c *config.Config) {
 			c.Patrol = req.Patrol
-			c.Telegram = req.Telegram
+			tg := req.Telegram
+			if tg.BotToken == "" {
+				tg.BotToken = c.Telegram.BotToken
+			}
+			c.Telegram = tg
 		}); err != nil {
 			jsonErr(w, err, http.StatusInternalServerError)
 			return
@@ -555,10 +576,28 @@ func (s *Server) handlePatrolConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conf := s.cfg.Get()
+	tg := conf.Telegram
+	tg.BotToken = ""
 	jsonOK(w, map[string]interface{}{
-		"patrol":   conf.Patrol,
-		"telegram": conf.Telegram,
+		"patrol":             conf.Patrol,
+		"telegram":           tg,
+		"telegram_has_token": conf.Telegram.BotToken != "",
 	})
+}
+
+// handleNotifyTest 用当前 Telegram 配置同步发送测试消息，当场验证通道可用性。
+// 不受 enabled 开关限制：配了凭据即可测，否则「开关开着但没收到」与
+// 「根本发不出去」无法区分排查。
+func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
+	if s.notifier == nil {
+		jsonErr(w, fmt.Errorf("通知器未初始化"), http.StatusInternalServerError)
+		return
+	}
+	if err := s.notifier.SendTest(); err != nil {
+		jsonErr(w, err, http.StatusBadRequest)
+		return
+	}
+	jsonOK(w, map[string]bool{"ok": true})
 }
 
 // normalizePatrol 把面板传来的值夹取到合法区间（所有阈值/时长可配置，但须在安全范围）。

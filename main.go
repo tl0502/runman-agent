@@ -27,6 +27,7 @@ import (
 	"runman-agent/manager/wgbind"
 	"runman-agent/monitor"
 	"runman-agent/ndp"
+	"runman-agent/notify"
 	"runman-agent/patrol"
 	"runman-agent/proto/agent"
 	"runman-agent/traffic"
@@ -236,6 +237,9 @@ func main() {
 	upd := updater.NewService(database, cfg, version)
 	go upd.Start(context.Background())
 
+	// 全局通知器：Agent 侧统一推送出口（当前通道 Telegram），巡查与登录安全事件共用。
+	ntf := notify.New(cfg)
+
 	// 自动巡查：仅 Podman 后端生效（带宽 tc / 活跃连接 / 进程黑名单都依赖 podman 能力）。
 	// 云主机/incus 驱动不实现 VMProber，跳过。
 	var patrolSvc *patrol.Service
@@ -248,7 +252,7 @@ func main() {
 			}
 		}
 		if pm, ok := rawMgr.(*podman.Manager); ok {
-			patrolSvc = patrol.NewService(svc, pm, database, cfg)
+			patrolSvc = patrol.NewService(svc, pm, database, cfg, ntf)
 			patrolSvc.Start(context.Background())
 		}
 	}
@@ -257,6 +261,7 @@ func main() {
 	// 同时传入 rawMgr 以便 Web 服务能访问具体的 Manager 实现（如 CloudHV 的内存报告）
 	ws := web.NewServer(database, svc, hostMon, cfg, a.pf, a.wg, a, rawMgr, version, commit, upd)
 	ws.SetPatrol(patrolSvc)
+	ws.SetNotifier(ntf)
 	go func() {
 		log.Printf("Starting web server on %s", conf.Web)
 		if err := ws.ListenAndServe(conf.Web); err != nil {

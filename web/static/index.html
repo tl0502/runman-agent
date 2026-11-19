@@ -1003,7 +1003,14 @@
           </section>
 <section class="scat" data-scat="notify">
             <div class="pcat-head">
-              <label class="check"><input type="checkbox" id="tgEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用 Telegram</label>
+              <div class="field-row">
+                <label class="check"><input type="checkbox" id="tgEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用 Telegram</label>
+                <label class="check"><input type="checkbox" id="tgLogin"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 登录通知 <span class="hint">登录成功/触发锁定时推送</span></label>
+              </div>
+              <div class="field-row">
+                <span class="hint" id="tgTestResult" hidden></span>
+                <button type="button" class="btn btn-ghost btn-sm" id="tgTest">发送测试</button>
+              </div>
             </div>
             <div class="form-grid cols-2">
               <div class="field">
