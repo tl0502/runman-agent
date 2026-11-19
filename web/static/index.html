@@ -1330,8 +1330,7 @@
       <div class="row" style="justify-content:flex-end;margin-bottom:6px">
         <button type="button" class="btn btn-ghost btn-sm" id="ciAddToggle">＋ 添加自定义镜像</button>
       </div>
-      <div id="imagesList" class="grid" style="gap:2px"></div>
-      <div id="ciAddForm" hidden style="margin-top:10px">
+      <div id="ciAddForm" hidden style="margin-bottom:10px">
         <div class="row" style="gap:8px">
           <input class="input mono" id="ciRef" placeholder="docker.io/user/image:tag" style="flex:2">
           <input class="input" id="ciName" placeholder="显示名称（留空自动取）" style="flex:1">
@@ -1340,6 +1339,7 @@
         </div>
         <span class="hint" style="display:block;margin-top:6px">镜像需内含 init/sshd/bash，后台拉取，就绪后自动上架</span>
       </div>
+      <div id="imagesList" class="grid" style="gap:2px"></div>
     </div>
     <div class="modal-foot">
       <button class="btn btn-quiet" data-close="modalImages">取消</button>
