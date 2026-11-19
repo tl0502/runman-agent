@@ -1438,9 +1438,10 @@ function spySettingsScroll() {
 function loadPatrolConfig(c) {
   if (!c) return;
   const p = c.patrol || {};
-  const b = p.bandwidth || {}, n = p.connections || {}, r = p.resources || {}, pr = p.processes || {}, t = c.telegram || {};
+  const b = p.bandwidth || {}, n = p.connections || {}, r = p.resources || {}, pr = p.processes || {}, ab = p.abuse || {}, t = c.telegram || {};
   $('pEnabled').checked = p.enabled == null ? true : !!p.enabled;
   $('pInterval').value = p.interval_sec || 60;
+  $('pSelfCheck').value = p.self_check_fail_limit ?? 3;
   $('pbEnabled').checked = b.enabled == null ? true : !!b.enabled;
   $('pbThreshold').value = b.threshold_pct ?? 90;
   $('pbDuration').value = b.duration_min ?? 6;
@@ -1464,6 +1465,17 @@ function loadPatrolConfig(c) {
   $('ppEnabled').checked = pr.enabled == null ? true : !!pr.enabled;
   patrolState.blacklist = (pr.blacklist || []).slice();
   renderPatrolTags();
+  $('paEnabled').checked = !!ab.enabled;
+  $('paUdpLimit').value = ab.udp_conn_limit ?? 200;
+  $('paUdpAction').value = ab.udp_action || 'throttle';
+  $('paScanLimit').value = ab.scan_dst_limit ?? 200;
+  $('paScanAction').value = ab.scan_action || 'alert';
+  $('paSmtpPorts').value = (ab.smtp_ports || []).join(', ');
+  $('paSmtpLimit').value = ab.smtp_limit ?? 20;
+  $('paSmtpAction').value = ab.smtp_action || 'alert';
+  $('paDuration').value = ab.duration_min ?? 5;
+  $('paThrottle').value = ab.throttle_mbps ?? 10;
+  $('paRelease').value = ab.release_min ?? 60;
   $('tgEnabled').checked = !!t.enabled;
   // 逐事件推送开关（nil 视为 true）。存量配置 login_enabled=false 的：
   // 登录类三事件映射为全关，首次保存后细粒度字段落盘、语义完全接管。
@@ -1507,6 +1519,20 @@ function collectPatrolConfig() {
         enabled: $('ppEnabled').checked,
         blacklist: patrolState.blacklist.slice(),
       },
+      abuse: {
+        enabled: $('paEnabled').checked,
+        udp_conn_limit: num('paUdpLimit'),
+        udp_action: $('paUdpAction').value,
+        scan_dst_limit: num('paScanLimit'),
+        scan_action: $('paScanAction').value,
+        smtp_ports: $('paSmtpPorts').value.split(/[,，、\s]+/).map((s) => parseInt(s, 10)).filter((v) => Number.isInteger(v) && v >= 1 && v <= 65535),
+        smtp_limit: num('paSmtpLimit'),
+        smtp_action: $('paSmtpAction').value,
+        duration_min: num('paDuration'),
+        throttle_mbps: num('paThrottle'),
+        release_min: num('paRelease'),
+      },
+      self_check_fail_limit: num('pSelfCheck'),
     },
     telegram: {
       enabled: $('tgEnabled').checked,

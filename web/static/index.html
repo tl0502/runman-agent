@@ -670,6 +670,7 @@
         <button type="button" class="sn" data-scat="p-network">网络监控</button>
         <button type="button" class="sn" data-scat="p-resource">资源监控</button>
         <button type="button" class="sn" data-scat="p-process">进程黑名单</button>
+        <button type="button" class="sn" data-scat="p-abuse">滥用识别</button>
         <div class="sn-g">通知</div>
         <button type="button" class="sn" data-scat="notify">通知渠道</button>
         <div class="sn-g">连接</div>
@@ -930,7 +931,12 @@
                 <label for="pInterval">巡查间隔 <span class="hint">秒</span></label>
                 <input class="input tnum" type="number" id="pInterval" min="5" max="86400">
               </div>
+              <div class="field">
+                <label for="pSelfCheck">失败告警阈值 <span class="hint">连续 N 次</span></label>
+                <input class="input tnum" type="number" id="pSelfCheck" min="1" max="100">
+              </div>
             </div>
+            <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>容器列表或连接表连续 <b>N 次</b>读取失败时推送告警，恢复时同样上报。</span></div>
           </section>
 <section class="scat" data-scat="p-network">
 
@@ -999,6 +1005,45 @@
                 <textarea class="tag-input" id="ppInput" rows="1" placeholder="回车添加；可粘贴逗号/换行分隔的多个关键词批量导入" autocomplete="off" spellcheck="false"></textarea>
               </div>
               <span class="hint">全局匹配，容器内进程名或命令行命中任意关键词即被 kill。</span>
+            </div>
+          </section>
+<section class="scat" data-scat="p-abuse">
+            <div class="pcat-head">
+              <label class="check"><input type="checkbox" id="paEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
+            </div>
+            <div class="cfg-group">
+              <div class="cfg-group-head"><span>UDP 发包</span></div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="paUdpLimit">UDP 连接数阈值</label><input class="input tnum" type="number" id="paUdpLimit" min="1"></div>
+                <div class="field"><label for="paUdpAction">动作</label><select class="input" id="paUdpAction"><option value="throttle">自动限速</option><option value="alert">仅告警</option><option value="stop">停机</option></select></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>单向海量 UDP 是发包攻击特征，未应答的连接同样计数。</span></div>
+            </div>
+            <div class="cfg-group">
+              <div class="cfg-group-head"><span>端口扫描</span></div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="paScanLimit">不同目标数阈值</label><input class="input tnum" type="number" id="paScanLimit" min="1" max="4096"></div>
+                <div class="field"><label for="paScanAction">动作</label><select class="input" id="paScanAction"><option value="alert">仅告警</option><option value="throttle">自动限速</option><option value="stop">停机</option></select></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>短时间主动连接大量不同 IP，多为扫描探测。</span></div>
+            </div>
+            <div class="cfg-group">
+              <div class="cfg-group-head"><span>垃圾邮件</span></div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="paSmtpPorts">发信端口</label><input class="input mono" id="paSmtpPorts" placeholder="25, 465, 587"></div>
+                <div class="field"><label for="paSmtpLimit">连出次数阈值</label><input class="input tnum" type="number" id="paSmtpLimit" min="1"></div>
+                <div class="field"><label for="paSmtpAction">动作</label><select class="input" id="paSmtpAction"><option value="alert">仅告警</option><option value="throttle">自动限速</option><option value="stop">停机</option></select></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>容器主动连出这些端口视为发信尝试，逗号分隔。</span></div>
+            </div>
+            <div class="cfg-group">
+              <div class="cfg-group-head"><span>动作参数</span></div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="paDuration">持续时间 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="paDuration" min="1"></div>
+                <div class="field"><label for="paThrottle">限速到 <span class="hint">Mbps</span></label><input class="input tnum" type="number" id="paThrottle" min="1" max="100000"></div>
+                <div class="field"><label for="paRelease">自动恢复 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="paRelease" min="1"></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>超阈值持续 <b>N 分钟</b>执行动作，动作后重新计时；限速到期自动恢复。</span></div>
             </div>
           </section>
 <section class="scat" data-scat="notify">

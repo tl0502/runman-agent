@@ -314,7 +314,8 @@ type PatrolEventQuery struct {
 func (d *DB) QueryPatrolEvents(q PatrolEventQuery, offset, limit int) ([]PatrolEvent, int64, error) {
 	tx := d.orm.Model(&PatrolEvent{})
 	if q.Check != "" {
-		tx = tx.Where("check = ?", q.Check)
+		// check 是 SQLite 保留字，裸写会语法错误（面板按 check 筛选事件时 500）。
+		tx = tx.Where(`"check" = ?`, q.Check)
 	}
 	if len(q.Actions) > 0 {
 		tx = tx.Where("action IN ?", q.Actions)

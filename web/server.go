@@ -633,6 +633,35 @@ func normalizePatrol(p *config.PatrolConfig) {
 	if p.Resources.Action != "restart" && p.Resources.Action != "stop" && p.Resources.Action != "alert" {
 		p.Resources.Action = "restart"
 	}
+	p.Abuse.UdpConnLimit = clamp(p.Abuse.UdpConnLimit, 1, 1000000)
+	p.Abuse.ScanDstLimit = clamp(p.Abuse.ScanDstLimit, 1, 4096)
+	p.Abuse.SmtpLimit = clamp(p.Abuse.SmtpLimit, 1, 1000000)
+	p.Abuse.DurationMin = clamp(p.Abuse.DurationMin, 1, 10080)
+	p.Abuse.ThrottleMbps = clamp(p.Abuse.ThrottleMbps, 1, 100000)
+	p.Abuse.ReleaseMin = clamp(p.Abuse.ReleaseMin, 1, 10080)
+	p.Abuse.UdpAction = normAbuseAction(p.Abuse.UdpAction, "throttle")
+	p.Abuse.ScanAction = normAbuseAction(p.Abuse.ScanAction, "alert")
+	p.Abuse.SmtpAction = normAbuseAction(p.Abuse.SmtpAction, "alert")
+	ports := make([]int, 0, len(p.Abuse.SmtpPorts))
+	for _, port := range p.Abuse.SmtpPorts {
+		if port >= 1 && port <= 65535 {
+			ports = append(ports, port)
+		}
+	}
+	if len(ports) == 0 {
+		ports = []int{25} // 与 applyPatrolDefaults 一致：空黑名单回落 SMTP 缺省端口
+	}
+	p.Abuse.SmtpPorts = ports
+	p.SelfCheckFailLimit = clamp(p.SelfCheckFailLimit, 1, 100)
+}
+
+// normAbuseAction 归一滥用识别动作：非法值回落 def（alert/throttle/stop 三档）。
+func normAbuseAction(v, def string) string {
+	switch v {
+	case "alert", "throttle", "stop":
+		return v
+	}
+	return def
 }
 
 // validatePatrol 校验面板提交的巡查配置（补充 normalize 未覆盖的硬约束）。

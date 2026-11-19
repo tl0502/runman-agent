@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,40 +15,90 @@ import (
 )
 
 // connCount 是某个 IP 的活跃连接计数（in=外部主动连入，out=该 IP 主动连出）。
-type connCount struct{ in, out int }
+// 滥用识别追加的画像字段只在 watch 集合（容器 IP）上累计，避免为全表外部 IP
+// 分配无用结构。
+type ipConnStats struct {
+	in, out int // 活跃连接：TCP ESTABLISHED / UDP ASSURED（与旧口径一致）
+	// udpIn/udpOut 是 UDP 条目数（含 UNREPLIED，分方向）。单向海量 UDP 是
+	// 发包攻击的硬特征——现有活跃口径（ASSURED）对单向洪水不可见。
+	udpIn, udpOut int
+	// smtpOut 是出方向、目标端口命中黑名单的 TCP 条目数（不看状态，
+	// 群发邮件的连接大多短命，活跃口径下同样不可见）。
+	smtpOut int
+	// distinct 是出方向出现过的不同目标 TCP IP（不看状态，扫描器的大多数
+	// 握手完不成）。饱和封顶：数量达到 scanCap 后不再收集，内存有界。
+	distinct map[string]struct{}
+}
 
-// countAllConnections 一次性解析 /proc/net/nf_conntrack，返回 IP → 活跃连接计数。
-func countAllConnections() map[string]connCount {
+// countAllConnections 一次性解析 /proc/net/nf_conntrack，返回 IP → 连接画像。
+// watch 为容器 IP 集合（nil = 全部 IP 都做完整画像）；scanCap 是不同目标数的
+// 饱和上限（<=0 不收集）；smtpPorts 是发信端口黑名单（空则不统计）。
+func countAllConnections(watch map[string]bool, scanCap int, smtpPorts map[int]bool) (map[string]*ipConnStats, error) {
 	data, err := os.ReadFile("/proc/net/nf_conntrack")
 	if err != nil {
 		data, err = os.ReadFile("/proc/net/ip_conntrack") // 旧内核路径
 		if err != nil {
-			return map[string]connCount{}
+			return nil, err
 		}
 	}
-	return countConnections(string(data))
+	return countConnections(string(data), watch, scanCap, smtpPorts), nil
 }
 
-// countConnections 解析 conntrack 文本，统计每个 IP 的活跃连接数。
+// countConnections 解析 conntrack 文本，统计每个 IP 的连接画像。
 // 活跃判定：TCP 状态 ESTABLISHED、UDP 标记 [ASSURED]（双向都见过）。
-// 只统计原始方向（每条条目算一条连接）。
-func countConnections(data string) map[string]connCount {
-	m := map[string]connCount{}
+// 滥用画像（udp/smtp/distinct）不看活跃状态——滥用条目天生不活跃。
+func countConnections(data string, watch map[string]bool, scanCap int, smtpPorts map[int]bool) map[string]*ipConnStats {
+	m := map[string]*ipConnStats{}
 	for _, line := range strings.Split(data, "\n") {
-		if line == "" || !isActiveConn(line) {
+		if line == "" {
 			continue
 		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		proto := fields[2]
 		src := firstKV(line, "src=")
 		dst := firstKV(line, "dst=")
 		if src == "" || dst == "" || src == dst {
 			continue
 		}
 		c := m[src]
-		c.out++
-		m[src] = c
+		if c == nil {
+			c = &ipConnStats{}
+			m[src] = c
+		}
 		d := m[dst]
-		d.in++
-		m[dst] = d
+		if d == nil {
+			d = &ipConnStats{}
+			m[dst] = d
+		}
+		if isActiveConn(line, proto) {
+			c.out++
+			d.in++
+		}
+		if proto == "udp" {
+			c.udpOut++
+			d.udpIn++
+			continue // UDP 不参与扫描/发信画像
+		}
+		if proto != "tcp" || (watch != nil && !watch[src]) {
+			continue
+		}
+		// 以下为出方向 TCP 的滥用画像（仅容器 IP）
+		if len(smtpPorts) > 0 {
+			if port, err := strconv.Atoi(firstKV(line, "dport=")); err == nil && smtpPorts[port] {
+				c.smtpOut++
+			}
+		}
+		if scanCap > 0 {
+			if c.distinct == nil {
+				c.distinct = make(map[string]struct{}, 8)
+			}
+			if len(c.distinct) < scanCap {
+				c.distinct[dst] = struct{}{}
+			}
+		}
 	}
 	return m
 }
@@ -56,11 +107,11 @@ func countConnections(data string) map[string]connCount {
 // TCP 条目带状态字段（ESTABLISHED/TIME_WAIT/...），只认 ESTABLISHED；
 // UDP 条目无状态字段，靠 [ASSURED]（[UNREPLIED] 是单向未应答，不算活跃）。
 // 注意：TCP 条目的 reply 元组也会带 [ASSURED]，不能用它判断 TCP 是否活跃。
-func isActiveConn(line string) bool {
-	if strings.Contains(line, "tcp") {
+func isActiveConn(line, proto string) bool {
+	switch proto {
+	case "tcp":
 		return strings.Contains(line, "ESTABLISHED")
-	}
-	if strings.Contains(line, "udp") {
+	case "udp":
 		return strings.Contains(line, "[ASSURED]")
 	}
 	return false
@@ -149,7 +200,8 @@ func (s *Service) checkBandwidth(conf config.Config, vm *agent.VMSummary, st *vm
 }
 
 // checkConnections 活跃连接数巡查：in≥inLimit 或 out≥outLimit 持续 durationMin 分钟 → 停止 VM + 限速。
-func (s *Service) checkConnections(conf config.Config, vm *agent.VMSummary, connMap map[string]connCount, st *vmState, now time.Time) {
+// connMap 为 nil 表示 conntrack 读取失败（本轮失明）：持续判定清零，下次见到数据重新累计。
+func (s *Service) checkConnections(conf config.Config, vm *agent.VMSummary, connMap map[string]*ipConnStats, st *vmState, now time.Time) {
 	cc := conf.Patrol.Connections
 	if cc.Enabled != nil && !*cc.Enabled {
 		return
@@ -161,8 +213,12 @@ func (s *Service) checkConnections(conf config.Config, vm *agent.VMSummary, conn
 	if ip == "" {
 		return
 	}
-	c := connMap[ip]
-	if c.in >= cc.InLimit || c.out >= cc.OutLimit {
+	cs := connMap[ip]
+	var in, out int
+	if cs != nil {
+		in, out = cs.in, cs.out
+	}
+	if in >= cc.InLimit || out >= cc.OutLimit {
 		if st.connOverSince.IsZero() {
 			st.connOverSince = now
 		}
@@ -177,7 +233,7 @@ func (s *Service) checkConnections(conf config.Config, vm *agent.VMSummary, conn
 			release := now.Add(time.Duration(cc.ReleaseMin) * time.Minute)
 			applied, noEffect := s.applyThrottle(vm.VmId, mbps, release, "connections")
 			detail := fmt.Sprintf("活跃连接 in=%d/out=%d 超限（阈值 in≥%d/out≥%d，持续 %d 分钟），停止 VM 并限速到 %d Mbps（%d 分钟后解除）",
-				c.in, c.out, cc.InLimit, cc.OutLimit, cc.DurationMin, mbps, cc.ReleaseMin)
+				in, out, cc.InLimit, cc.OutLimit, cc.DurationMin, mbps, cc.ReleaseMin)
 			switch {
 			case noEffect:
 				detail += "；限速值不低于该 VM 的带宽上限，未施加"
@@ -286,6 +342,92 @@ func (s *Service) checkDisk(vm *agent.VMSummary, st *vmState, diskGB int64, rc c
 	s.emit(vm.VmId, "resources_disk", "alert",
 		fmt.Sprintf("磁盘占用 %.1fGB/%.1fGB（%d%%）超阈值 %d%%",
 			float64(used)/1e9, float64(limit)/1e9, used*100/limit, rc.DiskPct), false)
+}
+
+// checkAbuse 滥用识别巡查：UDP 连接数 / 端口扫描 / SMTP 出方向端口。
+// 三个子项共用「持续 DurationMin 分钟超限 → 按各自动作处置」的判定框架，
+// 动作后计时清零——告警天然形成「每持续超限 N 分钟一次」的节奏，无需额外限频。
+// connMap 为 nil（conntrack 读取失败）时本轮失明，持续判定清零。
+func (s *Service) checkAbuse(conf config.Config, vm *agent.VMSummary, connMap map[string]*ipConnStats, st *vmState, now time.Time) {
+	ac := conf.Patrol.Abuse
+	if !ac.EnabledOn() {
+		return
+	}
+	ip := vmIPv4(vm)
+	if ip == "" {
+		return
+	}
+	cs := connMap[ip]
+	if cs == nil {
+		cs = &ipConnStats{}
+	}
+	dur := time.Duration(ac.DurationMin) * time.Minute
+
+	// UDP 发包/被打：任一方向条目数达到阈值（含 UNREPLIED，单向洪水的主要形态）
+	overUDP := cs.udpOut >= ac.UdpConnLimit || cs.udpIn >= ac.UdpConnLimit
+	s.abuseGate(vm, st, now, &st.udpOverSince, overUDP, dur, ac.UdpAction,
+		fmt.Sprintf("UDP 连接 out=%d/in=%d 超阈值 %d", cs.udpOut, cs.udpIn, ac.UdpConnLimit),
+		"abuse_udp", ac)
+
+	// 端口扫描：出方向不同目标 IP 数（解析侧饱和封顶 = 阈值，达上限即超限）
+	if ac.ScanDstLimit > 0 {
+		overScan := len(cs.distinct) >= ac.ScanDstLimit
+		s.abuseGate(vm, st, now, &st.scanOverSince, overScan, dur, ac.ScanAction,
+			fmt.Sprintf("主动连接 %d 个不同目标 IP（≥%d）", len(cs.distinct), ac.ScanDstLimit),
+			"abuse_scan", ac)
+	}
+
+	// SMTP 出方向：命中黑名单端口的 TCP 条目数
+	if ac.SmtpLimit > 0 {
+		overSmtp := cs.smtpOut >= ac.SmtpLimit
+		s.abuseGate(vm, st, now, &st.smtpOverSince, overSmtp, dur, ac.SmtpAction,
+			fmt.Sprintf("连出端口 %v 共 %d 次（阈值 %d）", ac.SmtpPorts, cs.smtpOut, ac.SmtpLimit),
+			"abuse_smtp", ac)
+	}
+}
+
+// abuseGate 滥用识别的通用判定：持续超限 dur 达到后按 action 处置。
+func (s *Service) abuseGate(vm *agent.VMSummary, st *vmState, now time.Time, overSince *time.Time,
+	over bool, dur time.Duration, action, detail, check string, ac config.PatrolAbuse) {
+	if !over {
+		*overSince = time.Time{}
+		return
+	}
+	if overSince.IsZero() {
+		*overSince = now
+		return
+	}
+	if now.Sub(*overSince) < dur {
+		return
+	}
+	*overSince = time.Time{}
+	switch action {
+	case "throttle":
+		if s.isThrottled(vm.VmId) {
+			return // 已在限速中，等 reconcile 到期恢复
+		}
+		mbps := ac.ThrottleMbps
+		release := now.Add(time.Duration(ac.ReleaseMin) * time.Minute)
+		applied, noEffect := s.applyThrottle(vm.VmId, mbps, release, check)
+		d := detail + fmt.Sprintf("，限速到 %d Mbps（%d 分钟后恢复）", mbps, ac.ReleaseMin)
+		switch {
+		case noEffect:
+			d += "；限速值不低于该 VM 的带宽上限，未施加"
+		case !applied:
+			d += "；tc 暂未生效，下一轮巡查会重放"
+		}
+		s.emit(vm.VmId, check, "throttle", d, true)
+	case "stop":
+		if err := s.mgr.StopVM(context.Background(), vm.VmId, false); err != nil {
+			log.Printf("[Patrol] stop VM %s: %v", vm.VmId, err)
+			s.emit(vm.VmId, check, "alert", detail+"，停机失败："+err.Error(), true)
+			return
+		}
+		_ = s.db.SavePatrolStop(vm.VmId, check)
+		s.emit(vm.VmId, check, "stop_vm", detail+"，已停机", true)
+	default: // alert
+		s.emit(vm.VmId, check, "alert", detail, true)
+	}
 }
 
 // checkProcesses 容器内进程黑名单巡查：命中即杀，只记面板日志不通知 TG。

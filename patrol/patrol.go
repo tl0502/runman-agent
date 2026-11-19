@@ -4,6 +4,7 @@ package patrol
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -36,9 +37,21 @@ type Service struct {
 	mu        sync.Mutex
 	states    map[string]*vmState
 	throttles map[string]db.PatrolThrottle
+	// sources 是巡查数据源的自检状态：连续失败达到阈值告警一次，恢复时再报。
+	// 没有它，「没收到告警」无法区分「没问题」和「巡查瞎了」。
+	sources map[string]*sourceHealth
 
 	done chan struct{}
 }
+
+// sourceHealth 是单个数据源的连续失败计数与告警态。
+type sourceHealth struct {
+	fails   int
+	alerted bool
+}
+
+// selfCheckVMID 是自检事件在事件日志里挂的虚拟 VM 标识（自检是宿主级视角）。
+const selfCheckVMID = "host"
 
 // vmState 保存单个 VM 跨巡检周期的阈值判定状态（用于「持续 N 分钟」与冷却）。
 type vmState struct {
@@ -47,6 +60,9 @@ type vmState struct {
 
 	bwOverSince   time.Time // 带宽开始超阈值的时间
 	connOverSince time.Time // 连接数开始超阈值的时间
+	udpOverSince  time.Time // 滥用识别：UDP 连接数
+	scanOverSince time.Time // 滥用识别：不同目标 IP 数
+	smtpOverSince time.Time // 滥用识别：SMTP 端口命中
 	cpuOverSince  time.Time
 	memOverSince  time.Time
 	// lastDiskAlertAt 上次磁盘告警时间。同一 VM 的磁盘告警按配置间隔限频
@@ -67,6 +83,7 @@ func NewService(mgr manager.VMManager, prober VMProber, database *db.DB, cfg *co
 		notifier:  notifier,
 		states:    make(map[string]*vmState),
 		throttles: make(map[string]db.PatrolThrottle),
+		sources:   make(map[string]*sourceHealth),
 		done:      make(chan struct{}),
 	}
 	// 启动时恢复上次未到期的限速（重启后继续生效）。
@@ -159,14 +176,32 @@ func (s *Service) tick() {
 	vms, err := s.mgr.ListVMs(ctx)
 	if err != nil {
 		log.Printf("[Patrol] list VMs: %v", err)
+		s.sourceFailed(conf, "podman", err)
 		return
 	}
+	s.sourceHealthy(conf, "podman", "容器列表")
 
 	// 停机异常的恢复检测：VM 被用户重新启动（或已被删除）后清除「被停机」状态。
 	s.reconcileStops(vms)
 
-	// 一次读取 conntrack，为所有 VM 统计 in/out 活跃连接，避免每个 VM 重复解析。
-	connMap := countAllConnections()
+	// 一次读取 conntrack，为所有 VM 统计连接画像（活跃 in/out + 滥用识别三件套），
+	// 避免每个 VM 重复解析。watch 限定容器 IP：滥用画像只对容器有意义，
+	// 也把不同目标集合的内存开销约束在「容器数 × 饱和上限」内。
+	watch := make(map[string]bool, len(vms))
+	for _, vm := range vms {
+		if ip := vmIPv4(vm); ip != "" {
+			watch[ip] = true
+		}
+	}
+	scanCap, smtpPorts := abuseParseParams(conf)
+	connMap, err := countAllConnections(watch, scanCap, smtpPorts)
+	if err != nil {
+		log.Printf("[Patrol] read conntrack: %v", err)
+		s.sourceFailed(conf, "conntrack", err)
+		connMap = nil // 本轮失明：连接类判定清零，其他检查照常
+	} else {
+		s.sourceHealthy(conf, "conntrack", "连接跟踪表")
+	}
 
 	now := time.Now()
 	for _, vm := range vms {
@@ -176,8 +211,70 @@ func (s *Service) tick() {
 		st := s.getState(vm.VmId)
 		s.checkBandwidth(conf, vm, st, now)
 		s.checkConnections(conf, vm, connMap, st, now)
+		s.checkAbuse(conf, vm, connMap, st, now)
 		s.checkResources(conf, vm, st, now)
 		s.checkProcesses(conf, vm, st)
+	}
+}
+
+// abuseParseParams 从配置提取 conntrack 解析所需的滥用识别参数：
+// scanCap 是不同目标数的饱和上限（0=不收集），smtpPorts 是发信端口黑名单。
+// 滥用识别关闭时两者皆空，解析循环不承担画像开销。
+func abuseParseParams(conf config.Config) (int, map[int]bool) {
+	a := conf.Patrol.Abuse
+	if !a.EnabledOn() {
+		return 0, nil
+	}
+	ports := make(map[int]bool, len(a.SmtpPorts))
+	for _, p := range a.SmtpPorts {
+		if p > 0 && p < 65536 {
+			ports[p] = true
+		}
+	}
+	var scanCap int
+	if a.ScanDstLimit > 0 {
+		scanCap = a.ScanDstLimit
+	}
+	return scanCap, ports
+}
+
+// sourceFailed 记录数据源一次失败：连续失败达到阈值时告警一次（已告警不重复），
+// 恢复由 sourceHealthy 上报。自检跟随巡查总开关（tick 只在开启时执行）。
+func (s *Service) sourceFailed(conf config.Config, name string, err error) {
+	limit := conf.Patrol.SelfCheckFailLimit
+	if limit <= 0 {
+		limit = 3
+	}
+	s.mu.Lock()
+	h := s.sources[name]
+	if h == nil {
+		h = &sourceHealth{}
+		s.sources[name] = h
+	}
+	h.fails++
+	fire := h.fails >= limit && !h.alerted
+	if fire {
+		h.alerted = true
+	}
+	s.mu.Unlock()
+	if fire {
+		s.emit(selfCheckVMID, "self_check", "alert",
+			fmt.Sprintf("巡查数据源 %s 连续 %d 次读取失败，相关检查暂停：%v", name, h.fails, err), true)
+	}
+}
+
+// sourceHealthy 记录数据源恢复正常：清零计数；此前处于告警态时补报恢复。
+func (s *Service) sourceHealthy(conf config.Config, name, label string) {
+	s.mu.Lock()
+	h := s.sources[name]
+	wasAlerted := h != nil && h.alerted
+	if h != nil {
+		h.fails = 0
+		h.alerted = false
+	}
+	s.mu.Unlock()
+	if wasAlerted {
+		s.emit(selfCheckVMID, "self_check", "recovered", label+"已恢复，相关检查继续", true)
 	}
 }
 

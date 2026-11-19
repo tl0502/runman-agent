@@ -216,6 +216,11 @@ type PatrolConfig struct {
 	Connections PatrolConnections `json:"connections"`
 	Resources   PatrolResources   `json:"resources"`
 	Processes   PatrolProcesses   `json:"processes"`
+	Abuse       PatrolAbuse       `json:"abuse"`
+
+	// SelfCheckFailLimit 巡查数据源（容器列表/连接表）连续失败多少次后告警，
+	// <=0 回落 3。把「巡查静默失效」变成「瞎了会喊」，恢复时同样上报。
+	SelfCheckFailLimit int `json:"self_check_fail_limit"`
 }
 
 // PatrolBandwidth 单容器带宽占用巡查。ThresholdPct 是「占分配上限的百分比」。
@@ -264,6 +269,36 @@ type PatrolResources struct {
 type PatrolProcesses struct {
 	Enabled   *bool    `json:"enabled"` // nil 视为 true
 	Blacklist []string `json:"blacklist"`
+}
+
+// PatrolAbuse 滥用识别巡查：从 conntrack 原始条目里识别「天生不活跃」的滥用流量。
+// 现有活跃连接巡查只认 TCP ESTABLISHED / UDP ASSURED，而滥用行为（单向 UDP 发包、
+// 端口扫描的半截握手、群发邮件的短命连接）恰恰是非活跃条目，活跃口径下不可见。
+type PatrolAbuse struct {
+	// Enabled 为 nil 时视为 false（默认关）：新功能上线不应在阈值未调好前自动开始告警。
+	Enabled *bool `json:"enabled"`
+	// UdpConnLimit 单容器 UDP 条目数阈值（in/out 任一方向达到即算超限，含 UNREPLIED）。
+	UdpConnLimit int `json:"udp_conn_limit"`
+	// ScanDstLimit 出方向不同目标 IP 数阈值（达到即算超限，解析侧饱和封顶）。
+	ScanDstLimit int `json:"scan_dst_limit"`
+	// SmtpPorts 出方向连接视为发信行为的目标端口黑名单（空回落 [25]）。
+	SmtpPorts []int `json:"smtp_ports"`
+	// SmtpLimit 出方向命中黑名单端口的 TCP 条目数阈值。
+	SmtpLimit int `json:"smtp_limit"`
+	// DurationMin 持续超限多少分钟后执行动作；动作后计时清零，天然形成告警节奏。
+	DurationMin int `json:"duration_min"`
+	// 三个子项的动作均为 alert / throttle / stop，各自独立可配。
+	UdpAction  string `json:"udp_action"`
+	ScanAction string `json:"scan_action"`
+	SmtpAction string `json:"smtp_action"`
+	// ThrottleMbps / ReleaseMin 是 throttle 动作共用的限速值与到期恢复时长。
+	ThrottleMbps int `json:"throttle_mbps"`
+	ReleaseMin   int `json:"release_min"`
+}
+
+// EnabledOn 返回滥用识别开关，nil 视为 false（默认关）。
+func (a PatrolAbuse) EnabledOn() bool {
+	return a.Enabled != nil && *a.Enabled
 }
 
 // TelegramConfig 是 Telegram 通知配置。Enabled 为 nil 时视为 false（默认不推送）。
@@ -484,6 +519,39 @@ func applyPatrolDefaults(p *PatrolConfig) {
 	}
 	if len(p.Processes.Blacklist) == 0 {
 		p.Processes.Blacklist = []string{"xmrig", "minerd", "transmission", "qBittorrent", "aria2c"}
+	}
+	if p.Abuse.UdpConnLimit <= 0 {
+		p.Abuse.UdpConnLimit = 200
+	}
+	if p.Abuse.ScanDstLimit <= 0 {
+		p.Abuse.ScanDstLimit = 200
+	}
+	if len(p.Abuse.SmtpPorts) == 0 {
+		p.Abuse.SmtpPorts = []int{25}
+	}
+	if p.Abuse.SmtpLimit <= 0 {
+		p.Abuse.SmtpLimit = 20
+	}
+	if p.Abuse.DurationMin <= 0 {
+		p.Abuse.DurationMin = 5
+	}
+	if p.Abuse.UdpAction == "" {
+		p.Abuse.UdpAction = "throttle"
+	}
+	if p.Abuse.ScanAction == "" {
+		p.Abuse.ScanAction = "alert"
+	}
+	if p.Abuse.SmtpAction == "" {
+		p.Abuse.SmtpAction = "alert"
+	}
+	if p.Abuse.ThrottleMbps <= 0 {
+		p.Abuse.ThrottleMbps = 10
+	}
+	if p.Abuse.ReleaseMin <= 0 {
+		p.Abuse.ReleaseMin = 60
+	}
+	if p.SelfCheckFailLimit <= 0 {
+		p.SelfCheckFailLimit = 3
 	}
 }
 
