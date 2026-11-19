@@ -542,13 +542,7 @@
   <!-- ═══════════════════════════════ 巡查 ═══════════════════════════════════ -->
   <section class="view" id="view-patrol" hidden>
     <div class="page-head">
-      <div class="row" style="align-items:center; gap:14px">
-        <h1 class="page-title">巡查</h1>
-        <nav class="patrol-tabs" id="patrolTabs" role="tablist">
-          <button type="button" class="pt-tab" role="tab" data-ptab="overview" aria-selected="true">总览</button>
-          <button type="button" class="pt-tab" role="tab" data-ptab="config" aria-selected="false">配置</button>
-        </nav>
-      </div>
+      <h1 class="page-title">巡查</h1>
       <div class="page-actions">
         <button class="icon-btn" id="patrolRefresh" title="刷新">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
@@ -556,9 +550,7 @@
       </div>
     </div>
 
-    <!-- ── 总览 ── -->
-    <div class="ptab" id="ptab-overview">
-      <div class="grid grid-3">
+    <div class="grid grid-3">
         <div class="card metric">
           <div class="metric-label">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
@@ -647,131 +639,8 @@
           <button class="btn btn-quiet btn-sm" id="pEvtNext">下一页</button>
         </div>
       </div>
-    </div>
-
-    <!-- ── 配置 ── -->
-    <div class="ptab" id="ptab-config" hidden>
-      <div class="patrol-config">
-        <nav class="patrol-nav" id="patrolNav">
-          <button type="button" class="pn active" data-pcat="basic">基础设置</button>
-          <button type="button" class="pn" data-pcat="network">网络监控</button>
-          <button type="button" class="pn" data-pcat="resource">资源监控</button>
-          <button type="button" class="pn" data-pcat="process">进程黑名单</button>
-          <button type="button" class="pn" data-pcat="notify">通知渠道</button>
-        </nav>
-        <form class="patrol-form" id="patrolForm" autocomplete="off">
-          <section class="pcat" data-pcat="basic">
-            <div class="pcat-head">
-              <span class="pcat-title">基础设置</span>
-              <label class="check"><input type="checkbox" id="pEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用巡查</label>
-            </div>
-            <div class="form-grid cols-2">
-              <div class="field">
-                <label for="pInterval">巡查间隔 <span class="hint">秒</span></label>
-                <input class="input tnum" type="number" id="pInterval" min="5" max="86400">
-              </div>
-            </div>
-          </section>
-
-          <section class="pcat" data-pcat="network" hidden>
-            <div class="pcat-head"><span class="pcat-title">网络监控</span></div>
-
-            <div class="cfg-group">
-              <div class="cfg-group-head">
-                <span>带宽占用</span>
-                <label class="check"><input type="checkbox" id="pbEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
-              </div>
-              <div class="form-grid cols-2">
-                <div class="field"><label for="pbThreshold">占用阈值 <span class="hint">% 上限</span></label><input class="input tnum" type="number" id="pbThreshold" min="1" max="100"></div>
-                <div class="field"><label for="pbDuration">持续时间 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="pbDuration" min="1"></div>
-                <div class="field"><label for="pbThrottle">限速到 <span class="hint">Mbps</span></label><input class="input tnum" type="number" id="pbThrottle" min="1" max="100000"></div>
-                <div class="field"><label for="pbRelease">自动恢复 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="pbRelease" min="1"></div>
-              </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>带宽占用达到分配上限的 <b>阈值 %</b> 并持续 <b>N 分钟</b>，则限速到 <b>限速值</b>，<b>M 分钟</b>后自动恢复。</span></div>
-            </div>
-
-            <div class="cfg-group">
-              <div class="cfg-group-head">
-                <span>活跃连接</span>
-                <label class="check"><input type="checkbox" id="pcEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
-              </div>
-              <div class="form-grid cols-2">
-                <div class="field"><label for="pcIn">入方向阈值 <span class="hint">连接数</span></label><input class="input tnum" type="number" id="pcIn" min="1"></div>
-                <div class="field"><label for="pcOut">出方向阈值 <span class="hint">连接数</span></label><input class="input tnum" type="number" id="pcOut" min="1"></div>
-                <div class="field"><label for="pcDuration">持续时间 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="pcDuration" min="1"></div>
-                <div class="field"><label for="pcThrottle">同步限速 <span class="hint">Mbps</span></label><input class="input tnum" type="number" id="pcThrottle" min="1" max="100000"></div>
-                <div class="field span-2"><label for="pcRelease">限速解除 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="pcRelease" min="1"></div>
-              </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>入/出方向活跃连接数超阈值并持续 <b>N 分钟</b>，则<b>停止 VM</b> 并同步限速，<b>M 分钟</b>后解除限速（VM 保持停止，需人工重启）。</span></div>
-            </div>
-          </section>
-
-          <section class="pcat" data-pcat="resource" hidden>
-            <div class="pcat-head">
-              <span class="pcat-title">资源监控</span>
-              <label class="check"><input type="checkbox" id="prEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
-            </div>
-            <div class="cfg-group">
-              <div class="cfg-group-head"><span>CPU / 内存</span></div>
-              <div class="form-grid cols-2">
-                <div class="field"><label for="prCpu">CPU 阈值 <span class="hint">% 配额</span></label><input class="input tnum" type="number" id="prCpu" min="1" max="100"></div>
-                <div class="field"><label for="prCpuMin">CPU 持续 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prCpuMin" min="1"></div>
-                <div class="field"><label for="prMem">内存阈值 <span class="hint">%</span></label><input class="input tnum" type="number" id="prMem" min="1" max="100"></div>
-                <div class="field"><label for="prMemMin">内存持续 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prMemMin" min="1"></div>
-                <div class="field"><label for="prCooldown">重启冷却 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prCooldown" min="1"></div>
-                <div class="field"><label for="prAction">超限动作</label><select class="input" id="prAction"><option value="restart">自动重启</option><option value="stop">关机</option><option value="alert">仅告警</option></select></div>
-              </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>CPU/内存超阈值持续 <b>N 分钟</b> 后执行「超限动作」；两次自动动作间隔不小于「重启冷却」。</span></div>
-            </div>
-            <div class="cfg-group">
-              <div class="cfg-group-head"><span>磁盘</span></div>
-              <div class="form-grid cols-2">
-                <div class="field"><label for="prDisk">磁盘阈值 <span class="hint">%</span></label><input class="input tnum" type="number" id="prDisk" min="1" max="100"></div>
-                <div class="field"><label for="prDiskInterval">告警间隔 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prDiskInterval" min="10" max="10080"></div>
-              </div>
-              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>磁盘超阈值<b>仅记面板日志</b>、不发 Telegram，也不自动处置。同一 VM 两次告警的间隔不小于「告警间隔」。</span></div>
-            </div>
-          </section>
-
-          <section class="pcat" data-pcat="process" hidden>
-            <div class="pcat-head">
-              <span class="pcat-title">进程黑名单</span>
-              <label class="check"><input type="checkbox" id="ppEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
-            </div>
-            <div class="field">
-              <label for="ppInput">黑名单关键词 <span class="hint">命中即杀</span></label>
-              <div class="tags-editor">
-                <div class="tag-list" id="ppTagList"></div>
-                <textarea class="tag-input" id="ppInput" rows="1" placeholder="回车添加；可粘贴逗号/换行分隔的多个关键词批量导入" autocomplete="off" spellcheck="false"></textarea>
-              </div>
-              <span class="hint">全局匹配，容器内进程名或命令行命中任意关键词即被 kill。</span>
-            </div>
-          </section>
-
-          <section class="pcat" data-pcat="notify" hidden>
-            <div class="pcat-head">
-              <span class="pcat-title">通知渠道</span>
-              <label class="check"><input type="checkbox" id="tgEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用 Telegram</label>
-            </div>
-            <div class="form-grid cols-2">
-              <div class="field">
-                <label for="tgToken">Bot Token</label>
-                <input class="input mono" type="password" id="tgToken" placeholder="123456:ABC-xyz" autocomplete="off">
-                <span class="hint">BotFather 生成的 token，默认脱敏</span>
-              </div>
-              <div class="field">
-                <label for="tgChat">Chat ID</label>
-                <input class="input mono" id="tgChat" placeholder="-100123456789">
-                <span class="hint">接收告警的会话/群组 ID</span>
-              </div>
-            </div>
-          </section>
-        </form>
-      </div>
-    </div>
   </section>
 
-  <!-- ═══════════════════════════════ 设置 ═══════════════════════════════════ -->
   <section class="view" id="view-settings" hidden>
     <div class="page-head">
       <div>
@@ -786,10 +655,41 @@
       </div>
     </div>
 
-    <form id="configForm" autocomplete="off">
-      <div class="settings-rows">
-
-        <div class="card">
+    <div class="settings-config">
+      <nav class="settings-nav" id="settingsNav">
+       <div class="sn-scroll">
+        <button type="button" class="sn active" data-scat="panel">面板</button>
+        <div class="sn-g">系统</div>
+        <button type="button" class="sn" data-scat="collect">采集目标</button>
+        <button type="button" class="sn" data-scat="limits">容器资源上限</button>
+        <div class="sn-g">网络</div>
+        <button type="button" class="sn" data-scat="forward">转发与流量</button>
+        <button type="button" class="sn" data-scat="net">容器网络</button>
+        <div class="sn-g">巡查</div>
+        <button type="button" class="sn" data-scat="p-basic">基础设置</button>
+        <button type="button" class="sn" data-scat="p-network">网络监控</button>
+        <button type="button" class="sn" data-scat="p-resource">资源监控</button>
+        <button type="button" class="sn" data-scat="p-process">进程黑名单</button>
+        <div class="sn-g">通知</div>
+        <button type="button" class="sn" data-scat="notify">通知渠道</button>
+        <div class="sn-g">连接</div>
+        <button type="button" class="sn" data-scat="platform">平台接入</button>
+        <div class="sn-g">关于</div>
+        <button type="button" class="sn" data-scat="update">更新</button>
+        <button type="button" class="sn" data-scat="about">关于</button>
+       </div>
+      </nav>
+      <div class="settings-content">
+        <form id="configForm" autocomplete="off">
+        <!-- 分组标题条：两个 form 用 display:contents 摊平，视觉顺序由 app.css 的 order 决定 -->
+        <div class="scat-group" data-group="sys">系统</div>
+        <div class="scat-group" data-group="net">网络</div>
+        <div class="scat-group" data-group="patrol">巡查</div>
+        <div class="scat-group" data-group="notify">通知</div>
+        <div class="scat-group" data-group="platform">连接</div>
+        <div class="scat-group" data-group="about">关于</div>
+        <section class="scat" data-scat="panel">
+<div class="card">
           <div class="card-head">
             <span class="card-title">面板</span>
           </div>
@@ -826,11 +726,29 @@
             </div>
           </div>
         </div>
-
-        <div class="settings-row">
-          <div class="card">
+        </section>
+        <section class="scat" data-scat="about">
+<div class="card">
+          <div class="card-head">
+            <span class="card-title">关于</span>
+            <span class="card-note" id="aboutVirt">—</span>
+          </div>
+          <div class="card-body row between" style="flex-wrap:wrap;gap:16px">
+            <div class="kv" style="grid-template-columns:auto auto auto auto;gap:8px 20px">
+              <dt>面板版本</dt><dd class="mono" id="aboutVersion">—</dd>
+              <dt>更新来源</dt><dd class="mono" id="aboutRepo">—</dd>
+            </div>
+            <button type="button" class="btn btn-ghost" id="btnVersion">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
+              检查更新
+            </button>
+          </div>
+        </div>
+        </section>
+        <section class="scat" data-scat="collect">
+<div class="card">
             <div class="card-head">
-              <span class="card-title">监控</span>
+              <span class="card-title">采集目标</span>
             </div>
             <div class="card-body form-grid">
               <div class="form-grid cols-2">
@@ -849,125 +767,9 @@
               </div>
             </div>
           </div>
-
-          <div class="card">
-            <div class="card-head">
-              <span class="card-title">转发与流量</span>
-            </div>
-            <div class="card-body form-grid">
-              <div class="form-grid cols-2">
-                <div class="field">
-                  <label for="maxPortForward">端口转发数</label>
-                  <input class="input tnum" type="number" id="maxPortForward" min="1" max="1000">
-                </div>
-                <div class="field">
-                  <label for="maxForwardIPs">唯一来源 IP <span class="hint">0 = 不限</span></label>
-                  <input class="input tnum" type="number" id="maxForwardIPs" min="0" max="100000">
-                </div>
-              </div>
-              <div class="form-grid cols-2">
-                <div class="field">
-                  <label for="trafficResetMode">流量重置</label>
-                  <select class="input" id="trafficResetMode">
-                    <option value="monthly">每月固定日</option>
-                    <option value="rental">创建 + 30 天</option>
-                  </select>
-                </div>
-                <div class="field" id="trafficResetDayField">
-                  <label for="trafficResetDay">重置日 <span class="hint">1–28</span></label>
-                  <input class="input tnum" type="number" id="trafficResetDay" min="1" max="28">
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="settings-row">
-          <div class="card">
-            <div class="card-head">
-              <span class="card-title">平台接入</span>
-            </div>
-            <div class="card-body form-grid">
-              <label class="check"><input type="checkbox" id="platformEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 接入平台 <span class="hint">关闭后仅本地面板管理</span></label>
-              <div class="field">
-                <label for="token">API Token</label>
-                <div class="field-row">
-                  <input class="input mono" type="password" id="token" placeholder="未配置">
-                  <button class="btn btn-ghost btn-sm" id="clearToken" type="button">清除</button>
-                </div>
-              </div>
-              <div class="field">
-                <label for="platformAddr">平台地址</label>
-                <input class="input mono" id="platformAddr" placeholder="hosting.example.com:443">
-              </div>
-              <div class="field">
-                <label for="entryHost">入口地址 <span class="hint">留空则用对外 IPv4，再留空自动探测</span></label>
-                <input class="input mono" id="entryHost" placeholder="myhost.ddns.net">
-              </div>
-              <div class="field">
-                <label for="publicIpv4">对外 IPv4 <span class="hint">端口监听与出站；入口地址留空时作为入口上报</span></label>
-                <select class="input" id="publicIpv4">
-                  <option value="">未指定（默认）</option>
-                </select>
-              </div>
-              <label class="check"><input type="checkbox" id="platformInsecure"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 跳过平台 TLS 证书校验 <span class="warn" id="platformInsecureWarn" hidden>连接平台时不校验证书，仅用于自签证书场景</span></label>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-head">
-              <span class="card-title">更新源</span>
-              <span class="card-note">留空走 tl0502/runman-agent</span>
-            </div>
-            <div class="card-body form-grid">
-              <div class="field">
-                <label for="updateRepo">仓库 <span class="hint">owner/repo</span></label>
-                <input class="input mono" id="updateRepo" placeholder="tl0502/runman-agent">
-              </div>
-              <div class="field">
-                <label for="updateBase">下载基址</label>
-                <input class="input mono" id="updateBase" placeholder="https://…/releases/download">
-              </div>
-              <div class="field">
-                <label for="updateApi">版本查询基址</label>
-                <input class="input mono" id="updateApi" placeholder="https://api.github.com">
-              </div>
-              <div class="field">
-                <label for="netavarkBase">Netavark 下载基址 <span class="hint">Podman 后端</span></label>
-                <input class="input mono" id="netavarkBase" placeholder="https://github.com/tl0502/netavark-Runman/releases/latest/download">
-              </div>
-              <div class="field">
-                <label class="check"><input type="checkbox" id="allowInsecureDownload"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 允许明文 http</label>
-              </div>
-              <div class="field">
-                <label class="check"><input type="checkbox" id="allowInternalDownload"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 允许内网地址</label>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <span class="card-title">容器网络</span>
-          </div>
-          <div class="card-body form-grid">
-            <label class="check"><input type="checkbox" id="containerIsolate"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 容器间隔离 <span class="hint">开启后容器之间不可互通</span></label>
-            <div class="note danger" id="hostfwStatus" hidden>容器网络隔离规则未生效</div>
-            <div class="field">
-              <label for="portInput">宿主机端口白名单 <span class="hint">回车添加，留空 = 不能访问宿主机端口</span></label>
-              <div class="tags-editor">
-                <div class="tag-list" id="portTagList"></div>
-                <textarea class="tag-input" id="portInput" rows="1" placeholder="输入端口号后回车；可粘贴逗号/空格分隔的多个端口批量导入" autocomplete="off" spellcheck="false"></textarea>
-              </div>
-            </div>
-            <div class="field">
-              <label for="containerAllowSubnets">内网子网白名单 <span class="hint">留空 = 容器只能出公网</span></label>
-              <input class="input mono" id="containerAllowSubnets" placeholder="例如 10.0.0.0/8">
-            </div>
-          </div>
-        </div>
-
-        <div class="card" id="podmanLimitsCard" hidden>
+        </section>
+        <section class="scat" data-scat="limits">
+<div class="card" id="podmanLimitsCard" hidden>
           <div class="card-head">
             <span class="card-title">容器资源上限</span>
             <span class="card-note" id="plEff"></span>
@@ -998,26 +800,227 @@
             <div class="err" id="plErr"></div>
           </div>
         </div>
-
-        <div class="card">
-          <div class="card-head">
-            <span class="card-title">关于</span>
-            <span class="card-note" id="aboutVirt">—</span>
-          </div>
-          <div class="card-body row between" style="flex-wrap:wrap;gap:16px">
-            <div class="kv" style="grid-template-columns:auto auto auto auto;gap:8px 20px">
-              <dt>面板版本</dt><dd class="mono" id="aboutVersion">—</dd>
-              <dt>更新来源</dt><dd class="mono" id="aboutRepo">—</dd>
+        </section>
+        <section class="scat" data-scat="forward">
+<div class="card">
+            <div class="card-head">
+              <span class="card-title">转发与流量</span>
             </div>
-            <button type="button" class="btn btn-ghost" id="btnVersion">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
-              检查更新
-            </button>
+            <div class="card-body form-grid">
+              <div class="form-grid cols-2">
+                <div class="field">
+                  <label for="maxPortForward">端口转发数</label>
+                  <input class="input tnum" type="number" id="maxPortForward" min="1" max="1000">
+                </div>
+                <div class="field">
+                  <label for="maxForwardIPs">唯一来源 IP <span class="hint">0 = 不限</span></label>
+                  <input class="input tnum" type="number" id="maxForwardIPs" min="0" max="100000">
+                </div>
+              </div>
+              <div class="form-grid cols-2">
+                <div class="field">
+                  <label for="trafficResetMode">流量重置</label>
+                  <select class="input" id="trafficResetMode">
+                    <option value="monthly">每月固定日</option>
+                    <option value="rental">创建 + 30 天</option>
+                  </select>
+                </div>
+                <div class="field" id="trafficResetDayField">
+                  <label for="trafficResetDay">重置日 <span class="hint">1–28</span></label>
+                  <input class="input tnum" type="number" id="trafficResetDay" min="1" max="28">
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="scat" data-scat="net">
+<div class="card">
+          <div class="card-head">
+            <span class="card-title">容器网络</span>
+          </div>
+          <div class="card-body form-grid">
+            <label class="check"><input type="checkbox" id="containerIsolate"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 容器间隔离 <span class="hint">开启后容器之间不可互通</span></label>
+            <div class="note danger" id="hostfwStatus" hidden>容器网络隔离规则未生效</div>
+            <div class="field">
+              <label for="portInput">宿主机端口白名单 <span class="hint">回车添加，留空 = 不能访问宿主机端口</span></label>
+              <div class="tags-editor">
+                <div class="tag-list" id="portTagList"></div>
+                <textarea class="tag-input" id="portInput" rows="1" placeholder="输入端口号后回车；可粘贴逗号/空格分隔的多个端口批量导入" autocomplete="off" spellcheck="false"></textarea>
+              </div>
+            </div>
+            <div class="field">
+              <label for="containerAllowSubnets">内网子网白名单 <span class="hint">留空 = 容器只能出公网</span></label>
+              <input class="input mono" id="containerAllowSubnets" placeholder="例如 10.0.0.0/8">
+            </div>
           </div>
         </div>
+        </section>
+        <section class="scat" data-scat="platform">
+<div class="card">
+            <div class="card-head">
+              <span class="card-title">平台接入</span>
+            </div>
+            <div class="card-body form-grid">
+              <label class="check"><input type="checkbox" id="platformEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 接入平台 <span class="hint">关闭后仅本地面板管理</span></label>
+              <div class="field">
+                <label for="token">API Token</label>
+                <div class="field-row">
+                  <input class="input mono" type="password" id="token" placeholder="未配置">
+                  <button class="btn btn-ghost btn-sm" id="clearToken" type="button">清除</button>
+                </div>
+              </div>
+              <div class="field">
+                <label for="platformAddr">平台地址</label>
+                <input class="input mono" id="platformAddr" placeholder="hosting.example.com:443">
+              </div>
+              <div class="field">
+                <label for="entryHost">入口地址 <span class="hint">留空则用对外 IPv4，再留空自动探测</span></label>
+                <input class="input mono" id="entryHost" placeholder="myhost.ddns.net">
+              </div>
+              <div class="field">
+                <label for="publicIpv4">对外 IPv4 <span class="hint">端口监听与出站；入口地址留空时作为入口上报</span></label>
+                <select class="input" id="publicIpv4">
+                  <option value="">未指定（默认）</option>
+                </select>
+              </div>
+              <label class="check"><input type="checkbox" id="platformInsecure"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 跳过平台 TLS 证书校验 <span class="warn" id="platformInsecureWarn" hidden>连接平台时不校验证书，仅用于自签证书场景</span></label>
+            </div>
+          </div>
+        </section>
+        <section class="scat" data-scat="update">
+<div class="card">
+            <div class="card-head">
+              <span class="card-title">更新源</span>
+              <span class="card-note">留空走 tl0502/runman-agent</span>
+            </div>
+            <div class="card-body form-grid">
+              <div class="field">
+                <label for="updateRepo">仓库 <span class="hint">owner/repo</span></label>
+                <input class="input mono" id="updateRepo" placeholder="tl0502/runman-agent">
+              </div>
+              <div class="field">
+                <label for="updateBase">下载基址</label>
+                <input class="input mono" id="updateBase" placeholder="https://…/releases/download">
+              </div>
+              <div class="field">
+                <label for="updateApi">版本查询基址</label>
+                <input class="input mono" id="updateApi" placeholder="https://api.github.com">
+              </div>
+              <div class="field">
+                <label for="netavarkBase">Netavark 下载基址 <span class="hint">Podman 后端</span></label>
+                <input class="input mono" id="netavarkBase" placeholder="https://github.com/tl0502/netavark-Runman/releases/latest/download">
+              </div>
+              <div class="field">
+                <label class="check"><input type="checkbox" id="allowInsecureDownload"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 允许明文 http</label>
+              </div>
+              <div class="field">
+                <label class="check"><input type="checkbox" id="allowInternalDownload"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 允许内网地址</label>
+              </div>
+            </div>
+          </div>
+        </section>
+        </form>
+        <form class="patrol-form" id="patrolForm" autocomplete="off">
+<section class="scat" data-scat="p-basic">
+            <div class="pcat-head">
+              <label class="check"><input type="checkbox" id="pEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用巡查</label>
+            </div>
+            <div class="form-grid cols-2">
+              <div class="field">
+                <label for="pInterval">巡查间隔 <span class="hint">秒</span></label>
+                <input class="input tnum" type="number" id="pInterval" min="5" max="86400">
+              </div>
+            </div>
+          </section>
+<section class="scat" data-scat="p-network">
 
+            <div class="cfg-group">
+              <div class="cfg-group-head">
+                <span>带宽占用</span>
+                <label class="check"><input type="checkbox" id="pbEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
+              </div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="pbThreshold">占用阈值 <span class="hint">% 上限</span></label><input class="input tnum" type="number" id="pbThreshold" min="1" max="100"></div>
+                <div class="field"><label for="pbDuration">持续时间 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="pbDuration" min="1"></div>
+                <div class="field"><label for="pbThrottle">限速到 <span class="hint">Mbps</span></label><input class="input tnum" type="number" id="pbThrottle" min="1" max="100000"></div>
+                <div class="field"><label for="pbRelease">自动恢复 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="pbRelease" min="1"></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>带宽占用达到分配上限的 <b>阈值 %</b> 并持续 <b>N 分钟</b>，则限速到 <b>限速值</b>，<b>M 分钟</b>后自动恢复。</span></div>
+            </div>
+
+            <div class="cfg-group">
+              <div class="cfg-group-head">
+                <span>活跃连接</span>
+                <label class="check"><input type="checkbox" id="pcEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
+              </div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="pcIn">入方向阈值 <span class="hint">连接数</span></label><input class="input tnum" type="number" id="pcIn" min="1"></div>
+                <div class="field"><label for="pcOut">出方向阈值 <span class="hint">连接数</span></label><input class="input tnum" type="number" id="pcOut" min="1"></div>
+                <div class="field"><label for="pcDuration">持续时间 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="pcDuration" min="1"></div>
+                <div class="field"><label for="pcThrottle">同步限速 <span class="hint">Mbps</span></label><input class="input tnum" type="number" id="pcThrottle" min="1" max="100000"></div>
+                <div class="field span-2"><label for="pcRelease">限速解除 <span class="hint">分钟后</span></label><input class="input tnum" type="number" id="pcRelease" min="1"></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>入/出方向活跃连接数超阈值并持续 <b>N 分钟</b>，则<b>停止 VM</b> 并同步限速，<b>M 分钟</b>后解除限速（VM 保持停止，需人工重启）。</span></div>
+            </div>
+          </section>
+<section class="scat" data-scat="p-resource">
+            <div class="pcat-head">
+              <label class="check"><input type="checkbox" id="prEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
+            </div>
+            <div class="cfg-group">
+              <div class="cfg-group-head"><span>CPU / 内存</span></div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="prCpu">CPU 阈值 <span class="hint">% 配额</span></label><input class="input tnum" type="number" id="prCpu" min="1" max="100"></div>
+                <div class="field"><label for="prCpuMin">CPU 持续 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prCpuMin" min="1"></div>
+                <div class="field"><label for="prMem">内存阈值 <span class="hint">%</span></label><input class="input tnum" type="number" id="prMem" min="1" max="100"></div>
+                <div class="field"><label for="prMemMin">内存持续 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prMemMin" min="1"></div>
+                <div class="field"><label for="prCooldown">重启冷却 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prCooldown" min="1"></div>
+                <div class="field"><label for="prAction">超限动作</label><select class="input" id="prAction"><option value="restart">自动重启</option><option value="stop">关机</option><option value="alert">仅告警</option></select></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>CPU/内存超阈值持续 <b>N 分钟</b> 后执行「超限动作」；两次自动动作间隔不小于「重启冷却」。</span></div>
+            </div>
+            <div class="cfg-group">
+              <div class="cfg-group-head"><span>磁盘</span></div>
+              <div class="form-grid cols-2">
+                <div class="field"><label for="prDisk">磁盘阈值 <span class="hint">%</span></label><input class="input tnum" type="number" id="prDisk" min="1" max="100"></div>
+                <div class="field"><label for="prDiskInterval">告警间隔 <span class="hint">分钟</span></label><input class="input tnum" type="number" id="prDiskInterval" min="10" max="10080"></div>
+              </div>
+              <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>磁盘超阈值<b>仅记面板日志</b>、不发 Telegram，也不自动处置。同一 VM 两次告警的间隔不小于「告警间隔」。</span></div>
+            </div>
+          </section>
+<section class="scat" data-scat="p-process">
+            <div class="pcat-head">
+              <label class="check"><input type="checkbox" id="ppEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
+            </div>
+            <div class="field">
+              <label for="ppInput">黑名单关键词 <span class="hint">命中即杀</span></label>
+              <div class="tags-editor">
+                <div class="tag-list" id="ppTagList"></div>
+                <textarea class="tag-input" id="ppInput" rows="1" placeholder="回车添加；可粘贴逗号/换行分隔的多个关键词批量导入" autocomplete="off" spellcheck="false"></textarea>
+              </div>
+              <span class="hint">全局匹配，容器内进程名或命令行命中任意关键词即被 kill。</span>
+            </div>
+          </section>
+<section class="scat" data-scat="notify">
+            <div class="pcat-head">
+              <label class="check"><input type="checkbox" id="tgEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用 Telegram</label>
+            </div>
+            <div class="form-grid cols-2">
+              <div class="field">
+                <label for="tgToken">Bot Token</label>
+                <input class="input mono" type="password" id="tgToken" placeholder="123456:ABC-xyz" autocomplete="off">
+                <span class="hint">BotFather 生成的 token，默认脱敏</span>
+              </div>
+              <div class="field">
+                <label for="tgChat">Chat ID</label>
+                <input class="input mono" id="tgChat" placeholder="-100123456789">
+                <span class="hint">接收告警的会话/群组 ID</span>
+              </div>
+            </div>
+          </section>
+        </form>
       </div>
-    </form>
+    </div>
   </section>
 </main>
 

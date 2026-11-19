@@ -118,6 +118,7 @@ const state = {
   allowPorts: [],
   wgCache: [],
   wgEditId: null,
+  settingsCat: 'panel',
   imagesAll: [],
   imagesActive: [],
   customImages: [],
@@ -165,10 +166,11 @@ function setView(name, { push = true } = {}) {
   qsa('.seg').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.view === name)));
   moveSegThumb();
   if (push && location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
+  if (name === 'settings') document.documentElement.scrollTop = 0; // 整页流：每次进设置页从顶部开始
   if (name === 'vms') renderVMs();
   if (name === 'firewall') refreshFirewall();
   if (name === 'security') refreshSecurity();
-  if (name === 'patrol') { clearPatrolDot(); refreshPatrol(); loadPatrolConfigRemote(); }
+  if (name === 'patrol') { clearPatrolDot(); refreshPatrol(); }
   if (name === 'settings') syncDirty();
   updateSavebar();
   window.scrollTo({ top: 0, behavior: 'instant' });
@@ -1197,8 +1199,6 @@ const patrolState = {
   blacklist: [],
   evtFilter: { severity: '', check: '', sort: 'desc', page: 1 },
   evtTotal: 0,
-  snapshot: '',
-  dirty: false,
 };
 
 function patrolCheckMeta(check) {
@@ -1403,27 +1403,36 @@ async function refreshPatrol() {
   await loadEvents();
 }
 
-async function loadPatrolConfigRemote() {
-  try {
-    loadPatrolConfig(await api('GET', '/api/patrol/config'));
-  } catch { /* 会话失效走全局 401 */ }
-}
-
-function setPatrolTab(tab) {
-  if (tab === 'overview' && patrolState.dirty) {
-    if (!confirm('有未保存的改动，确定离开配置？')) return;
+// 设置页为整页流：所有分类常显，侧栏是锚点导航。点击=平滑滚动+高亮；
+// 手动滚动时 scrollspy 反向更新高亮。settingsCat 仅用于侧栏高亮同步。
+let settingsSpyQuietUntil = 0; // 点击导航后的静默期：smooth 滚动途中不让 spy 抢高亮
+function setSettingsCat(cat, { scroll = false } = {}) {
+  state.settingsCat = cat;
+  qsa('#settingsNav .sn').forEach((b) => b.classList.toggle('active', b.dataset.scat === cat));
+  if (scroll) {
+    settingsSpyQuietUntil = Date.now() + 900;
+    document.querySelector(`#view-settings .scat[data-scat="${CSS.escape(cat)}"]`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
-  patrolState.tab = tab;
-  $('ptab-overview').hidden = tab !== 'overview';
-  $('ptab-config').hidden = tab !== 'config';
-  qsa('.pt-tab').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.ptab === tab)));
   updateSavebar();
 }
-
-function setPatrolCat(cat) {
-  patrolState.cat = cat;
-  qsa('#patrolForm .pcat').forEach((s) => { s.hidden = s.dataset.pcat !== cat; });
-  qsa('#patrolNav .pn').forEach((b) => b.classList.toggle('active', b.dataset.pcat === cat));
+function spySettingsScroll() {
+  if (state.view !== 'settings' || Date.now() < settingsSpyQuietUntil) return;
+  // order 重排后 DOM 顺序 ≠ 视觉顺序，必须按当前几何位置排序后再判定
+  const secs = qsa('#view-settings .scat')
+    .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+  if (!secs.length) return;
+  const doc = document.documentElement;
+  let best;
+  if (doc.scrollTop + doc.clientHeight >= doc.scrollHeight - 4) {
+    best = secs[secs.length - 1].dataset.scat; // 滚到底：最后一个区块（矮卡片可能永远过不了判定线）
+  } else {
+    best = secs[0].dataset.scat; // 顶部兜底：没区块过线时高亮第一个
+    for (const s of secs) {
+      if (s.getBoundingClientRect().top <= 130) best = s.dataset.scat;
+    }
+  }
+  if (best && best !== state.settingsCat) setSettingsCat(best);
 }
 
 function loadPatrolConfig(c) {
@@ -1458,8 +1467,6 @@ function loadPatrolConfig(c) {
   $('tgEnabled').checked = !!t.enabled;
   $('tgToken').value = t.bot_token || '';
   $('tgChat').value = t.chat_id || '';
-  patrolState.snapshot = patrolSnapshot();
-  syncPatrolDirty();
 }
 
 function collectPatrolConfig() {
@@ -1498,15 +1505,7 @@ function collectPatrolConfig() {
   };
 }
 
-function patrolSnapshot() {
-  return JSON.stringify(collectPatrolConfig());
-}
-
-function syncPatrolDirty() {
-  const dirty = patrolState.snapshot !== '' && patrolSnapshot() !== patrolState.snapshot;
-  patrolState.dirty = dirty;
-  updateSavebar();
-}
+// 巡查配置的快照/脏检查已并入 confSnapshot（o.patrolTelegram 段），统一由 syncDirty 维护。
 
 // 黑名单 tag 编辑器：渲染 chip 列表，支持添加/删除。
 function renderPatrolTags() {
@@ -1518,7 +1517,7 @@ function renderPatrolTags() {
   qsa('[data-tag]', box).forEach((x) => x.addEventListener('click', () => {
     patrolState.blacklist.splice(Number(x.dataset.tag), 1);
     renderPatrolTags();
-    syncPatrolDirty();
+    syncDirty();
   }));
 }
 
@@ -1534,20 +1533,16 @@ function addPatrolTag() {
   }
   input.value = '';
   renderPatrolTags();
-  syncPatrolDirty();
+  syncDirty();
 }
 
-async function savePatrolConfig(btn) {
-  await withBusy(btn, async () => {
-    await api('PUT', '/api/patrol/config', collectPatrolConfig());
-    toast('巡查配置已保存');
-    patrolState.snapshot = patrolSnapshot();
-    syncPatrolDirty();
-  });
-}
-
-qsa('.pt-tab').forEach((b) => b.addEventListener('click', () => setPatrolTab(b.dataset.ptab)));
-qsa('#patrolNav .pn').forEach((b) => b.addEventListener('click', () => setPatrolCat(b.dataset.pcat)));
+qsa('#settingsNav .sn').forEach((b) => b.addEventListener('click', () => setSettingsCat(b.dataset.scat, { scroll: true })));
+let settingsSpyTimer = 0;
+document.addEventListener('scroll', () => {
+  if (state.view !== 'settings') return;
+  clearTimeout(settingsSpyTimer);
+  settingsSpyTimer = setTimeout(spySettingsScroll, 100);
+}, { passive: true, capture: true });
 $('pEvtSev').addEventListener('change', (e) => { patrolState.evtFilter.severity = e.target.value; patrolState.evtFilter.page = 1; loadEvents(); });
 $('pEvtCheck').addEventListener('change', (e) => { patrolState.evtFilter.check = e.target.value; patrolState.evtFilter.page = 1; loadEvents(); });
 $('pEvtSort').addEventListener('click', () => {
@@ -1559,8 +1554,8 @@ $('pEvtSort').addEventListener('click', () => {
 });
 $('pEvtPrev').addEventListener('click', () => { if (patrolState.evtFilter.page > 1) { patrolState.evtFilter.page--; loadEvents(); } });
 $('pEvtNext').addEventListener('click', () => { patrolState.evtFilter.page++; loadEvents(); });
-$('patrolForm').addEventListener('input', syncPatrolDirty);
-$('patrolForm').addEventListener('change', syncPatrolDirty);
+$('patrolForm').addEventListener('input', syncDirty);
+$('patrolForm').addEventListener('change', syncDirty);
 $('ppInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addPatrolTag(); }
 });
@@ -1592,6 +1587,9 @@ function confSnapshot() {
   o.allowInsecureDownload = $('allowInsecureDownload').checked;
   o.allowInternalDownload = $('allowInternalDownload').checked;
   o.trafficResetMode = $('trafficResetMode').value;
+  // 巡查+通知渠道已并入主配置：单一快照覆盖全部设置字段。
+  // collectPatrolConfig 返回的对象键序固定，序列化稳定。
+  o.patrolTelegram = collectPatrolConfig();
   return JSON.stringify(o);
 }
 
@@ -1601,16 +1599,9 @@ function syncDirty() {
   updateSavebar();
 }
 
-// updateSavebar 统一控制全局 SaveBar 的显示：设置页看设置的未保存、巡查配置页看巡查的未保存，
-// 其它视图下任意一处未保存都提示。
+// updateSavebar 统一控制全局 SaveBar：巡查配置已并入主配置，单一 dirty 即可判断。
 function updateSavebar() {
-  const onPatrolCfg = state.view === 'patrol' && patrolState.tab === 'config';
-  const onSettings = state.view === 'settings';
-  let show;
-  if (onPatrolCfg) show = patrolState.dirty;
-  else if (onSettings) show = state.dirty;
-  else show = state.dirty || patrolState.dirty;
-  $('savebar')?.classList.toggle('show', !!show);
+  $('savebar')?.classList.toggle('show', !!state.dirty);
 }
 
 function loadConfigIntoForm(c) {
@@ -1647,6 +1638,9 @@ function loadConfigIntoForm(c) {
   state.allowPorts = (c.host_allow_ports || []).map(String);
   renderPortTags();
   $('containerAllowSubnets').value = (c.container_allow_subnets || []).join(', ');
+  // 巡查+通知字段与主配置同源（GET /api/config 现在带 patrol/telegram 段），
+  // 必须在快照拍照之前填充，否则初次加载会误报 dirty。
+  loadPatrolConfig(c);
   state.snapshot = confSnapshot();
   syncDirty();
   loadNetworkAddresses(c.public_ipv4 || '');
@@ -1840,6 +1834,10 @@ async function saveConfig(btn) {
       host_allow_ports: state.allowPorts.join(','),
       container_allow_subnets: $('containerAllowSubnets').value.trim(),
     };
+    // 巡查+通知渠道并入主配置单次提交：服务端对 patrol 段整体替换（normalize+validate 后写入）。
+    const pc = collectPatrolConfig();
+    body.patrol = pc.patrol;
+    body.telegram = pc.telegram;
     try {
       await api('POST', '/api/config', body);
       // 后端把空 Token 视为"未修改"。真提交了新值就落盘并立即从页面抹掉明文，
@@ -1866,21 +1864,11 @@ async function saveConfig(btn) {
   });
 }
 
+// 巡查配置已并入 /api/config 单次提交：保存/放弃都只有一套入口。
 $('btnSaveConf').addEventListener('click', (e) => saveConfig(e.currentTarget));
-$('savebarSave').addEventListener('click', (e) => {
-  if (state.view === 'patrol' && patrolState.tab === 'config') {
-    savePatrolConfig(e.currentTarget).catch(toastErr);
-  } else {
-    saveConfig(e.currentTarget);
-  }
-});
+$('savebarSave').addEventListener('click', (e) => saveConfig(e.currentTarget));
 $('savebarReset').addEventListener('click', () => {
-  if (state.view === 'patrol' && patrolState.tab === 'config') {
-    loadPatrolConfigRemote();
-    toast('已放弃改动');
-  } else {
-    $('btnReloadConf').click();
-  }
+  if (state.dirty) $('btnReloadConf').click(); // 重拉 /api/config → loadConfigIntoForm 重填全部字段并清 dirty
 });
 $('btnReloadConf').addEventListener('click', async (e) => withBusy(e.currentTarget, async () => {
   try {
@@ -2382,6 +2370,7 @@ async function init() {
   enhanceSelects();
   // 已登录用户不应停留在登录视图（如手动输入/收藏了 #login）
   const initial = (location.hash || '#overview').slice(1);
+  setSettingsCat('panel');
   setView(initial === 'login' ? 'overview' : initial, { push: false });
 
   try {

@@ -1177,6 +1177,11 @@ type configRequest struct {
 	ContainerIsolate      *bool   `json:"container_isolate"`
 	HostAllowPorts        *string `json:"host_allow_ports"`        // 逗号分隔端口，空串 = 清空
 	ContainerAllowSubnets *string `json:"container_allow_subnets"` // 逗号分隔 CIDR，空串 = 清空
+
+	// 巡查与通知渠道配置。指针区分"未提交"（保持原值，兼容旧客户端）与提交；
+	// 提交即整体替换，面板每次都带全量字段。服务端 normalize+validate 后写入。
+	Patrol   *config.PatrolConfig   `json:"patrol"`
+	Telegram *config.TelegramConfig `json:"telegram"`
 }
 
 type configResponse struct {
@@ -1214,6 +1219,10 @@ type configResponse struct {
 	ContainerIsolate      bool     `json:"container_isolate"`
 	HostAllowPorts        []int    `json:"host_allow_ports"`
 	ContainerAllowSubnets []string `json:"container_allow_subnets"`
+
+	// 巡查与通知渠道：并入主配置响应，前端单次提交即可保存全部。
+	Patrol   config.PatrolConfig   `json:"patrol"`
+	Telegram config.TelegramConfig `json:"telegram"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -1237,6 +1246,15 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			newPassHash = string(h)
+		}
+		// 巡查段先于 UpdateChecked 校验：normalize+validate 失败直接 400，
+		// 不落盘、不改内存值；校验通过后回调里纯写入。
+		if req.Patrol != nil {
+			normalizePatrol(req.Patrol)
+			if err := validatePatrol(req.Patrol); err != nil {
+				jsonErr(w, err, http.StatusBadRequest)
+				return
+			}
 		}
 		// 原子更新配置文件
 		credChanged := false
@@ -1331,6 +1349,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if req.ContainerAllowSubnets != nil {
 				cfg.ContainerAllowSubnets = config.ParseSubnetList(*req.ContainerAllowSubnets)
 			}
+			if req.Patrol != nil {
+				cfg.Patrol = *req.Patrol
+			}
+			if req.Telegram != nil {
+				cfg.Telegram = *req.Telegram
+			}
 			return nil
 		})
 		if err != nil {
@@ -1381,6 +1405,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		ContainerIsolate:      conf.IsolateEnabled(),
 		HostAllowPorts:        conf.AllowedHostPorts(),
 		ContainerAllowSubnets: conf.AllowedSubnets(),
+
+		// 巡查与通知渠道并入主配置响应：前端单次提交 /api/config 即可保存全部。
+		// BotToken 明文回传与旧 /api/patrol/config GET 行为一致（面板内 password 框脱敏显示）。
+		Patrol:   conf.Patrol,
+		Telegram: conf.Telegram,
 	})
 }
 

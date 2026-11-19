@@ -125,10 +125,10 @@ a { color: inherit; text-decoration: none; }
 ::selection { background: rgba(16, 18, 24, .14); }
 [data-theme="dark"] ::selection { background: rgba(255, 255, 255, .2); }
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-thumb {
   background: rgba(16, 18, 24, .16);
-  border: 3px solid transparent;
+  border: 1.5px solid transparent;
   background-clip: content-box;
   border-radius: 999px;
 }
@@ -1545,18 +1545,98 @@ table.data tbody tr.is-clickable { cursor: pointer; }
 .savebar .msg { font-size: 12.5px; color: var(--ink-1); letter-spacing: 0; line-height: 1.2; }
 .savebar .msg b { color: var(--ink-0); font-weight: 600; margin: 0 2px; }
 
-/* ── 设置页：语义配对的行对齐网格 ─────────────────────────────────────────── */
-.settings-rows { display: grid; gap: 16px; }
-.settings-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  align-items: stretch;
+/* ── 设置页：整页流 + 锚点侧栏 ─────────────────────────────────────────── */
+/* 右侧所有分类常显连成一页，侧栏只做锚点导航 + 滚动高亮。
+   configForm / patrolForm 用 display:contents 摊平，section 的视觉顺序由 order 决定。 */
+.settings-config { display: flex; gap: 28px; align-items: flex-start; }
+.settings-nav {
+  flex: 0 0 176px;
+  position: sticky;
+  top: calc(var(--topbar-h) + 20px);
+  max-height: calc(100vh - var(--topbar-h) - 40px);
 }
-.settings-row > .card { display: flex; flex-direction: column; }
-.settings-row > .card > .card-body { flex: 1; align-content: start; }
+.sn-scroll {
+  max-height: calc(100vh - var(--topbar-h) - 40px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.sn-scroll::-webkit-scrollbar { display: none; }
+.sn-g {
+  padding: 13px 10px 4px;
+  font-size: 11px;
+  font-weight: 660;
+  letter-spacing: .08em;
+  color: var(--ink-2);
+}
+.sn {
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 540;
+  color: var(--ink-1);
+  transition: color .16s ease, background .16s ease;
+}
+.sn:hover { color: var(--ink-0); background: var(--fill); }
+.sn.active { color: var(--blue-ink); background: var(--blue-soft); font-weight: 640; }
+[data-theme="dark"] .sn.active { color: var(--blue); }
+.settings-content { flex: 1; min-width: 0; display: grid; align-content: start; gap: 16px; }
+/* 两个表单摊平成内容区的直接网格项，视觉顺序走 order（见下方 order 表） */
+.settings-content > form { display: contents; }
+.scat[data-scat="panel"]    { order: 1; }
+.scat-group[data-group="sys"]      { order: 10; }
+.scat[data-scat="collect"]  { order: 11; }
+.scat[data-scat="limits"]   { order: 12; }
+.scat-group[data-group="net"]      { order: 20; }
+.scat[data-scat="forward"]  { order: 21; }
+.scat[data-scat="net"]      { order: 22; }
+.scat-group[data-group="patrol"]   { order: 30; }
+.scat[data-scat="p-basic"]    { order: 31; }
+.scat[data-scat="p-network"]  { order: 32; }
+.scat[data-scat="p-resource"] { order: 33; }
+.scat[data-scat="p-process"]  { order: 34; }
+.scat-group[data-group="notify"]   { order: 40; }
+.scat[data-scat="notify"]   { order: 41; }
+.scat-group[data-group="platform"] { order: 50; }
+.scat[data-scat="platform"] { order: 51; }
+.scat-group[data-group="about"]    { order: 60; }
+.scat[data-scat="update"]   { order: 61; }
+.scat[data-scat="about"]    { order: 62; }
+/* 锚点滚动停靠位：topbar 之下留出间隙，组标题条贴在区块上方 */
+.settings-content .scat { scroll-margin-top: calc(var(--topbar-h) + 16px); min-width: 0; }
+.settings-content .scat-group {
+  font-size: 12px;
+  font-weight: 680;
+  letter-spacing: .08em;
+  color: var(--ink-2);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 14px;
+  scroll-margin-top: calc(var(--topbar-h) + 16px);
+}
+.settings-content .scat-group::after { content: ""; flex: 1; height: 1px; background: var(--hairline); }
+/* 减负：设置页卡片去玻璃与厚阴影，只留细描边 */
+.settings-content .card {
+  box-shadow: 0 0 0 1px var(--hairline);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-radius: var(--r-lg);
+}
+[data-theme="dark"] .settings-content .card { box-shadow: 0 0 0 1px var(--hairline); }
+.settings-content .card > .card-head { padding: 15px 18px 0; }
+.settings-content .scat > .card > .card-body { padding: 13px 18px 18px; }
+.settings-content .pcat-head:empty { display: none; }
+.settings-content .scat:has(> .pcat-head:empty) > .pcat-head { display: none; }
 @media (max-width: 1040px) {
-  .settings-row { grid-template-columns: minmax(0, 1fr); }
+  .settings-config { flex-direction: column; gap: 16px; }
+  .settings-nav { flex: none; position: static; width: 100%; max-height: none; border-bottom: 1px solid var(--hairline); padding: 0 0 12px; }
+  .sn-scroll { max-height: 240px; flex-flow: row wrap; }
+  .sn-g { width: 100%; padding: 8px 8px 2px; }
 }
 
 /* 品牌图标上传行 */
