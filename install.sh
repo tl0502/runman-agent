@@ -485,12 +485,19 @@ reset_panel_password() {
 
     # 密码走环境变量而不是命令行：命令行参数会出现在 ps 输出里，对所有本机用户可见。
     # Agent 的日志走 stdout，必须连 stderr 一起收，否则失败原因会被吃掉。
-    if ! output="$(NARWHAL_AGENT_RESET_PASSWORD="$first" "$AGENT_BINARY" --config "$AGENT_CONFIG_FILE" 2>&1)"; then
+    # --reset-password - 是哨兵值：环境变量只作传参通道，不能单独触发重置。
+    if ! output="$(NARWHAL_AGENT_RESET_PASSWORD="$first" "$AGENT_BINARY" --config "$AGENT_CONFIG_FILE" --reset-password - 2>&1)"; then
         log "$(t "Failed to reset panel password: ${output:-unknown error}" "重置面板密码失败：${output:-未知错误}")" >&2
         exit 1
     fi
 
     after=$(read_config_pass_hash)
+    if [ -z "$after" ] && [ -n "$before" ]; then
+        # before 有值而 after 为空：哈希被写坏清空。空哈希意味着没有任何密码
+        # 能通过登录校验（bcrypt 对空串必失败），面板就此锁死——按失败处理。
+        log "$(t "Password reset failed: web_pass_hash in config.json was cleared; the panel would be locked out." "密码重置失败：config.json 的 web_pass_hash 被清空，面板将无法登录。")" >&2
+        exit 1
+    fi
     if [ -z "$after" ]; then
         log "$(t "Could not verify config.json (jq missing); relying on the Agent exit code." "无法校验 config.json（缺少 jq），仅以 Agent 退出码为准。")" >&2
     elif [ "$after" = "$before" ]; then

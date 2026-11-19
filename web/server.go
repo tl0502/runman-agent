@@ -1221,8 +1221,11 @@ type configResponse struct {
 	ContainerAllowSubnets []string `json:"container_allow_subnets"`
 
 	// 巡查与通知渠道：并入主配置响应，前端单次提交即可保存全部。
-	Patrol   config.PatrolConfig   `json:"patrol"`
-	Telegram config.TelegramConfig `json:"telegram"`
+	// BotToken 不回传明文（与主 Token 的 has_token 基线一致）：Telegram 里
+	// bot_token 恒为空串，是否已配置看 TelegramHasToken；提交留空即"不修改"。
+	Patrol           config.PatrolConfig   `json:"patrol"`
+	Telegram         config.TelegramConfig `json:"telegram"`
+	TelegramHasToken bool                  `json:"telegram_has_token"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -1353,7 +1356,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 				cfg.Patrol = *req.Patrol
 			}
 			if req.Telegram != nil {
-				cfg.Telegram = *req.Telegram
+				tg := *req.Telegram
+				// bot_token 留空 = 不修改：GET 从不回传明文，前端输入框恒为空，
+				// 整体替换语义下空值必须回落到原值，否则每次保存都会清掉 Token。
+				// 停用通知走 enabled 开关，没有"清空 token"的合法场景。
+				if tg.BotToken == "" {
+					tg.BotToken = cfg.Telegram.BotToken
+				}
+				cfg.Telegram = tg
 			}
 			return nil
 		})
@@ -1376,6 +1386,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	conf := s.cfg.Get()
 	_, iconMtime := s.brandIconFile()
+	// BotToken 在副本上抹掉明文再回传：响应体、浏览器内存、抓包日志都不落明文。
+	tg := conf.Telegram
+	tg.BotToken = ""
 	jsonOK(w, configResponse{
 		HasToken:         conf.Token != "",
 		MonitorNIC:       conf.MonitorNIC,
@@ -1407,9 +1420,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		ContainerAllowSubnets: conf.AllowedSubnets(),
 
 		// 巡查与通知渠道并入主配置响应：前端单次提交 /api/config 即可保存全部。
-		// BotToken 明文回传与旧 /api/patrol/config GET 行为一致（面板内 password 框脱敏显示）。
-		Patrol:   conf.Patrol,
-		Telegram: conf.Telegram,
+		// BotToken 脱敏回传（副本上抹掉明文），前端输入框恒为空、留空提交即不修改。
+		Patrol:           conf.Patrol,
+		Telegram:         tg,
+		TelegramHasToken: conf.Telegram.BotToken != "",
 	})
 }
 

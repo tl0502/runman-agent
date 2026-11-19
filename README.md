@@ -191,6 +191,19 @@ journalctl -u narwhal-agent-update --no-pager   # 自动更新任务日志
 
 **Web 管理面板**：https://\<服务器IP\>:8792 （自签证书，浏览器需手动信任；用户名 `admin`，密码在安装结束日志中打印）
 
+**面板设置**：设置页所有分类（含巡查规则、Telegram 通知渠道）在单次 `POST /api/config` 中一并保存。API Token 与 Telegram Bot Token 均不回传明文——对应输入框恒为空，**留空提交即"不修改"**，更换凭据需输入新值。
+
+**重置面板密码**：安装器菜单 `4`，或 CLI（密码 8–72 字节，bcrypt 上限 72）：
+
+```bash
+# 非交互重置：密码走环境变量——命令行参数会出现在 ps 输出里，对所有本机用户可见，
+# 因此 --reset-password 只接受 "-"（哨兵值）表示从环境变量读取。
+sudo NARWHAL_AGENT_RESET_PASSWORD='新密码' /opt/narwhal-agent/narwhal-agent \
+  --config /opt/narwhal-agent/config.json --reset-password -
+```
+
+重置成功后 Agent 自动写回 bcrypt 哈希并重启；安装器会比对 config.json 确认哈希真的落盘，失败会显式报错而不是静默通过。
+
 ## 关键配置字段（`/opt/narwhal-agent/config.json`）
 
 | 分组 | 字段 | 说明 |

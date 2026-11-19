@@ -1465,7 +1465,10 @@ function loadPatrolConfig(c) {
   patrolState.blacklist = (pr.blacklist || []).slice();
   renderPatrolTags();
   $('tgEnabled').checked = !!t.enabled;
-  $('tgToken').value = t.bot_token || '';
+  // BotToken 不回传明文（与主 Token 同基线）：输入框恒为空，留空提交即"不修改"。
+  // 是否已配置看响应顶层的 telegram_has_token（telegram 段里的 bot_token 恒为空串）。
+  $('tgToken').value = '';
+  $('tgToken').placeholder = c.telegram_has_token ? '已配置，留空不修改' : '未配置';
   $('tgChat').value = t.chat_id || '';
 }
 
@@ -1846,6 +1849,13 @@ async function saveConfig(btn) {
         state.hasToken = true;
         $('token').value = '';
         $('token').placeholder = '已配置，留空不修改';
+      }
+      // Telegram Bot Token 同为脱敏基线：本次提交了新值就立即从页面抹掉明文
+      // （与主 Token 同款处理）——不清空的话明文会一直留在 DOM 里，
+      // 且后续每次保存都会把旧明文重发一遍。
+      if (body.telegram && body.telegram.bot_token) {
+        $('tgToken').value = '';
+        $('tgToken').placeholder = '已配置，留空不修改';
       }
       delete body.token;
       body.has_token = state.hasToken;

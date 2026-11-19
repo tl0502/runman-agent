@@ -97,16 +97,22 @@ type Agent struct {
 
 func main() {
 	configPath := flag.String("config", "/opt/narwhal-agent/config.json", "path to config file")
-	resetPwd := flag.String("reset-password", "", "reset web panel password")
+	resetPwd := flag.String("reset-password", "", "reset web panel password; pass \"-\" to read the new password from NARWHAL_AGENT_RESET_PASSWORD")
 	flag.Parse()
 	log.SetOutput(os.Stdout)
 	log.Printf("narwhal cloud-agent %s", version)
 
 	// 如果指定了重置密码，更新配置并退出
 	// 密码优先走环境变量：命令行参数会出现在 ps 输出里，对所有本机用户可见。
+	// 注意：环境变量本身不能单独触发重置——必须显式传 --reset-password -（哨兵值）
+	// 才会读取它。否则 systemd/shell 环境若误配了该变量，Agent 启动即重置密码
+	// 并退出，服务直接起不来。
 	resetPlain := *resetPwd
-	if resetPlain == "" {
+	if resetPlain == "-" {
 		resetPlain = os.Getenv("NARWHAL_AGENT_RESET_PASSWORD")
+		if resetPlain == "" {
+			log.Fatalf("--reset-password - 需要环境变量 NARWHAL_AGENT_RESET_PASSWORD 提供新密码")
+		}
 	}
 	if resetPlain != "" {
 		// 该分支的日志必须走 stderr：安装器会丢弃 stdout，

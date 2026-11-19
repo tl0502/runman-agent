@@ -191,6 +191,20 @@ journalctl -u narwhal-agent-update --no-pager   # auto-update task log
 
 **Web panel**: https://\<server-ip\>:8792 (self-signed certificate — trust it in the browser; user `admin`, password printed in the install log)
 
+**Panel settings**: all settings sections (including patrol rules and the Telegram notification channel) are saved in a single `POST /api/config` call. Neither the platform API token nor the Telegram bot token is ever returned in plaintext — the corresponding inputs are always empty and **submitting them empty means "no change"**; enter a new value to rotate.
+
+**Reset the panel password**: installer menu item `4`, or via CLI (8–72 bytes; bcrypt caps at 72):
+
+```bash
+# Non-interactive reset: the password goes through an environment variable —
+# command-line arguments are visible to every local user via ps, so
+# --reset-password only accepts "-" (a sentinel meaning "read from env").
+sudo NARWHAL_AGENT_RESET_PASSWORD='new-password' /opt/narwhal-agent/narwhal-agent \
+  --config /opt/narwhal-agent/config.json --reset-password -
+```
+
+On success the agent writes the bcrypt hash and restarts itself; the installer compares config.json afterwards to confirm the hash actually landed and fails loudly otherwise.
+
 ## Key Config Fields (`/opt/narwhal-agent/config.json`)
 
 | Group | Field | Purpose |

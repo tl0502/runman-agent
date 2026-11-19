@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -266,10 +267,19 @@ type PatrolProcesses struct {
 }
 
 // TelegramConfig 是 Telegram 通知配置。Enabled 为 nil 时视为 false（默认不推送）。
+// BotToken 属于凭据：API 响应不回传明文（只回 has_token），提交时空串 = 保留现有值。
 type TelegramConfig struct {
 	Enabled  *bool  `json:"enabled"`
 	BotToken string `json:"bot_token"`
 	ChatID   string `json:"chat_id"`
+	// LoginEnabled 控制登录安全事件（登录成功/自动锁定/封禁重试）是否推送。
+	// nil 视为 true：通道本身就是显式开启的，打开即同意接收各类告警。
+	LoginEnabled *bool `json:"login_enabled"`
+}
+
+// LoginNotifyOn 返回登录安全事件推送开关，nil 视为 true。
+func (c TelegramConfig) LoginNotifyOn() bool {
+	return c.LoginEnabled == nil || *c.LoginEnabled
 }
 
 // Manager 持有配置文件路径和内存副本，提供并发安全的读写。
@@ -311,6 +321,8 @@ func Load(path string) (*Manager, error) {
 			hash, herr := HashPassword(c.WebPassHash)
 			if herr != nil {
 				// 哈希失败时保留原值：写成空串等于把密码清空。
+				// 但必须让运维看见——明文会一直留在配置文件里，每次 Load 都重试。
+				log.Printf("[config] web_pass_hash 自动加密失败（明文超过 72 字节？），本次保留明文: %v", herr)
 				return
 			}
 			c.WebPassHash = hash
