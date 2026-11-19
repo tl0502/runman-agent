@@ -14,12 +14,15 @@ import (
 	"runman-agent/config"
 )
 
-// Kind 通知类别。patrol 类跟随通道总开关；login 类额外受 login_enabled 控制。
+// Kind 通知类别。每个类别受对应的逐事件推送开关控制；登录类还叠加
+// login_enabled 总门控（兼容存量配置）。
 type Kind string
 
 const (
-	KindPatrol Kind = "patrol"
-	KindLogin  Kind = "login"
+	KindPatrol       Kind = "patrol"        // 巡查告警
+	KindLoginOk      Kind = "login_ok"      // 面板登录成功
+	KindAutoBan      Kind = "auto_ban"      // 连续失败触发自动封禁
+	KindLoginBlocked Kind = "login_blocked" // 封禁中的 IP 仍在尝试登录
 )
 
 const telegramAPIBase = "https://api.telegram.org"
@@ -47,8 +50,25 @@ func (n *Notifier) Send(kind Kind, text string) {
 	if !conf.TelegramEnabled() {
 		return
 	}
-	if kind == KindLogin && !conf.Telegram.LoginNotifyOn() {
-		return
+	tg := conf.Telegram
+	on := func(p *bool) bool { return p == nil || *p }
+	switch kind {
+	case KindPatrol:
+		if !on(tg.PatrolNotify) {
+			return
+		}
+	case KindLoginOk:
+		if !tg.LoginNotifyOn() || !on(tg.LoginOkNotify) {
+			return
+		}
+	case KindAutoBan:
+		if !tg.LoginNotifyOn() || !on(tg.AutoBanNotify) {
+			return
+		}
+	case KindLoginBlocked:
+		if !tg.LoginNotifyOn() || !on(tg.LoginBlockedNotify) {
+			return
+		}
 	}
 	token, chatID := conf.Telegram.BotToken, conf.Telegram.ChatID
 	if token == "" || chatID == "" {

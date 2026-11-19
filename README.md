@@ -191,7 +191,7 @@ journalctl -u narwhal-agent-update --no-pager   # 自动更新任务日志
 
 **Web 管理面板**：https://\<服务器IP\>:8792 （自签证书，浏览器需手动信任；用户名 `admin`，密码在安装结束日志中打印）
 
-**面板设置**：设置页所有分类（含巡查规则、Telegram 通知渠道）在单次 `POST /api/config` 中一并保存。API Token 与 Telegram Bot Token 均不回传明文——对应输入框恒为空，**留空提交即"不修改"**，更换凭据需输入新值。
+**面板设置**：设置页所有分类（含巡查规则、Telegram 通知渠道）在单次 `POST /api/config` 中一并保存。API Token 与 Telegram Bot Token 均不回传明文——对应输入框恒为空，**留空提交即"不修改"**，更换凭据需输入新值。Telegram 通知按事件逐项开关（巡查告警 / 登录成功 / 自动封禁 / 登录被拦截，缺省全推）。
 
 **重置面板密码**：安装器菜单 `4`，或 CLI（密码 8–72 字节，bcrypt 上限 72）：
 

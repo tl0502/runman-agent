@@ -940,6 +940,8 @@ select.input:disabled { cursor: not-allowed; }
   margin-bottom: 16px;
   background: var(--card);
 }
+/* 卡片内紧跟字段网格的独立字段行（如推送事件开关组）与上方留出同款间距 */
+.cfg-group > .form-grid + .field { margin-top: 14px; }
 .cfg-group-head {
   display: flex;
   align-items: center;
@@ -1070,6 +1072,9 @@ select.input:disabled { cursor: not-allowed; }
 
 /* ── 表格 ─────────────────────────────────────────────────────────────────── */
 .table-wrap { overflow-x: auto; }
+/* 表格直接贴卡片顶边时（如虚拟机列表）：表头不透明背景会盖住卡片圆角，
+   继承圆角 + 滚动容器裁剪还原。有 card-head 的表格不贴顶边，不受影响。 */
+.card > .table-wrap:first-child { border-radius: inherit; }
 table.data { width: 100%; border-collapse: collapse; min-width: 820px; }
 table.data thead th {
   position: sticky;

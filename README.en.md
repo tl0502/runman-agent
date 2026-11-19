@@ -191,7 +191,7 @@ journalctl -u narwhal-agent-update --no-pager   # auto-update task log
 
 **Web panel**: https://\<server-ip\>:8792 (self-signed certificate — trust it in the browser; user `admin`, password printed in the install log)
 
-**Panel settings**: all settings sections (including patrol rules and the Telegram notification channel) are saved in a single `POST /api/config` call. Neither the platform API token nor the Telegram bot token is ever returned in plaintext — the corresponding inputs are always empty and **submitting them empty means "no change"**; enter a new value to rotate.
+**Panel settings**: all settings sections (including patrol rules and the Telegram notification channel) are saved in a single `POST /api/config` call. Neither the platform API token nor the Telegram bot token is ever returned in plaintext — the corresponding inputs are always empty and **submitting them empty means "no change"**; enter a new value to rotate. Telegram notifications can be toggled per event (patrol alerts / login success / auto-ban / blocked login; all on by default).
 
 **Reset the panel password**: installer menu item `4`, or via CLI (8–72 bytes; bcrypt caps at 72):
 

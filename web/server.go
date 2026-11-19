@@ -356,7 +356,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if _, banned := s.db.GetLoginBan(ip); banned {
 		if s.sessions.recordBlocked(ip) {
 			s.db.InsertLoginLog("login_blocked", ip, req.User, "封禁中的 IP 尝试登录")
-			s.notifier.Send(notify.KindLogin,
+			s.notifier.Send(notify.KindLoginBlocked,
 				"登录告警 ["+req.User+"] ("+ip+")\n封禁中的 IP 仍在尝试登录")
 		}
 		jsonErr(w, fmt.Errorf("用户名或密码错误"), http.StatusUnauthorized)
@@ -382,7 +382,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if until, locked := s.sessions.recordFail(ip); locked {
 			detail := fmt.Sprintf("连续 %d 次失败，锁定至 %s", maxLoginFails, until.Format("15:04:05"))
 			s.db.InsertLoginLog("auto_ban", ip, req.User, detail)
-			s.notifier.Send(notify.KindLogin,
+			s.notifier.Send(notify.KindAutoBan,
 				"登录告警 ["+req.User+"] ("+ip+")\n"+detail)
 		} else {
 			s.db.InsertLoginLog("login_fail", ip, req.User, "")
@@ -392,7 +392,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sessions.recordSuccess(ip)
 	s.db.InsertLoginLog("login_ok", ip, req.User, "")
-	s.notifier.Send(notify.KindLogin,
+	s.notifier.Send(notify.KindLoginOk,
 		"登录通知 ["+req.User+"] ("+ip+")\n面板登录成功")
 
 	token, err := s.sessions.create(req.User)
@@ -1401,6 +1401,20 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 				// 停用通知走 enabled 开关，没有"清空 token"的合法场景。
 				if tg.BotToken == "" {
 					tg.BotToken = cfg.Telegram.BotToken
+				}
+				// 逐事件开关 nil = 未提交（旧版缓存页不认识这些字段，提交体里没有）：
+				// 保留现有值，否则旧页一次保存会把用户已按事件关掉的推送全部重开。
+				if tg.PatrolNotify == nil {
+					tg.PatrolNotify = cfg.Telegram.PatrolNotify
+				}
+				if tg.LoginOkNotify == nil {
+					tg.LoginOkNotify = cfg.Telegram.LoginOkNotify
+				}
+				if tg.AutoBanNotify == nil {
+					tg.AutoBanNotify = cfg.Telegram.AutoBanNotify
+				}
+				if tg.LoginBlockedNotify == nil {
+					tg.LoginBlockedNotify = cfg.Telegram.LoginBlockedNotify
 				}
 				cfg.Telegram = tg
 			}

@@ -1465,7 +1465,14 @@ function loadPatrolConfig(c) {
   patrolState.blacklist = (pr.blacklist || []).slice();
   renderPatrolTags();
   $('tgEnabled').checked = !!t.enabled;
-  $('tgLogin').checked = t.login_enabled == null ? true : !!t.login_enabled;
+  // 逐事件推送开关（nil 视为 true）。存量配置 login_enabled=false 的：
+  // 登录类三事件映射为全关，首次保存后细粒度字段落盘、语义完全接管。
+  const lgOn = t.login_enabled == null || !!t.login_enabled;
+  const ev = (v) => lgOn && (v == null || !!v);
+  $('tgPatrolNotify').checked = t.patrol_notify == null || !!t.patrol_notify;
+  $('tgLoginOkNotify').checked = ev(t.login_ok_notify);
+  $('tgAutoBanNotify').checked = ev(t.auto_ban_notify);
+  $('tgLoginBlockedNotify').checked = ev(t.login_blocked_notify);
   // BotToken 不回传明文（与主 Token 同基线）：输入框恒为空，留空提交即"不修改"。
   // 是否已配置看响应顶层的 telegram_has_token（telegram 段里的 bot_token 恒为空串）。
   $('tgToken').value = '';
@@ -1503,7 +1510,13 @@ function collectPatrolConfig() {
     },
     telegram: {
       enabled: $('tgEnabled').checked,
-      login_enabled: $('tgLogin').checked,
+      // login_enabled 由登录类三事件派生（任一开 = true）：细粒度字段已是
+      // 完整事实源，该字段仅为兼容旧语义保留。
+      login_enabled: $('tgLoginOkNotify').checked || $('tgAutoBanNotify').checked || $('tgLoginBlockedNotify').checked,
+      patrol_notify: $('tgPatrolNotify').checked,
+      login_ok_notify: $('tgLoginOkNotify').checked,
+      auto_ban_notify: $('tgAutoBanNotify').checked,
+      login_blocked_notify: $('tgLoginBlockedNotify').checked,
       bot_token: $('tgToken').value.trim(),
       chat_id: $('tgChat').value.trim(),
     },

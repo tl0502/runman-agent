@@ -272,9 +272,14 @@ type TelegramConfig struct {
 	Enabled  *bool  `json:"enabled"`
 	BotToken string `json:"bot_token"`
 	ChatID   string `json:"chat_id"`
-	// LoginEnabled 控制登录安全事件（登录成功/自动锁定/封禁重试）是否推送。
-	// nil 视为 true：通道本身就是显式开启的，打开即同意接收各类告警。
+	// LoginEnabled 登录安全事件总开关（nil 视为 true）。细粒度开关见下方逐事件字段，
+	// 保留它是为了兼容存量配置里显式 false 的语义（整体关闭登录类推送）。
 	LoginEnabled *bool `json:"login_enabled"`
+	// 逐事件推送开关，nil 均视为 true（升级前行为：巡查告警与登录事件默认推送）。
+	PatrolNotify       *bool `json:"patrol_notify"`
+	LoginOkNotify      *bool `json:"login_ok_notify"`
+	AutoBanNotify      *bool `json:"auto_ban_notify"`
+	LoginBlockedNotify *bool `json:"login_blocked_notify"`
 }
 
 // LoginNotifyOn 返回登录安全事件推送开关，nil 视为 true。

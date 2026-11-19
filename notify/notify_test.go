@@ -65,8 +65,8 @@ func waitHits(t *testing.T, hits *atomic.Int32, want int32) {
 	t.Fatalf("expected >= %d telegram calls, got %d", want, hits.Load())
 }
 
-// TestSendGating 验证 Send 的门控：通道关/凭据缺/登录类关闭 均不外发；
-// login_enabled 只约束登录类，不影响巡查类。
+// TestSendGating 验证 Send 的门控：通道关/凭据缺/逐事件关 均不外发；
+// login_enabled 只约束登录类三个事件，不影响巡查类。
 func TestSendGating(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -76,9 +76,16 @@ func TestSendGating(t *testing.T) {
 	}{
 		{"通道关闭不发", KindPatrol, func(c *config.Config) { c.Telegram.Enabled = boolPtr(false) }, 0},
 		{"缺chat_id不发", KindPatrol, func(c *config.Config) { c.Telegram.ChatID = "" }, 0},
-		{"巡查类推", KindPatrol, nil, 1},
-		{"登录类默认推", KindLogin, nil, 1},
-		{"登录类显式关不发", KindLogin, func(c *config.Config) { c.Telegram.LoginEnabled = boolPtr(false) }, 0},
+		{"巡查类默认推", KindPatrol, nil, 1},
+		{"巡查开关关不发", KindPatrol, func(c *config.Config) { c.Telegram.PatrolNotify = boolPtr(false) }, 0},
+		{"登录成功默认推", KindLoginOk, nil, 1},
+		{"登录总开关关全不发", KindLoginOk, func(c *config.Config) { c.Telegram.LoginEnabled = boolPtr(false) }, 0},
+		{"登录成功关不发", KindLoginOk, func(c *config.Config) { c.Telegram.LoginOkNotify = boolPtr(false) }, 0},
+		{"自动封禁默认推", KindAutoBan, nil, 1},
+		{"自动封禁关不发", KindAutoBan, func(c *config.Config) { c.Telegram.AutoBanNotify = boolPtr(false) }, 0},
+		{"自动封禁关不影响登录成功", KindLoginOk, func(c *config.Config) { c.Telegram.AutoBanNotify = boolPtr(false) }, 1},
+		{"登录被拦截默认推", KindLoginBlocked, nil, 1},
+		{"登录被拦截关不发", KindLoginBlocked, func(c *config.Config) { c.Telegram.LoginBlockedNotify = boolPtr(false) }, 0},
 		{"登录关不影响巡查", KindPatrol, func(c *config.Config) { c.Telegram.LoginEnabled = boolPtr(false) }, 1},
 	}
 	for _, tc := range cases {
@@ -94,7 +101,7 @@ func TestSendGating(t *testing.T) {
 func TestNilNotifierSafe(t *testing.T) {
 	var n *Notifier
 	n.Send(KindPatrol, "x")
-	n.Send(KindLogin, "x")
+	n.Send(KindLoginOk, "x")
 	if err := n.SendTest(); err == nil {
 		t.Fatal("expected error on nil notifier")
 	}

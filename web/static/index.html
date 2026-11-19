@@ -911,10 +911,10 @@
                 <input class="input mono" id="netavarkBase" placeholder="https://github.com/tl0502/netavark-Runman/releases/latest/download">
               </div>
               <div class="field">
-                <label class="check"><input type="checkbox" id="allowInsecureDownload"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 允许明文 http</label>
-              </div>
-              <div class="field">
-                <label class="check"><input type="checkbox" id="allowInternalDownload"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 允许内网地址</label>
+                <div class="field-row">
+                  <label class="check"><input type="checkbox" id="allowInsecureDownload"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 允许明文 http</label>
+                  <label class="check"><input type="checkbox" id="allowInternalDownload"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 允许内网地址</label>
+                </div>
               </div>
             </div>
           </div>
@@ -1002,26 +1002,34 @@
             </div>
           </section>
 <section class="scat" data-scat="notify">
-            <div class="pcat-head">
-              <div class="field-row">
-                <label class="check"><input type="checkbox" id="tgEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用 Telegram</label>
-                <label class="check"><input type="checkbox" id="tgLogin"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 登录通知 <span class="hint">登录成功/触发锁定时推送</span></label>
+            <div class="cfg-group">
+              <div class="cfg-group-head">
+                <span>Telegram</span>
+                <div class="field-row">
+                  <label class="check"><input type="checkbox" id="tgEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
+                  <span class="hint" id="tgTestResult" hidden></span>
+                  <button type="button" class="btn btn-ghost btn-sm" id="tgTest">发送测试</button>
+                </div>
               </div>
-              <div class="field-row">
-                <span class="hint" id="tgTestResult" hidden></span>
-                <button type="button" class="btn btn-ghost btn-sm" id="tgTest">发送测试</button>
+              <div class="form-grid cols-2">
+                <div class="field">
+                  <label for="tgToken">Bot Token</label>
+                  <input class="input mono" type="password" id="tgToken" placeholder="123456:ABC-xyz" autocomplete="off">
+                  <span class="hint">默认脱敏，留空不修改</span>
+                </div>
+                <div class="field">
+                  <label for="tgChat">Chat ID</label>
+                  <input class="input mono" id="tgChat" placeholder="-100123456789">
+                </div>
               </div>
-            </div>
-            <div class="form-grid cols-2">
               <div class="field">
-                <label for="tgToken">Bot Token</label>
-                <input class="input mono" type="password" id="tgToken" placeholder="123456:ABC-xyz" autocomplete="off">
-                <span class="hint">BotFather 生成的 token，默认脱敏</span>
-              </div>
-              <div class="field">
-                <label for="tgChat">Chat ID</label>
-                <input class="input mono" id="tgChat" placeholder="-100123456789">
-                <span class="hint">接收告警的会话/群组 ID</span>
+                <span class="label">推送事件</span>
+                <div class="field-row">
+                  <label class="check"><input type="checkbox" id="tgPatrolNotify"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 巡查告警</label>
+                  <label class="check"><input type="checkbox" id="tgLoginOkNotify"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 登录成功</label>
+                  <label class="check"><input type="checkbox" id="tgAutoBanNotify"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 自动封禁</label>
+                  <label class="check"><input type="checkbox" id="tgLoginBlockedNotify"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 登录被拦截</label>
+                </div>
               </div>
             </div>
           </section>
