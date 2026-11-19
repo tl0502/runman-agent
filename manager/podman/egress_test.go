@@ -25,6 +25,13 @@ func TestParsePrimaryIface(t *testing.T) {
 			want: "ens4",
 		},
 		{
+			name: "无 eth0 时优先带 @if 的 veth 而非租户自建接口",
+			out: "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN\n" +
+				"3: tun0: <POINTOPOINT,MULTICAST,NOARP> mtu 1500 qdisc fifo state UP\n" +
+				"8: podman0@if33: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UP\n",
+			want: "podman0",
+		},
+		{
 			name:    "只有 lo 报错",
 			out:     "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN\n",
 			wantErr: true,

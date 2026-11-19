@@ -177,28 +177,39 @@ func main() {
 	}
 
 	// 启动期全量补装容器内出方向限速（历史存量 + 运行期安装失败的兜底）。
-	// 延迟 20 秒：给 Autostart / 容器自启留出时间，未 RUNNING 的容器由 StartVM 路径覆盖。
+	// 延迟 20 秒给 Autostart / 容器自启留出时间；list 或单容器失败最多重试 3 轮，
+	// 避免 podman 就绪慢时存量容器永久缺失上传限速（否则只有下次重启才被补上）。
 	if conf.VirtType == "podman" {
 		go func() {
 			time.Sleep(20 * time.Second)
-			vms, err := svc.ListVMs(context.Background())
-			if err != nil {
-				log.Printf("[EgressTbf] startup ensure: list VMs: %v", err)
-				return
-			}
-			for _, vm := range vms {
-				if vm.Status != agent.VMStatus_VM_STATUS_RUNNING {
+			for attempt := 1; attempt <= 3; attempt++ {
+				vms, err := svc.ListVMs(context.Background())
+				if err != nil {
+					log.Printf("[EgressTbf] startup ensure (attempt %d): list VMs: %v", attempt, err)
+					time.Sleep(60 * time.Second)
 					continue
 				}
-				vmConf, err := database.GetVMConfig(vm.VmId)
-				if err != nil || vmConf == nil || vmConf.BandwidthMbps <= 0 {
-					continue
+				failed := 0
+				for _, vm := range vms {
+					if vm.Status != agent.VMStatus_VM_STATUS_RUNNING {
+						continue
+					}
+					vmConf, err := database.GetVMConfig(vm.VmId)
+					if err != nil || vmConf == nil || vmConf.BandwidthMbps <= 0 {
+						continue
+					}
+					if err := svc.EnsureEgressTbf(context.Background(), vm.VmId, int64(vmConf.BandwidthMbps)*1000000); err != nil {
+						failed++
+						log.Printf("[EgressTbf] startup ensure %s (attempt %d): %v", vm.VmId, attempt, err)
+					}
 				}
-				if err := svc.EnsureEgressTbf(context.Background(), vm.VmId, int64(vmConf.BandwidthMbps)*1000000); err != nil {
-					log.Printf("[EgressTbf] startup ensure %s: %v", vm.VmId, err)
+				if failed == 0 {
+					log.Printf("[EgressTbf] startup ensure done")
+					return
 				}
+				time.Sleep(30 * time.Second)
 			}
-			log.Printf("[EgressTbf] startup ensure done")
+			log.Printf("[EgressTbf] startup ensure gave up after 3 attempts")
 		}()
 	}
 

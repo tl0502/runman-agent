@@ -1101,9 +1101,12 @@ func containerLinkOut(pid int) ([]byte, error) {
 }
 
 // parsePrimaryIface 从 ip -o link show 输出中选出容器内主接口：
-// 每行形如 "2: eth0@if26: <BROADCAST,...>"，跳过 lo，eth0 优先，其次第一个非 lo。
+// 每行形如 "2: eth0@if26: <BROADCAST,...>"。选择优先级：
+// 1) eth0（podman 默认命名）；
+// 2) 任意带 @if 后缀的接口（veth 对端特征，排除租户自建的 tun0/tailscale0 等）；
+// 3) 兜底第一个非 lo 接口。
 func parsePrimaryIface(out string) (string, error) {
-	fallback := ""
+	withPeer, fallback := "", ""
 	for _, line := range strings.Split(out, "\n") {
 		colon := strings.Index(line, ": ")
 		if colon <= 0 {
@@ -1121,9 +1124,15 @@ func parsePrimaryIface(out string) (string, error) {
 		if name == "eth0" {
 			return name, nil
 		}
+		if withPeer == "" && strings.Contains(rest, "@if") {
+			withPeer = name
+		}
 		if fallback == "" {
 			fallback = name
 		}
+	}
+	if withPeer != "" {
+		return withPeer, nil
 	}
 	if fallback != "" {
 		return fallback, nil
