@@ -495,8 +495,8 @@ $('dwClose').addEventListener('click', closeDrawer);
 $('scrim').addEventListener('click', closeDrawer);
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  if (!$('consoleDock').hidden) return closeConsole();
-  if (!$('console').hidden) return closeConsole();
+  // 终端的 Esc = 最小化（会话保持连接），不拆会话
+  if (!$('console').hidden) return minimizeConsole();
   if (!$('drawer').hidden) return closeDrawer();
   const open = qsa('.modal').find((m) => !m.hidden);
   if (open) open.hidden = true;
@@ -1093,9 +1093,33 @@ function renderBans(bans) {
   }));
 }
 
+// ── 加载骨架：异步面板首次加载时的占位，防止数据到达时卡片突然弹高 ──────────
+// 跳过条件：容器已有内容（切页返回时原地等待，不闪烁），或空态已展示过
+// （上一轮结果是空的，重进时保持空态不闪骨架）。emptyEl 是同区域的空态元素。
+function showSkeleton(host, emptyEl, html) {
+  if (!host || host.children.length) return;
+  if (emptyEl && !emptyEl.hidden) return;
+  if (emptyEl) emptyEl.hidden = true;
+  host.innerHTML = html;
+}
+// 紧凑列表骨架（摘要卡/铃铛小窗）：圆点 + 两行长短不一的条 + 尾部时间条
+function skeletonMiniRows(n = 4) {
+  const row = (a, b) => `<div class="skel-row"><span class="skel-dot"></span><div class="skel-main"><span class="skel-bar" style="width:${a}%"></span><span class="skel-bar" style="width:${b}%"></span></div><span class="skel-bar skel-tail"></span></div>`;
+  return Array.from({ length: n }, (_, i) => row(74 - (i % 3) * 10, 42 + (i % 2) * 14)).join('');
+}
+// 表格骨架（异常 VM/当前封禁/通知抽屉）：每行每列一根条，宽度循环错开
+function skeletonTableRows(cols, n = 4) {
+  const w = [34, 18, 14, 26, 40, 22];
+  return Array.from({ length: n }, () =>
+    '<tr>' + Array.from({ length: cols }, (_, c) => `<td><span class="skel-bar" style="width:${w[c % w.length]}%"></span></td>`).join('') + '</tr>'
+  ).join('');
+}
+
 async function refreshSecurity() {
   if (state.view !== 'security') return;
   try {
+    showSkeleton($('secLogMini'), null, skeletonMiniRows(3));
+    showSkeleton($('banTbody'), $('banEmpty'), skeletonTableRows(5));
     const [bans, log] = await Promise.all([
       api('GET', '/api/security/bans'),
       api('GET', '/api/security/log?limit=6'),
@@ -1314,6 +1338,8 @@ function renderPatrolAnomalies() {
 async function refreshPatrol() {
   if (state.view !== 'patrol') return;
   try {
+    showSkeleton($('patrolMini'), null, skeletonMiniRows(3));
+    showSkeleton($('pVmTbody'), $('pVmEmpty'), skeletonTableRows(3));
     const [vms, anomalies, mini] = await Promise.all([
       api('GET', '/api/vms'),
       api('GET', '/api/patrol/anomalies'),
@@ -1412,6 +1438,7 @@ function renderNotifications() {
 
 async function loadNotifications() {
   const f = notifState;
+  showSkeleton($('nfTbody'), $('nfEmpty'), skeletonTableRows(5, 5));
   const qs = new URLSearchParams({ page: f.page, page_size: FEED_PAGE_SIZE });
   if (f.source) qs.set('source', f.source);
   if (f.source !== 'security' && f.sev) qs.set('severity', f.sev);
@@ -1501,7 +1528,9 @@ $('bellBtn').addEventListener('click', (e) => {
 document.addEventListener('click', (e) => {
   if (!$('notifPop').hidden && !e.target.closest('.bell-wrap')) closeNotifPop();
 });
-$('nfExpand').addEventListener('click', openNotifDrawer);
+// 注意不能直接把 openNotifDrawer 挂给 click：事件对象会被当成 source 参数，
+// 请求串变成 source=[object MouseEvent] 被后端 400 拒绝，抽屉就空了。
+$('nfExpand').addEventListener('click', () => openNotifDrawer());
 $('nfClose').addEventListener('click', closeNotifDrawer);
 $('nfScrim').addEventListener('click', closeNotifDrawer);
 document.addEventListener('keydown', (e) => {
@@ -1510,6 +1539,7 @@ document.addEventListener('keydown', (e) => {
 
 // 小窗内容：最近 10 条紧凑列表。
 async function loadNotifPop() {
+  showSkeleton($('nfPopList'), $('nfPopEmpty'), skeletonMiniRows(4));
   try {
     const d = await api('GET', '/api/events/feed?page=1&page_size=10');
     renderNotifPop((d && d.items) || []);
@@ -2415,110 +2445,39 @@ async function addCustomImage() {
 qsa('[data-close]').forEach((el) => el.addEventListener('click', () => { $(el.dataset.close).hidden = true; }));
 
 /* ── 控制台 ───────────────────────────────────────────────────────────────── */
-let term = null, termWs = null, fitAddon = null, termObserver = null, termMaximized = false, termMinimized = false;
+/* ══ 终端（多标签）═════════════════════════════════════════════════════════
+   每个 VM 一个会话：独立 xterm 实例 + 独立 WebSocket（后端每个连接就是一个
+   独立 PTY，天然支持并发）。切换标签不拆会话；标签上的 × 关单个会话；
+   红灯 / 停靠条的关闭钮 = 关窗口并结束全部会话；最小化走原版单胶囊停靠条
+   （圆点汇总连接态，标题=最近活跃 vmId，多会话时 +N）。断线的标签保留置灰，
+   缓冲区里仍能看到 [已断开] 输出。 */
+const termSessions = new Map(); // vmId -> { term, ws, fit, observer, pane }
+let termActive = null; // 当前显示的会话
+let termMaximized = false;
+let termMinimized = false;
 
-// 拆掉当前终端：先把 socket 的回调摘掉再 close，
-// 否则 close() 触发的 onclose 会落到刚创建的新终端上（表现就是开控制台时闪一行「已断开」）。
-function teardownTerm() {
-  if (termWs) {
-    const old = termWs;
-    termWs = null;
+const termConnected = (s) => !!s && !!s.ws && s.ws.readyState <= WebSocket.OPEN;
+
+// 拆单个会话：先把 socket 的回调摘掉再 close，避免 close 触发的 onclose
+// 落到别的会话上（表现就是开控制台时闪一行「已断开」）。
+function teardownSession(vmId) {
+  const s = termSessions.get(vmId);
+  if (!s) return;
+  if (s.ws) {
+    const old = s.ws;
+    s.ws = null;
     old.onopen = old.onmessage = old.onclose = old.onerror = null;
     try { old.close(); } catch {}
   }
-  if (term) { term.dispose(); term = null; }
-  if (termObserver) { termObserver.disconnect(); termObserver = null; }
+  if (s.observer) s.observer.disconnect();
+  try { s.term.dispose(); } catch {}
+  s.pane.remove();
+  termSessions.delete(vmId);
 }
 
-function openConsole(vmId) {
-  $('consoleTitle').textContent = `console — ${vmId}`;
-  $('consoleDockTitle').textContent = vmId;
-  $('consoleDock').hidden = true;
-  $('console').hidden = false;
-  document.body.style.overflow = 'hidden';
-  termMinimized = false;
-
-  teardownTerm();
-
-  const host = $('termHost');
-  host.innerHTML = '';
-  const theme = getComputedStyle(document.documentElement);
-  term = new Terminal({
-    cursorBlink: true,
-    fontSize: 13,
-    fontFamily: getComputedStyle(document.body).getPropertyValue('--mono') || 'monospace',
-    theme: { background: '#0b0c0e', foreground: '#e6e7ea', cursor: '#e6e7ea', selectionBackground: 'rgba(255,255,255,.18)' },
-    convertEol: true,
-    scrollback: 4000,
-  });
-  fitAddon = new FitAddon.FitAddon();
-  term.loadAddon(fitAddon);
-  term.open(host);
-
-  termObserver = new ResizeObserver(() => { try { fitAddon.fit(); } catch {} });
-  termObserver.observe($('consoleWindow'));
-
-  setTimeout(() => { try { fitAddon.fit(); } catch {} connectWS(vmId); }, 90);
-}
-
-function connectWS(vmId) {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const mine = term;
-  const sock = new WebSocket(`${proto}://${location.host}/api/vms/${encodeURIComponent(vmId)}/tty`);
-  sock.binaryType = 'arraybuffer';
-  termWs = sock;
-  let errored = false;
-
-  const alive = () => termWs === sock && term === mine;
-
-  sock.onopen = () => {
-    if (termWs !== sock) return;
-    sock.send(JSON.stringify({ type: 'resize', cols: mine.cols, rows: mine.rows }));
-  };
-  sock.onmessage = (e) => {
-    if (!alive()) return;
-    if (e.data instanceof ArrayBuffer) mine.write(new Uint8Array(e.data));
-    else mine.write(e.data);
-  };
-  sock.onclose = () => {
-    if (termWs !== sock) return; // 主动关闭 / 已被新连接替换：不提示
-    termWs = null;
-    if (!errored && term === mine) mine.write('\r\n\x1b[38;5;245m[已断开]\x1b[0m\r\n');
-  };
-  sock.onerror = () => {
-    if (termWs !== sock || term !== mine) return;
-    errored = true;
-    mine.write('\r\n\x1b[31m[连接错误]\x1b[0m\r\n');
-  };
-
-  mine.onData((data) => {
-    if (termWs?.readyState === WebSocket.OPEN) termWs.send(new TextEncoder().encode(data));
-  });
-  mine.onResize(({ cols, rows }) => {
-    if (termWs?.readyState === WebSocket.OPEN) termWs.send(JSON.stringify({ type: 'resize', cols, rows }));
-  });
-}
-
-// 黄点：最小化到右下角停靠条，会话保持连接（不 dispose 终端）
-function minimizeConsole() {
-  if ($('console').hidden) return;
-  termMinimized = true;
-  $('console').hidden = true;
-  $('consoleDock').hidden = false;
-  document.body.style.overflow = '';
-}
-
-function restoreConsole() {
-  if (!termMinimized) return;
-  termMinimized = false;
-  $('consoleDock').hidden = true;
-  $('console').hidden = false;
-  document.body.style.overflow = 'hidden';
-  setTimeout(() => { try { fitAddon.fit(); term?.focus(); } catch {} }, 60);
-}
-
-function closeConsole() {
-  teardownTerm();
+function closeConsoleWindow() {
+  for (const vmId of [...termSessions.keys()]) teardownSession(vmId);
+  termActive = null;
   termMinimized = false;
   termMaximized = false;
   $('consoleWindow').classList.remove('maximized');
@@ -2529,11 +2488,143 @@ function closeConsole() {
   document.body.style.overflow = '';
 }
 
-$('cwClose').addEventListener('click', closeConsole);
-$('cwMin').addEventListener('click', minimizeConsole);
-$('cwMax').addEventListener('click', toggleConsoleMax);
-$('cwRestore').addEventListener('click', restoreConsole);
-$('cwDockClose').addEventListener('click', closeConsole);
+function renderTermTabs() {
+  const bar = $('termTabs');
+  bar.innerHTML = '';
+  for (const [vmId, s] of termSessions) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.vm = vmId;
+    b.className = 'ttab' + (vmId === termActive ? ' active' : '') + (termConnected(s) ? '' : ' dead');
+    b.title = termConnected(s) ? vmId : `${vmId}（已断开）`;
+    b.innerHTML = `<span class="tname">${esc(vmId)}</span><span class="ttab-x" data-close-vm="${esc(vmId)}" title="关闭此终端"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2.4 2.4l5.2 5.2M7.6 2.4l-5.2 5.2"/></svg></span>`;
+    bar.appendChild(b);
+  }
+}
+
+// 停靠条（原版单胶囊）：圆点汇总连接状态，标题显示最近活跃的 vmId；
+// 多会话时追加「+N」表示还有 N 个在后台保持连接，悬停可见完整清单。
+function renderDock() {
+  const dock = $('consoleDock');
+  if (!termMinimized || !termSessions.size) { dock.hidden = true; return; }
+  const activeId = termSessions.has(termActive) ? termActive : termSessions.keys().next().value;
+  $('dockDot').className = 'dot ' + ([...termSessions.values()].every(termConnected) ? 'dot-ok' : 'dot-bad');
+  const title = $('dockTitle');
+  title.textContent = activeId;
+  title.title = [...termSessions.entries()].map(([id, s]) => (termConnected(s) ? id : `${id}（已断开）`)).join('、');
+  // 会话计数独立于截断的标题，长 id 下也能看到还有几个在后台保持连接
+  const count = $('dockCount');
+  count.textContent = termSessions.size > 1 ? `+${termSessions.size - 1}` : '';
+  count.hidden = termSessions.size <= 1;
+  dock.hidden = false;
+}
+
+function activateSession(vmId) {
+  const s = termSessions.get(vmId);
+  if (!s) return;
+  for (const [id, o] of termSessions) o.pane.hidden = id !== vmId;
+  termActive = vmId;
+  renderTermTabs();
+  // 隐藏过的 pane 尺寸为 0，显示后需要重新 fit 再聚焦
+  setTimeout(() => { try { s.fit.fit(); s.term.focus(); } catch {} }, 60);
+}
+
+function openConsole(vmId) {
+  if (!termSessions.has(vmId)) createSession(vmId);
+  termMinimized = false;
+  $('consoleDock').hidden = true;
+  $('console').hidden = false;
+  document.body.style.overflow = 'hidden';
+  activateSession(vmId);
+}
+
+function createSession(vmId) {
+  const pane = document.createElement('div');
+  pane.className = 'term-pane';
+  pane.hidden = true;
+  $('termHost').appendChild(pane);
+
+  const theme = { background: '#0b0c0e', foreground: '#e6e7ea', cursor: '#e6e7ea', selectionBackground: 'rgba(255,255,255,.18)' };
+  const t = new Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: getComputedStyle(document.body).getPropertyValue('--mono') || 'monospace',
+    theme,
+    convertEol: true,
+    scrollback: 4000,
+  });
+  const fit = new FitAddon.FitAddon();
+  t.loadAddon(fit);
+  t.open(pane);
+  const observer = new ResizeObserver(() => { if (!pane.hidden) try { fit.fit(); } catch {} });
+  observer.observe(pane);
+
+  const s = { term: t, ws: null, fit, observer, pane };
+  termSessions.set(vmId, s);
+  connectWS(vmId, s);
+  return s;
+}
+
+function connectWS(vmId, s) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const sock = new WebSocket(`${proto}://${location.host}/api/vms/${encodeURIComponent(vmId)}/tty`);
+  sock.binaryType = 'arraybuffer';
+  s.ws = sock;
+
+  sock.onopen = () => {
+    if (s.ws !== sock) return;
+    sock.send(JSON.stringify({ type: 'resize', cols: s.term.cols, rows: s.term.rows }));
+  };
+  sock.onmessage = (e) => {
+    if (s.ws !== sock) return;
+    s.term.write(e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : e.data);
+  };
+  sock.onclose = () => {
+    if (s.ws !== sock) return; // 会话已被主动关闭：不再提示
+    s.ws = null;
+    s.term.write('\r\n\x1b[38;5;245m[已断开]\x1b[0m\r\n');
+    renderTermTabs();
+    renderDock();
+  };
+  sock.onerror = () => {
+    if (s.ws !== sock) return;
+    s.term.write('\r\n\x1b[31m[连接错误]\x1b[0m\r\n');
+  };
+
+  s.term.onData((data) => {
+    if (s.ws?.readyState === WebSocket.OPEN) s.ws.send(new TextEncoder().encode(data));
+  });
+  s.term.onResize(({ cols, rows }) => {
+    if (s.ws?.readyState === WebSocket.OPEN) s.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+  });
+}
+
+// 关单个会话（标签 × / 停靠 chip ×）；关的是当前显示的则切到相邻会话
+function closeSession(vmId) {
+  const wasActive = termActive === vmId;
+  teardownSession(vmId);
+  if (!termSessions.size) { closeConsoleWindow(); return; }
+  if (wasActive) activateSession(termSessions.keys().next().value);
+  renderTermTabs();
+  renderDock();
+}
+
+// 黄点：最小化到右下角停靠条，所有会话保持连接（不 dispose 终端）
+function minimizeConsole() {
+  if ($('console').hidden || !termSessions.size) return;
+  termMinimized = true;
+  $('console').hidden = true;
+  renderDock();
+  document.body.style.overflow = '';
+}
+
+function restoreConsoleTo(vmId) {
+  termMinimized = false;
+  $('consoleDock').hidden = true;
+  $('console').hidden = false;
+  document.body.style.overflow = 'hidden';
+  activateSession(vmId);
+}
 
 function toggleConsoleMax() {
   termMaximized = !termMaximized;
@@ -2542,8 +2633,25 @@ function toggleConsoleMax() {
   $('cwMax').classList.toggle('maximized', termMaximized);
   $('cwMax').title = termMaximized ? '还原' : '最大化';
   qs('.console', document).style.padding = termMaximized ? '0' : '';
-  setTimeout(() => { try { fitAddon.fit(); } catch {} }, 60);
+  const s = termSessions.get(termActive);
+  setTimeout(() => { try { s?.fit.fit(); } catch {} }, 60);
 }
+
+$('cwClose').addEventListener('click', closeConsoleWindow);
+$('cwMin').addEventListener('click', minimizeConsole);
+$('cwMax').addEventListener('click', toggleConsoleMax);
+$('termTabs').addEventListener('click', (e) => {
+  const x = e.target.closest('[data-close-vm]');
+  if (x) { closeSession(x.dataset.closeVm); return; }
+  const tab = e.target.closest('.ttab');
+  if (tab) activateSession(tab.dataset.vm);
+});
+$('cwRestore').addEventListener('click', () => {
+  restoreConsoleTo(termSessions.has(termActive) ? termActive : termSessions.keys().next().value);
+});
+$('cwDockClose').addEventListener('click', closeConsoleWindow);
+// 点窗口外遮罩 = 最小化（会话保持），不是关闭
+qsa('[data-min-console]').forEach((el) => el.addEventListener('click', minimizeConsole));
 
 /* ══════════════════════════════ 启动 ═══════════════════════════════════════ */
 async function boot() {

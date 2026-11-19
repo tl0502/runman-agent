@@ -1437,19 +1437,53 @@ table.data tbody tr.is-clickable { cursor: pointer; }
 .light.y { background: #febc2e; }
 .light.g { background: #28c840; }
 .lights:hover .light { filter: brightness(1.15); }
-/* 悬停时显示与 macOS 一致的符号，明确每个点的语义 */
-.light::before {
-  content: ''; opacity: 0; transition: opacity .12s ease;
-  font: 800 8px/1 var(--sans); color: rgba(0, 0, 0, .58);
+
+/* 红绿灯：hover 显示 SVG 符号（矢量、跨平台一致，替代原 Unicode 文本字形） */
+.light svg {
+  width: 8px; height: 8px;
+  fill: none; stroke: rgba(0, 0, 0, .62);
+  stroke-width: 1.5; stroke-linecap: round;
+  opacity: 0; transition: opacity .12s ease;
 }
-.light.r::before { content: '✕'; font-size: 6.5px; }
-.light.y::before { content: '−'; }
-.light.g::before { content: '+'; }
-.light.g.maximized::before { content: '⤡'; }
-.lights:hover .light::before { opacity: 1; }
+.lights:hover .light svg { opacity: 1; }
+.light.g .g-restore { display: none; }
+.light.g.maximized .g-max { display: none; }
+.light.g.maximized .g-restore { display: block; }
 .light:focus-visible { outline: 2px solid rgba(255, 255, 255, .6); outline-offset: 1px; }
 
-/* 最小化后的停靠条 */
+/* 多标签：每个 VM 一个标签，切换不断会话；断开的标签置灰 */
+.term-tabs {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 6px;
+  overflow-x: auto; scrollbar-width: none;
+}
+.term-tabs::-webkit-scrollbar { display: none; }
+.ttab {
+  flex: none; min-width: 64px; max-width: 172px;
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 24px; padding: 0 7px 0 10px;
+  border: 0; border-radius: 6px;
+  background: rgba(255, 255, 255, .05);
+  color: #9aa0a8;
+  font: 500 11.5px var(--mono);
+  cursor: pointer;
+}
+.ttab.active { background: rgba(255, 255, 255, .13); color: #e6e7ea; }
+.ttab.dead { color: #63686f; }
+.ttab .tname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.ttab-x {
+  display: grid; place-items: center;
+  width: 15px; height: 15px; border-radius: 4px;
+  opacity: .5; cursor: pointer;
+}
+.ttab-x:hover { background: rgba(255, 255, 255, .16); opacity: 1; }
+.ttab-x svg { width: 8px; height: 8px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+
+/* 每个会话独立的挂载点：隐藏的不参与布局，显示的撑满终端区 */
+.term-pane { height: 100%; }
+.term-host .term-pane .xterm { height: 100%; }
+
+/* 最小化后的停靠条（原版单胶囊）：所有会话保持连接，还原后窗口内用标签切换 */
 .console-dock {
   position: fixed; right: 20px; bottom: 20px; z-index: 71;
   display: flex; align-items: center; gap: 8px;
@@ -1460,14 +1494,13 @@ table.data tbody tr.is-clickable { cursor: pointer; }
   color: rgba(255, 255, 255, .8);
   animation: modal-in .2s var(--ease);
 }
-.console-dock .dot { flex: none; }
+.console-dock .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.console-dock .dot-ok { background: #28c840; }
+.console-dock .dot-bad { background: #ff5f57; }
 .console-dock .mono { min-width: 0; }
+.console-dock .dock-count { flex: none; font: 500 10.5px var(--mono); color: rgba(255, 255, 255, .45); }
 .console-dock .icon-btn { width: 24px; height: 24px; color: rgba(255, 255, 255, .55); }
 .console-dock .icon-btn:hover { background: rgba(255, 255, 255, .1); color: #fff; }
-.console-bar .title { font-family: var(--mono); font-size: 11px; color: rgba(255, 255, 255, .45); letter-spacing: .01em; }
-.console-bar .right { margin-left: auto; display: flex; gap: 2px; }
-.console-bar .icon-btn { color: rgba(255, 255, 255, .45); width: 26px; height: 26px; }
-.console-bar .icon-btn:hover { background: rgba(255, 255, 255, .1); color: #fff; }
 .term-host { flex: 1; min-height: 0; padding: 8px 10px; background: #0b0c0e; }
 .term-host .xterm { height: 100%; }
 
@@ -1865,3 +1898,30 @@ body.logged-out .view:not(#view-login) { display: none !important; }
 .ab-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 10px 12px; align-items: center; margin-bottom: 14px; }
 .ab-head { font-size: 11px; font-weight: 600; color: var(--ink-2); }
 .ab-name { font-size: 12.5px; color: var(--ink-1); }
+
+/* ── 加载骨架条：异步面板首次加载的占位，防数据到达时卡片突然弹高 ─────────── */
+.skel-row { display: flex; align-items: center; gap: 10px; padding: 9px 8px; }
+.skel-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.skel-bar {
+  display: block;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--fill-strong);
+  animation: skel-pulse 1.2s ease-in-out infinite;
+}
+.skel-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--fill-strong);
+  animation: skel-pulse 1.2s ease-in-out infinite;
+}
+.skel-tail { width: 36px; height: 9px; flex: none; animation-delay: .12s; }
+.skel-row .skel-bar:last-child { animation-delay: .24s; }
+td .skel-bar { height: 9px; max-width: 140px; }
+@keyframes skel-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .4; }
+}
+[data-theme="dark"] .skel-bar,
+[data-theme="dark"] .skel-dot { background: rgba(255, 255, 255, .14); }

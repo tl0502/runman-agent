@@ -251,7 +251,18 @@ func main() {
 	go upd.Start(context.Background())
 
 	// 全局通知器：Agent 侧统一推送出口（当前通道 Telegram），巡查与登录安全事件共用。
-	ntf := notify.New(cfg)
+	// 身份回调与心跳 entry_host 同口径（host > public_ipv4 > 自动探测）：
+	// 多面板共用同一个 Bot Token/Chat ID 时，消息首行靠它区分来自哪台机器。
+	ntf := notify.New(cfg, func() string {
+		c := cfg.Get()
+		if c.Host != "" {
+			return c.Host
+		}
+		if c.PublicIPv4 != "" {
+			return c.PublicIPv4
+		}
+		return a.DetectedIPv4()
+	})
 
 	// 自动巡查：仅 Podman 后端生效（带宽 tc / 活跃连接 / 进程黑名单都依赖 podman 能力）。
 	// 云主机/incus 驱动不实现 VMProber，跳过。

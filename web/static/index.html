@@ -1479,28 +1479,29 @@
 
 <!-- ── 控制台 ──────────────────────────────────────────────────────────────── -->
 <div class="console" id="console" hidden>
-  <div class="modal-scrim" data-close="console"></div>
+  <div class="modal-scrim" data-min-console></div>
   <div class="console-window" id="consoleWindow">
     <div class="console-bar">
       <div class="lights">
-        <button class="light r" id="cwClose" title="关闭" aria-label="关闭"></button>
-        <button class="light y" id="cwMin" title="最小化" aria-label="最小化"></button>
-        <button class="light g" id="cwMax" title="最大化" aria-label="最大化"></button>
+        <button class="light r" id="cwClose" title="关闭全部终端" aria-label="关闭全部终端"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2.6 2.6l4.8 4.8M7.4 2.6l-4.8 4.8"/></svg></button>
+        <button class="light y" id="cwMin" title="最小化" aria-label="最小化"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2.2 5h5.6"/></svg></button>
+        <button class="light g" id="cwMax" title="最大化" aria-label="最大化"><svg class="g-max" viewBox="0 0 10 10" aria-hidden="true"><path d="M6 2h2v2M4 8H2V6M8 2 5.4 4.6M2 8l2.6-2.6"/></svg><svg class="g-restore" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.8 1.4v2.8H1M6.2 8.6V5.8H9M3.8 4.2 1.4 1.8M6.2 5.8l2.4 2.4"/></svg></button>
       </div>
-      <span class="title" id="consoleTitle">console</span>
+      <div class="term-tabs" id="termTabs"></div>
     </div>
     <div class="term-host" id="termHost"></div>
   </div>
 </div>
 
-<!-- 控制台最小化后的停靠条 -->
+<!-- 控制台最小化后的停靠条（原版单胶囊）：所有会话保持连接，还原后窗口内用标签切换 -->
 <div class="console-dock" id="consoleDock" hidden>
-  <span class="dot dot-ok"></span>
-  <span class="mono small truncate" id="consoleDockTitle">console</span>
+  <span class="dot" id="dockDot"></span>
+  <span class="mono small truncate" id="dockTitle">console</span>
+  <span class="dock-count" id="dockCount" hidden></span>
   <button class="icon-btn" id="cwRestore" title="还原">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14V4h10M20 10v10H10"/></svg>
   </button>
-  <button class="icon-btn" id="cwDockClose" title="关闭">
+  <button class="icon-btn" id="cwDockClose" title="关闭全部终端">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-x"/></svg>
   </button>
 </div>

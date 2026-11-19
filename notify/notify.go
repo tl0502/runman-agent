@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"runman-agent/config"
@@ -31,13 +32,37 @@ const telegramAPIBase = "https://api.telegram.org"
 // （面板可随时改开关/凭据，无需重启）。
 type Notifier struct {
 	cfg *config.Manager
+	// entryAddr 返回本机入口地址（手动 host > public_ipv4 > 自动探测公网 IP），
+	// 与面板「入口地址」展示、平台上报 entry_host 同口径。多面板共用同一个
+	// Bot Token + Chat ID 时，靠它在消息首行区分消息来自哪台机器；可为 nil
+	//（消息退化为仅站点名）。
+	entryAddr func() string
 	// apiBase 仅为测试注入用，生产恒为 telegramAPIBase。
 	apiBase string
 }
 
-// New 创建通知器。cfg 不能为 nil。
-func New(cfg *config.Manager) *Notifier {
-	return &Notifier{cfg: cfg, apiBase: telegramAPIBase}
+// New 创建通知器。cfg 不能为 nil；entryAddr 可为 nil。
+func New(cfg *config.Manager, entryAddr func() string) *Notifier {
+	return &Notifier{cfg: cfg, entryAddr: entryAddr, apiBase: telegramAPIBase}
+}
+
+// identityLine 返回消息首行的身份前缀："站点名 (入口地址)"；入口地址缺失时
+// 仅站点名。站点名回落默认品牌名（Load 已把空值归一为 DefaultSiteName，
+// 这里兜底防御直接构造的配置）。
+func (n *Notifier) identityLine() string {
+	site := ""
+	if n != nil && n.cfg != nil {
+		site = strings.TrimSpace(n.cfg.Get().SiteName)
+	}
+	if site == "" {
+		site = config.DefaultSiteName
+	}
+	if n != nil && n.entryAddr != nil {
+		if addr := strings.TrimSpace(n.entryAddr()); addr != "" {
+			return site + " (" + addr + ")"
+		}
+	}
+	return site
 }
 
 // Send 异步发送一条通知（fire-and-forget）：未配置/开关关闭时静默跳过，
@@ -75,7 +100,8 @@ func (n *Notifier) Send(kind Kind, text string) {
 		return
 	}
 	go func() {
-		if err := n.postMessage(token, chatID, text); err != nil {
+		// 身份首行在发送时刻取值：站点名/入口地址都是活配置，改完即生效。
+		if err := n.postMessage(token, chatID, n.identityLine()+"\n"+text); err != nil {
 			log.Printf("[Notify] telegram send (%s): %v", kind, err)
 		}
 	}()
@@ -94,7 +120,9 @@ func (n *Notifier) SendTest() error {
 	if token == "" || chatID == "" {
 		return fmt.Errorf("请先填写 Bot Token 和 Chat ID 并保存")
 	}
-	return n.postMessage(token, chatID, "✅ 测试消息\n通道配置正确，告警将推送到这里。")
+	// 测试消息同样带身份首行：多面板共用一个 Bot 时，逐台点「发送测试」
+	// 即可当场确认「我现在配的是哪台机器」。
+	return n.postMessage(token, chatID, n.identityLine()+"\n✅ 测试消息\n通道配置正确，告警将推送到这里。")
 }
 
 // postMessage 同步调 Telegram Bot API 发送一条文本消息。
