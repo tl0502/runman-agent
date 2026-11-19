@@ -119,9 +119,7 @@ const state = {
   wgCache: [],
   wgEditId: null,
   settingsCat: 'panel',
-  imagesAll: [],
-  imagesActive: [],
-  customImages: [],
+  imageItems: [],
   dirty: false,
   siteIcon: 0,
   version: null,
@@ -2273,121 +2271,141 @@ function populateImageSelect(selectId) {
   sel.innerHTML = state.images.map((img) => `<option value="${esc(img.id)}">${esc(img.name)}</option>`).join('');
 }
 
-/* ── 镜像配置 ─────────────────────────────────────────────────────────────── */
+/* ── 镜像配置（内置 + 自定义统一清单：上架开关 / 排序 / 删除）───────────────── */
 $('btnImages').addEventListener('click', openImagesConfig);
 
 async function openImagesConfig() {
   try {
-    const res = await api('GET', '/api/images/config');
-    state.imagesAll = res.all || ['debian', 'alpine'];
-    state.imagesActive = res.config || ['debian', 'alpine'];
-    state.tempList = [...state.imagesActive, ...state.imagesAll.filter((i) => !state.imagesActive.includes(i))];
-    renderImagesList();
+    await loadImageConfig();
     $('modalImages').hidden = false;
-
-    const isPodman = (state.config?.virt_type || '') === 'podman';
-    $('customImagesWrap').hidden = !isPodman;
-    if (isPodman) refreshCustomImages();
+    $('ciAddForm').hidden = true;
+    $('ciRef').value = '';
   } catch (e) { toastErr(e); }
 }
 
-function renderImagesList() {
-  $('imagesList').innerHTML = state.tempList.map((item, idx) => {
-    const on = state.imagesActive.includes(item);
+async function loadImageConfig() {
+  const res = await api('GET', '/api/images/config');
+  state.imageItems = res.items || [];
+  renderImageItems();
+}
+
+// 从镜像引用推导显示名：docker.io/library/nginx:1.25 -> nginx:1.25
+function deriveImageName(ref) {
+  const noReg = ref.replace(/^[^/]+\.[^/]+\//, '');
+  const parts = noReg.split('/');
+  return parts[parts.length - 1] || ref;
+}
+
+function renderImageItems() {
+  const box = $('imagesList');
+  if (!state.imageItems.length) {
+    box.innerHTML = '<div class="empty">还没有可用镜像</div>';
+    return;
+  }
+  box.innerHTML = state.imageItems.map((it, idx) => {
+    const custom = it.kind === 'custom';
+    const notReady = custom && it.status !== 'ready';
+    const kindBadge = custom
+      ? '<span class="badge badge-blue">自定义</span>'
+      : '<span class="badge badge-quiet">内置</span>';
+    const statusBadge = !custom || it.status === 'ready' ? ''
+      : it.status === 'pulling'
+        ? '<span class="badge badge-warn">PULLING</span>'
+        : '<span class="badge badge-bad">ERROR</span>';
     return `
     <div class="list-row">
-      <label class="check" style="flex:1">
-        <input type="checkbox" data-img="${esc(item)}" ${on ? 'checked' : ''}>
-        <span style="text-transform:capitalize">${esc(item)}</span>
+      <label class="check" style="flex:1;min-width:0">
+        <input type="checkbox" data-img-chk="${idx}" ${it.enabled ? 'checked' : ''} ${notReady ? 'disabled' : ''}>
+        <svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg>
+        <span class="truncate">${esc(it.name)}</span>${kindBadge}${statusBadge}
       </label>
       <button class="act" data-img-up="${idx}" ${idx === 0 ? 'disabled' : ''} title="上移">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 6-6 6 6"/></svg>
       </button>
-      <button class="act" data-img-down="${idx}" ${idx === state.tempList.length - 1 ? 'disabled' : ''} title="下移">
+      <button class="act" data-img-down="${idx}" ${idx === state.imageItems.length - 1 ? 'disabled' : ''} title="下移">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 10 6 6 6-6"/></svg>
       </button>
+      ${custom ? `
+      ${it.status === 'error' ? `<button class="btn btn-quiet btn-sm" data-img-retry="${idx}">重试</button>` : ''}
+      <button class="act danger" data-img-del="${idx}" title="删除">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg>
+      </button>` : ''}
     </div>`;
   }).join('');
 
-  qsa('[data-img]').forEach((chk) => chk.addEventListener('change', () => collectImagesActive()));
-  qsa('[data-img-up]').forEach((btn) => btn.addEventListener('click', () => moveImage(Number(btn.dataset.imgUp), -1)));
-  qsa('[data-img-down]').forEach((btn) => btn.addEventListener('click', () => moveImage(Number(btn.dataset.imgDown), 1)));
+  qsa('[data-img-chk]').forEach((chk) => chk.addEventListener('change', () => {
+    const it = state.imageItems[Number(chk.dataset.imgChk)];
+    if (it) it.enabled = chk.checked;
+  }));
+  qsa('[data-img-up]').forEach((btn) => btn.addEventListener('click', () => moveImageItem(Number(btn.dataset.imgUp), -1)));
+  qsa('[data-img-down]').forEach((btn) => btn.addEventListener('click', () => moveImageItem(Number(btn.dataset.imgDown), 1)));
+  qsa('[data-img-del]').forEach((btn) => btn.addEventListener('click', async () => {
+    const it = state.imageItems[Number(btn.dataset.imgDel)];
+    if (!it || !confirm(`删除自定义镜像「${it.name}」？\n\n删除后记录与镜像引用一并移除，需要时重新添加拉取。`)) return;
+    try {
+      await api('DELETE', '/api/images/custom?id=' + encodeURIComponent(it.id));
+      toast('已删除');
+      await loadImageConfig();
+      state.images = ((await api('GET', '/api/images')) || []).filter(Boolean);
+    } catch (e) { toastErr(e); }
+  }));
+  qsa('[data-img-retry]').forEach((btn) => btn.addEventListener('click', async () => {
+    const it = state.imageItems[Number(btn.dataset.imgRetry)];
+    if (!it) return;
+    try {
+      await api('POST', '/api/images/custom', { id: it.id, name: it.name });
+      toast('已重新加入拉取队列');
+      await loadImageConfig();
+    } catch (e) { toastErr(e); }
+  }));
+
+  // 拉取中的镜像每 3 秒刷新状态（弹窗打开时才轮询）
+  if (state.imageItems.some((i) => i.status === 'pulling') && !$('modalImages').hidden) {
+    setTimeout(() => { if (!$('modalImages').hidden) loadImageConfig().catch(() => {}); }, 3000);
+  }
 }
 
-function collectImagesActive() {
-  state.imagesActive = qsa('[data-img]').filter((c) => c.checked).map((c) => c.dataset.img);
-}
-
-function moveImage(idx, dir) {
+function moveImageItem(idx, dir) {
   const t = idx + dir;
-  if (t < 0 || t >= state.tempList.length) return;
-  collectImagesActive();
-  [state.tempList[idx], state.tempList[t]] = [state.tempList[t], state.tempList[idx]];
-  renderImagesList();
+  if (t < 0 || t >= state.imageItems.length) return;
+  [state.imageItems[idx], state.imageItems[t]] = [state.imageItems[t], state.imageItems[idx]];
+  renderImageItems();
 }
 
 $('imagesSave').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
-  collectImagesActive();
   try {
-    await api('POST', '/api/images/config', state.imagesActive);
+    await api('POST', '/api/images/config', {
+      items: state.imageItems.map(({ id, enabled }) => ({ id, enabled })),
+    });
     state.images = ((await api('GET', '/api/images')) || []).filter(Boolean);
     $('modalImages').hidden = true;
     toast('镜像配置已保存');
   } catch (err) { toastErr(err); }
 }));
 
-async function refreshCustomImages() {
-  try {
-    const list = (await api('GET', '/api/images/custom')) || [];
-    state.customImages = list;
-    const box = $('customImagesList');
-    if (!list.length) {
-      box.innerHTML = '<div class="small dim" style="padding:8px 2px">还没有自定义镜像</div>';
-    } else {
-      box.innerHTML = list.map((img, idx) => {
-        const badge = img.status === 'ready' ? '<span class="badge badge-ok">READY</span>'
-          : img.status === 'pulling' ? '<span class="badge badge-warn">PULLING</span>'
-            : '<span class="badge badge-bad">ERROR</span>';
-        return `
-        <div class="row" style="padding:9px 10px;border-radius:10px;gap:10px;border:1px solid var(--hairline)">
-          <div style="min-width:0;flex:1">
-            <div class="row" style="gap:8px"><span class="small" style="font-weight:600">${esc(img.name)}</span>${badge}</div>
-            <div class="mono dim truncate" style="font-size:10.5px">${esc(img.id)}</div>
-          </div>
-          ${img.status === 'error' ? `<button class="btn btn-quiet btn-sm" data-ci-retry="${idx}">重试</button>` : ''}
-          <button class="act danger" data-ci-del="${idx}" title="删除">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg>
-          </button>
-        </div>`;
-      }).join('');
+/* 添加自定义镜像：内联展开表单，显示名从镜像地址自动推导 */
+$('ciAddToggle').addEventListener('click', () => {
+  $('ciAddForm').hidden = false;
+  $('ciRef').focus();
+});
+$('ciCancel').addEventListener('click', () => {
+  $('ciAddForm').hidden = true;
+  $('ciRef').value = '';
+});
+$('ciRef').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomImage(); } });
+$('ciAdd').addEventListener('click', addCustomImage);
 
-      qsa('[data-ci-del]').forEach((btn) => btn.addEventListener('click', async () => {
-        const img = state.customImages[Number(btn.dataset.ciDel)];
-        if (!img || !confirm(`删除自定义镜像「${img.name}」？`)) return;
-        try { await api('DELETE', '/api/images/custom?id=' + encodeURIComponent(img.id)); refreshCustomImages(); }
-        catch (e) { toastErr(e); }
-      }));
-      qsa('[data-ci-retry]').forEach((btn) => btn.addEventListener('click', async () => {
-        const img = state.customImages[Number(btn.dataset.ciRetry)];
-        if (!img) return;
-        try { await api('POST', '/api/images/custom', { id: img.id, name: img.name }); refreshCustomImages(); }
-        catch (e) { toastErr(e); }
-      }));
-    }
-    if (list.some((i) => i.status === 'pulling') && !$('modalImages').hidden) setTimeout(refreshCustomImages, 3000);
-  } catch { /* 静默 */ }
-}
-
-$('ciAdd').addEventListener('click', async () => {
+async function addCustomImage() {
   const id = $('ciRef').value.trim();
   if (!id) return toast('请填镜像地址', 'bad');
   try {
-    await api('POST', '/api/images/custom', { id, name: $('ciName').value.trim() });
-    $('ciRef').value = ''; $('ciName').value = '';
+    await api('POST', '/api/images/custom', { id, name: deriveImageName(id) });
+    $('ciRef').value = '';
+    $('ciAddForm').hidden = true;
     toast('已加入拉取队列');
-    refreshCustomImages();
+    await loadImageConfig();
   } catch (e) { toastErr(e); }
-});
+}
 
 /* ── 浮层通用关闭 ─────────────────────────────────────────────────────────── */
 qsa('[data-close]').forEach((el) => el.addEventListener('click', () => { $(el.dataset.close).hidden = true; }));

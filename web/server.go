@@ -1818,11 +1818,8 @@ func (s *Server) handleImages(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, err, 500)
 		return
 	}
-	filteredImages := manager.FilterAndSortImages(s.db, images)
-	if s.cfg.Get().VirtType == "podman" {
-		filteredImages = manager.AppendReadyCustomImages(s.db, filteredImages)
-	}
-	jsonOK(w, filteredImages)
+	// 上架且就绪的镜像（内置 + 自定义统一清单）
+	jsonOK(w, manager.BuildImageList(s.db, images))
 }
 
 // ─── 自定义镜像（仅 podman）─────────────────────────────────────────────────────
@@ -1916,60 +1913,61 @@ func (s *Server) handleDeleteCustomImage(w http.ResponseWriter, r *http.Request)
 		jsonErr(w, err, 500)
 		return
 	}
+	// 同步清理镜像清单中的残留项（内置镜像不存在于自定义列表，不涉及）
+	if builtin, err := s.mgr.GetSupportedImages(r.Context()); err == nil {
+		_ = manager.RemoveImageSetting(s.db, builtin, id)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleGetImagesConfig(w http.ResponseWriter, r *http.Request) {
-	configStr, err := s.db.GetSystem("os_images_config")
-	if err != nil || configStr == "" {
-		configStr = "debian,alpine"
+	builtin, err := s.mgr.GetSupportedImages(r.Context())
+	if err != nil {
+		jsonErr(w, err, 500)
+		return
 	}
-
-	var config []string
-	for _, part := range strings.Split(configStr, ",") {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			config = append(config, part)
-		}
-	}
-
 	jsonOK(w, map[string]interface{}{
-		"config": config,
-		"all":    []string{"debian", "alpine"},
+		"items": manager.ListImageConfigs(s.db, builtin),
 	})
 }
 
 func (s *Server) handleSaveImagesConfig(w http.ResponseWriter, r *http.Request) {
-	var req []string
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
 		jsonErr(w, err, 400)
 		return
 	}
-
-	var validated []string
-	for _, val := range req {
-		val = strings.TrimSpace(strings.ToLower(val))
-		if val == "debian" || val == "alpine" {
-			dup := false
-			for _, v := range validated {
-				if v == val {
-					dup = true
+	// 新格式：{"items":[{"id":"...","enabled":true},...]}（顺序即展示顺序）
+	var req struct {
+		Items []manager.ImageConfigItem `json:"items"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || len(req.Items) == 0 {
+		// 兼容旧格式：["debian","alpine"]（类别名）——转换为镜像 ID 清单
+		var legacy []string
+		if legacyErr := json.Unmarshal(body, &legacy); legacyErr != nil {
+			http.Error(w, "invalid request body", 400)
+			return
+		}
+		builtin, bErr := s.mgr.GetSupportedImages(r.Context())
+		if bErr != nil {
+			jsonErr(w, bErr, 500)
+			return
+		}
+		for _, cat := range legacy {
+			cat = strings.ToLower(strings.TrimSpace(cat))
+			for _, img := range builtin {
+				if cat != "" && strings.Contains(strings.ToLower(img.Id), cat) {
+					req.Items = append(req.Items, manager.ImageConfigItem{ID: img.Id, Enabled: true})
 					break
 				}
 			}
-			if !dup {
-				validated = append(validated, val)
-			}
 		}
 	}
-
-	configStr := strings.Join(validated, ",")
-	if err := s.db.SetSystem("os_images_config", configStr); err != nil {
+	if err := manager.SaveImageConfigs(s.db, req.Items); err != nil {
 		jsonErr(w, err, 500)
 		return
 	}
-
-	jsonOK(w, map[string]interface{}{"success": true})
+	jsonOK(w, map[string]any{"ok": true})
 }
 
 // ─── VM 列表 & 创建 ────────────────────────────────────────────────────────────

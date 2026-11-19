@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -304,65 +305,170 @@ func (s *VMService) Cleanup(ctx context.Context) error {
 	return s.mgr.Cleanup(ctx)
 }
 
-// FilterAndSortImages 根据数据库中的 os_images_config 配置对镜像列表进行过滤和排序。
-func FilterAndSortImages(d *db.DB, images []*agent.OSImageInfo) []*agent.OSImageInfo {
-	configStr, err := d.GetSystem("os_images_config")
-	if err != nil || configStr == "" {
-		return images
-	}
+// ─── 镜像清单（上架管理）────────────────────────────────────────────────────
+//
+// 内置镜像与自定义镜像统一成一张清单：每项有上架开关与顺序，配置存
+// System KV「os_images_config」（JSON 数组，顺序即展示顺序）。对租户/
+// 平台可见的镜像 = 上架 且 镜像就绪（自定义镜像需 ready）。旧格式
+// （"debian,alpine" 类别名列表）在读取时惰性迁移为镜像 ID 列表。
 
-	// 解析配置列表，如 "alpine,debian" -> ["alpine", "debian"]
-	var config []string
-	for _, part := range strings.Split(configStr, ",") {
-		part = strings.TrimSpace(strings.ToLower(part))
-		if part != "" {
-			config = append(config, part)
-		}
-	}
+const osImagesConfigKey = "os_images_config"
 
-	// 如果配置为空列表，即全取消了，返回空列表
-	if len(config) == 0 {
-		return []*agent.OSImageInfo{}
-	}
-
-	// 建立一个 map，分类为 "debian" 和 "alpine"
-	categoryMap := make(map[string]*agent.OSImageInfo)
-	for _, img := range images {
-		lowerId := strings.ToLower(img.Id)
-		if strings.Contains(lowerId, "debian") {
-			categoryMap["debian"] = img
-		} else if strings.Contains(lowerId, "alpine") {
-			categoryMap["alpine"] = img
-		}
-	}
-
-	// 按照配置顺序组装最终列表
-	var result []*agent.OSImageInfo
-	for _, cat := range config {
-		if img, ok := categoryMap[cat]; ok {
-			result = append(result, img)
-		}
-	}
-
-	return result
+// imageSetting 是镜像清单中一项的上架配置。
+type imageSetting struct {
+	ID      string `json:"id"`
+	Enabled bool   `json:"enabled"`
 }
 
-// AppendReadyCustomImages 将 DB 中已就绪（ready）的自定义镜像追加到镜像列表末尾。
-// 自定义镜像不参与 FilterAndSortImages 的 debian/alpine 分类过滤，应在过滤之后调用。
-func AppendReadyCustomImages(d *db.DB, images []*agent.OSImageInfo) []*agent.OSImageInfo {
-	seen := make(map[string]bool, len(images))
-	for _, img := range images {
-		seen[img.Id] = true
+// ImageConfigItem 是镜像清单的管理视图：包含已下架/拉取中/拉取失败的项，
+// 供面板展示与编辑；对租户可见的列表请用 BuildImageList。
+type ImageConfigItem struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Kind    string `json:"kind"`             // builtin | custom
+	Status  string `json:"status,omitempty"` // 自定义镜像拉取状态
+	Enabled bool   `json:"enabled"`
+}
+
+// loadImageSettings 读取上架配置。旧格式（类别名逗号分隔）按类别匹配到
+// 具体内置镜像 ID 后迁移并回写，避免每次读取都走迁移路径。
+func loadImageSettings(d *db.DB, builtin []*agent.OSImageInfo) []imageSetting {
+	raw, err := d.GetSystem(osImagesConfigKey)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return nil
 	}
-	for _, ci := range d.ListCustomImages() {
-		if ci.Status != db.CustomImageReady || seen[ci.ID] {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "[") {
+		var list []imageSetting
+		if json.Unmarshal([]byte(raw), &list) == nil {
+			return list
+		}
+		return nil
+	}
+	// 旧格式："debian,alpine"（类别名）→ 匹配具体镜像 ID（保持原顺序）
+	var migrated []imageSetting
+	for _, part := range strings.Split(raw, ",") {
+		cat := strings.ToLower(strings.TrimSpace(part))
+		if cat == "" {
 			continue
 		}
-		name := ci.Name
-		if name == "" {
-			name = ci.ID
+		for _, img := range builtin {
+			if strings.Contains(strings.ToLower(img.Id), cat) {
+				migrated = append(migrated, imageSetting{ID: img.Id, Enabled: true})
+				break
+			}
 		}
-		images = append(images, &agent.OSImageInfo{Id: ci.ID, Name: name})
 	}
-	return images
+	if b, mErr := json.Marshal(migrated); mErr == nil {
+		_ = d.SetSystem(osImagesConfigKey, string(b))
+	}
+	return migrated
+}
+
+// ListImageConfigs 返回完整镜像清单（管理视图）：内置镜像 + 全部自定义镜像
+// （含 pulling/error），按配置顺序排列，未配置的镜像默认上架追加末尾。
+func ListImageConfigs(d *db.DB, builtin []*agent.OSImageInfo) []ImageConfigItem {
+	settings := loadImageSettings(d, builtin)
+	builtinByID := make(map[string]*agent.OSImageInfo, len(builtin))
+	for _, img := range builtin {
+		builtinByID[img.Id] = img
+	}
+	customByID := make(map[string]db.CustomImage)
+	for _, ci := range d.ListCustomImages() {
+		customByID[ci.ID] = ci
+	}
+
+	var items []ImageConfigItem
+	seen := make(map[string]bool)
+	add := func(id string, s *imageSetting) {
+		if seen[id] {
+			return
+		}
+		if b, ok := builtinByID[id]; ok {
+			seen[id] = true
+			enabled := true
+			if s != nil {
+				enabled = s.Enabled
+			}
+			items = append(items, ImageConfigItem{ID: id, Name: b.Name, Kind: "builtin", Enabled: enabled})
+			return
+		}
+		if ci, ok := customByID[id]; ok {
+			seen[id] = true
+			name := ci.Name
+			if name == "" {
+				name = ci.ID
+			}
+			enabled := true
+			if s != nil {
+				enabled = s.Enabled
+			}
+			items = append(items, ImageConfigItem{ID: id, Name: name, Kind: "custom", Status: ci.Status, Enabled: enabled})
+			return
+		}
+		// 配置里残留的、已不存在的镜像：忽略
+	}
+	for i := range settings {
+		add(settings[i].ID, &settings[i])
+	}
+	// 未配置的镜像默认上架（新增内置镜像 / 新加自定义镜像自动可用）
+	for _, img := range builtin {
+		add(img.Id, nil)
+	}
+	for _, ci := range d.ListCustomImages() {
+		add(ci.ID, nil)
+	}
+	return items
+}
+
+// SaveImageConfigs 全量保存镜像清单（顺序即数组顺序）。
+func SaveImageConfigs(d *db.DB, items []ImageConfigItem) error {
+	seen := make(map[string]bool, len(items))
+	settings := make([]imageSetting, 0, len(items))
+	for _, it := range items {
+		id := strings.TrimSpace(it.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		settings = append(settings, imageSetting{ID: id, Enabled: it.Enabled})
+	}
+	b, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	return d.SetSystem(osImagesConfigKey, string(b))
+}
+
+// RemoveImageSetting 从清单移除一个镜像（自定义镜像被删除时调用），
+// 配置中不存在时静默返回。
+func RemoveImageSetting(d *db.DB, builtin []*agent.OSImageInfo, id string) error {
+	settings := loadImageSettings(d, builtin)
+	out := settings[:0]
+	for _, s := range settings {
+		if s.ID != id {
+			out = append(out, s)
+		}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	return d.SetSystem(osImagesConfigKey, string(b))
+}
+
+// BuildImageList 返回对租户/平台可见的镜像列表：按配置顺序输出「上架且就绪」
+// 的镜像；自定义镜像仅在 ready 时进入。
+func BuildImageList(d *db.DB, builtin []*agent.OSImageInfo) []*agent.OSImageInfo {
+	var out []*agent.OSImageInfo
+	for _, it := range ListImageConfigs(d, builtin) {
+		if !it.Enabled {
+			continue
+		}
+		if it.Kind == "custom" && it.Status != db.CustomImageReady {
+			continue
+		}
+		out = append(out, &agent.OSImageInfo{Id: it.ID, Name: it.Name})
+	}
+	return out
 }

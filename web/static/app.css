@@ -869,6 +869,8 @@ select.input:disabled { cursor: not-allowed; }
   transition: stroke-dashoffset .24s ease .06s;
 }
 .check input:checked + .check-box { animation: cb-pop .3s var(--ease); }
+.check input:disabled + .check-box { opacity: .4; }
+.check:has(input:disabled) { cursor: not-allowed; }
 .check input:checked + .check-box .cb-bg { fill: #101114; stroke: #101114; }
 .check input:checked + .check-box .cb-mark { stroke-dashoffset: 0; }
 .check input:focus-visible + .check-box .cb-bg { stroke: var(--blue); stroke-width: 1.6; }

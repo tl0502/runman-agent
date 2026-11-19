@@ -827,11 +827,8 @@ func (a *Agent) sendHeartbeat(stream agent.AgentGateway_ConnectClient) {
 
 	vms, _ := a.mgr.ListVMs(ctx)
 	images, _ := a.mgr.GetSupportedImages(ctx)
-	images = manager.FilterAndSortImages(a.db, images)
-	if virtType == "podman" {
-		// 自定义镜像随心跳上报，平台 os_images 会自动跟随更新
-		images = manager.AppendReadyCustomImages(a.db, images)
-	}
+	// 上架且就绪的镜像清单（内置 + 自定义统一，随心跳上报，平台 os_images 自动跟随）
+	images = manager.BuildImageList(a.db, images)
 
 	// 流量数据由 TrafficService 后台定期写入 DB，这里只读取累计值填充心跳
 	for _, vm := range vms {
