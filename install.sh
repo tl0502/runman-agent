@@ -1833,8 +1833,18 @@ if systemctl is-active --quiet "$AGENT_SERVICE" 2>/dev/null || [ -f "$AGENT_BINA
     if systemctl is-active --quiet "$AGENT_SERVICE" 2>/dev/null; then
         systemctl restart "$AGENT_SERVICE" \
             || die "Agent restart failed. Backup: $UPGRADE_BACKUP; inspect journalctl -u $AGENT_SERVICE"
-        sleep 3
-        systemctl is-active --quiet "$AGENT_SERVICE" \
+        # 宽限重试：systemd/D-Bus 偶发瞬时异常曾导致服务实际 active 却判定失败
+        # （2H2G 升级误报「did not remain active」）。连续 3 次检查（间隔 2 秒）
+        # 仍非 active 才判定失败。
+        _agent_alive=0
+        for _try in 1 2 3; do
+            sleep 2
+            if systemctl is-active --quiet "$AGENT_SERVICE" 2>/dev/null; then
+                _agent_alive=1
+                break
+            fi
+        done
+        [ "$_agent_alive" = "1" ] \
             || die "Agent did not remain active. Backup: $UPGRADE_BACKUP; inspect journalctl -u $AGENT_SERVICE"
     else
         log "$(t "Agent was stopped; leaving it stopped." "Agent 原本已停止，本次保持停止状态。")"
