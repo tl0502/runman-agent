@@ -49,3 +49,27 @@ func TestRentalCycleKeyFrom(t *testing.T) {
 		}
 	}
 }
+
+// TestRentalCycleAfterRebuild 验证重建后周期不重置：锚点固定为首次创建时间，
+// 即使中间发生重装（容器 Created 变化），周期仍按原起点推进。
+func TestRentalCycleAfterRebuild(t *testing.T) {
+	anchor := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		now  time.Time
+		want string
+	}{
+		{"重建后第 20 天仍属第 0 周期", anchor.Add(20 * 24 * time.Hour), "2026-11-01"},
+		{"重建后第 35 天进入第 1 周期", anchor.Add(35 * 24 * time.Hour), "2026-12-01"},
+	}
+	for _, c := range cases {
+		if got := rentalCycleKeyFrom(anchor, c.now, "fallback"); got != c.want {
+			t.Errorf("%s: got %s want %s", c.name, got, c.want)
+		}
+	}
+	// 反证：若错误地用「重建时刻」当锚点，第 35 天会落回新周期起点，用户白嫖流量。
+	rebuiltAt := anchor.Add(20 * 24 * time.Hour)
+	if wrong := rentalCycleKeyFrom(rebuiltAt, anchor.Add(35*24*time.Hour), "fallback"); wrong == "2026-12-01" {
+		t.Fatal("rebuild-as-anchor would not reset cycle; test is meaningless")
+	}
+}

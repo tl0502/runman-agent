@@ -27,18 +27,7 @@ type Service struct {
 	mu     sync.Mutex
 	ticker *time.Ticker
 	done   chan struct{}
-
-	// rental 模式的 VM 创建时间缓存：创建时间不变，没必要每轮（默认 60 秒）
-	// 都 Inspect 一次。每 createdCacheTTL 全量清空一次，处理 VM 新增/删除；
-	// miss 时按 VM 取一次并缓存。
-	createdMu      sync.Mutex
-	createdCache   map[string]time.Time
-	createdRefresh time.Time
 }
-
-// createdCacheTTL 是 rental 创建时间缓存的全量刷新间隔。
-// 容器创建后不变，24 小时刷新一次仅为清理已删除 VM 的残留条目。
-const createdCacheTTL = 24 * time.Hour
 
 // NewService 创建新的流量统计服务
 func NewService(mgr manager.VMManager, database *db.DB, cfg *config.Manager) *Service {
@@ -197,30 +186,16 @@ func monthlyCycleKey(now time.Time, resetDay int) string {
 	return fmt.Sprintf("%04d-%02d-%02d", y, m, resetDay)
 }
 
-// rentalCycleKey 计算「VM 创建时间 + 30 天」的当前周期键（返回周期开始日）。
-// 拿不到创建时间时回落到 monthly 的周期键，避免流量被误归零。
+// rentalCycleKey 计算「VM 首次创建时间 + 30 天」的当前周期键（返回周期开始日）。
+// 创建时间由 VMService.GetVMCreatedAt 提供稳定锚点（DB.CreatedAt），重建不会重置；
+// 拿不到时回落到 monthly 的周期键，避免流量被误归零。
 //
-// 创建时间走缓存（createdCache）：syncOnce 默认每 60 秒跑一轮，如果每轮都
-// 对每个 VM 调 GetVMCreatedAt（一次 Inspect）纯属浪费——容器创建后不变。
-// 缓存每 createdCacheTTL 全量清空一次（处理 VM 新增/删除），miss 时才取。
+// 锚点稳定后不再需要本地缓存：GetVMCreatedAt 优先走本地 SQLite，成本可忽略，
+// 且消除了旧 24h 缓存导致「重建后周期延迟最多一天才刷新」的漂移。
 func (s *Service) rentalCycleKey(ctx context.Context, vmID string, now time.Time, fallback string) string {
-	s.createdMu.Lock()
-	if s.createdCache == nil || time.Since(s.createdRefresh) > createdCacheTTL {
-		s.createdCache = make(map[string]time.Time)
-		s.createdRefresh = time.Now()
-	}
-	created, ok := s.createdCache[vmID]
-	s.createdMu.Unlock()
-
-	if !ok {
-		c, err := s.mgr.GetVMCreatedAt(ctx, vmID)
-		if err != nil {
-			return fallback
-		}
-		created = c
-		s.createdMu.Lock()
-		s.createdCache[vmID] = c
-		s.createdMu.Unlock()
+	created, err := s.mgr.GetVMCreatedAt(ctx, vmID)
+	if err != nil || created.IsZero() {
+		return fallback
 	}
 	return rentalCycleKeyFrom(created, now, fallback)
 }

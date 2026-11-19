@@ -21,6 +21,9 @@ type VMConfig struct {
 	BandwidthMbps int
 	Image         string
 	Status        string
+	// CreatedAt 是 VM 首次创建时间（订阅起点），用于 rental 流量重置周期。
+	// GORM 约定字段名：INSERT 自动填当前时间，UPDATE 保留原值，因此重建不会重置。
+	CreatedAt time.Time
 }
 
 // PodmanVMConfig 存储 Podman 驱动特有的数据

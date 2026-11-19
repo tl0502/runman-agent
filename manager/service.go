@@ -49,6 +49,11 @@ func (s *VMService) CreateVM(ctx context.Context, req *agent.CmdCreateVM) error 
 	conf.DiskGB = req.DiskGb
 	conf.Image = req.OsImage
 	conf.Status = "running"
+	// CreatedAt 锚定首次创建时间（订阅起点）。重建走驱动层 ReinstallVM，不经过
+	// 这里，因此 DB 里已有的 CreatedAt 会原样保留，rental 流量周期不被重置。
+	if conf.CreatedAt.IsZero() {
+		conf.CreatedAt = time.Now()
+	}
 	log.Printf("[CreateVM] saving VMConfig: vmID=%s, image=%s", conf.VMID, conf.Image)
 	if err := s.db.SaveVMConfig(conf); err != nil {
 		log.Printf("[CreateVM] SaveVMConfig error: %v", err)
@@ -131,8 +136,29 @@ func (s *VMService) GetVMInfo(ctx context.Context, vmID string) (*agent.VMSummar
 	return info, nil
 }
 
+// GetVMCreatedAt 返回 VM 的首次创建时间（订阅起点），用于面板展示与 rental 流量周期。
+// 优先读 DB 的稳定锚点（重建不会改）；存量 VM 在字段引入前没有该值，回落驱动的
+// inspect.Created 并写回 DB 完成一次性迁移，之后不再漂移。
 func (s *VMService) GetVMCreatedAt(ctx context.Context, vmID string) (time.Time, error) {
-	return s.mgr.GetVMCreatedAt(ctx, vmID)
+	conf, err := s.db.GetVMConfig(vmID)
+	if err == nil && conf != nil && !conf.CreatedAt.IsZero() {
+		return conf.CreatedAt, nil
+	}
+
+	created, err := s.mgr.GetVMCreatedAt(ctx, vmID)
+	if err != nil || created.IsZero() {
+		return created, err
+	}
+
+	// 存量迁移：把当前容器创建时间固化为锚点。用 Save 前重新读取，避免覆盖
+	// 期间被别的流程更新的业务字段。
+	if cur, e := s.db.GetVMConfig(vmID); e == nil && cur != nil && cur.CreatedAt.IsZero() {
+		cur.CreatedAt = created
+		if e := s.db.SaveVMConfig(cur); e != nil {
+			log.Printf("[GetVMCreatedAt] persist CreatedAt for %s failed: %v", vmID, e)
+		}
+	}
+	return created, nil
 }
 
 func (s *VMService) ListVMs(ctx context.Context) ([]*agent.VMSummary, error) {
