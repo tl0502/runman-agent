@@ -2391,16 +2391,20 @@ $('ciAddToggle').addEventListener('click', () => {
 $('ciCancel').addEventListener('click', () => {
   $('ciAddForm').hidden = true;
   $('ciRef').value = '';
+  $('ciName').value = '';
 });
 $('ciRef').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomImage(); } });
+$('ciName').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomImage(); } });
 $('ciAdd').addEventListener('click', addCustomImage);
 
 async function addCustomImage() {
   const id = $('ciRef').value.trim();
   if (!id) return toast('请填镜像地址', 'bad');
+  const name = $('ciName').value.trim() || deriveImageName(id);
   try {
-    await api('POST', '/api/images/custom', { id, name: deriveImageName(id) });
+    await api('POST', '/api/images/custom', { id, name });
     $('ciRef').value = '';
+    $('ciName').value = '';
     $('ciAddForm').hidden = true;
     toast('已加入拉取队列');
     await loadImageConfig();
