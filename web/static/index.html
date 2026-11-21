@@ -971,8 +971,12 @@
                 <div class="tag-list" id="ppTagList"></div>
                 <textarea class="tag-input" id="ppInput" rows="1" placeholder="回车添加；可粘贴逗号/换行分隔的多个关键词批量导入" autocomplete="off" spellcheck="false"></textarea>
               </div>
-              <span class="hint">全局匹配，容器内进程名或命令行命中任意关键词即被 kill。</span>
+              <span class="hint">进程名精确匹配，词尾 * 通配；命令行按词边界匹配。命中即 kill，不发 Telegram。</span>
             </div>
+            <div class="form-grid cols-2">
+              <div class="field"><label for="ppKillStop">连杀停机 <span class="hint">1 小时内命中次数 · 0 关闭</span></label><input class="input tnum" type="number" id="ppKillStop" min="0" max="10000"></div>
+            </div>
+            <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>容器主进程命中直接停机；杀进程本身不发 Telegram，停机事件照常推送。</span></div>
           </section>
 
 <section class="scat" data-scat="notify">

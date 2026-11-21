@@ -6,11 +6,13 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"runman-agent/config"
+	"runman-agent/manager"
 	"runman-agent/proto/agent"
 )
 
@@ -430,7 +432,12 @@ func (s *Service) abuseGate(vm *agent.VMSummary, st *vmState, now time.Time, ove
 	}
 }
 
-// checkProcesses 容器内进程黑名单巡查：命中即杀，只记面板日志不通知 TG。
+// killWindow 是连杀升级停机的统计窗口。
+const killWindow = time.Hour
+
+// checkProcesses 容器内进程黑名单巡查：命中即杀；容器主进程命中、或窗口内
+// 命中次数达到 kill_stop_limit 时升级为停机——反复被杀说明有守护脚本拉起，
+// 光杀进程治标不治本。单次命中只记面板日志，停机属于重大动作，照常推 Telegram。
 func (s *Service) checkProcesses(conf config.Config, vm *agent.VMSummary, st *vmState) {
 	pc := conf.Patrol.Processes
 	if pc.Enabled != nil && !*pc.Enabled {
@@ -441,29 +448,145 @@ func (s *Service) checkProcesses(conf config.Config, vm *agent.VMSummary, st *vm
 	}
 	procs, err := s.prober.ListProcesses(context.Background(), vm.VmId)
 	if err != nil {
-		// 镜像可能没有 ps（libpod top 依赖容器内 ps）。限频记日志，
-		// 让「该 VM 的进程巡查被跳过」可见，而不是静默失效。
 		if st.procErrAt.IsZero() || time.Since(st.procErrAt) >= time.Hour {
 			st.procErrAt = time.Now()
-			log.Printf("[Patrol] list processes in %s failed (image may lack ps, process check skipped): %v", vm.VmId, err)
+			log.Printf("[Patrol] list processes in %s failed: %v", vm.VmId, err)
 		}
 		return
 	}
+	now := time.Now()
+	pruneKillTimes(st, now)
 	for _, p := range procs {
-		haystack := strings.ToLower(p.Comm + " " + p.Args)
-		for _, b := range pc.Blacklist {
-			if b == "" {
-				continue
-			}
-			if strings.Contains(haystack, strings.ToLower(b)) {
-				if err := s.prober.KillProcess(context.Background(), vm.VmId, p.PID); err != nil {
-					log.Printf("[Patrol] kill process %d in %s: %v", p.PID, vm.VmId, err)
-					continue
-				}
-				s.emit(vm.VmId, "process", "kill_process",
-					fmt.Sprintf("命中黑名单 %q，已杀进程 %s (pid %d)", b, p.Comm, p.PID), false)
-				break
-			}
+		kw := matchBlacklist(pc.Blacklist, p)
+		if kw == "" {
+			continue
+		}
+		if p.Init {
+			// 容器主进程就是黑名单本体：kill 它等于容器崩溃退出，没有停机记录、
+			// 面板看不到原因。直接按停机处理；整个容器都是滥用，无需观察是否拉起。
+			s.stopByProcess(vm.VmId, st, fmt.Sprintf("容器主进程命中黑名单 %q", kw))
+			return
+		}
+		if err := s.prober.KillProcess(context.Background(), p); err != nil {
+			log.Printf("[Patrol] kill process %d (%s) in %s: %v", p.PID, p.Comm, vm.VmId, err)
+			continue
+		}
+		st.killTimes = append(st.killTimes, now)
+		s.emit(vm.VmId, "process", "kill_process",
+			fmt.Sprintf("命中黑名单 %q，已杀进程 %s (pid %d)", kw, p.Comm, p.PID), false)
+		if lim := pc.KillStopLimit; lim > 0 && len(st.killTimes) >= lim {
+			s.stopByProcess(vm.VmId, st, fmt.Sprintf("1 小时内命中黑名单 %d 次（关键词 %q），疑似被反复拉起",
+				len(st.killTimes), kw))
+			return
 		}
 	}
+}
+
+// stopByProcess 因进程黑名单升级停机：停容器 + 记录停机原因 + 推 Telegram。
+// 停机后本容器的其他进程不必再杀，调用方直接返回即可。停机失败时按 10 分钟
+// 限频告警：容器处于异常状态时每一轮都会失败，不限频会把 TG 刷爆。
+func (s *Service) stopByProcess(vmID string, st *vmState, detail string) {
+	if err := s.mgr.StopVM(context.Background(), vmID, false); err != nil {
+		log.Printf("[Patrol] stop VM %s: %v", vmID, err)
+		if st.lastStopAlertAt.IsZero() || time.Since(st.lastStopAlertAt) >= 10*time.Minute {
+			st.lastStopAlertAt = time.Now()
+			s.emit(vmID, "process", "alert", detail+"，停机失败："+err.Error(), true)
+		}
+		return
+	}
+	_ = s.db.SavePatrolStop(vmID, "process")
+	st.killTimes = nil
+	s.emit(vmID, "process", "stop_vm", detail+"，已停机", true)
+}
+
+// pruneKillTimes 丢弃 1 小时窗口外的命中记录，窗口随巡查周期滑动。
+func pruneKillTimes(st *vmState, now time.Time) {
+	cut := now.Add(-killWindow)
+	i := 0
+	for i < len(st.killTimes) && st.killTimes[i].Before(cut) {
+		i++
+	}
+	if i > 0 {
+		st.killTimes = st.killTimes[i:]
+	}
+}
+
+// matchBlacklist 返回第一个命中的关键词，空串表示未命中。
+func matchBlacklist(blacklist []string, p manager.Process) string {
+	for _, kw := range blacklist {
+		if kw != "" && matchKeyword(kw, p.Comm, p.Exe, p.Args) {
+			return kw
+		}
+	}
+	return ""
+}
+
+// matchKeyword 判断进程是否命中单个关键词（大小写不敏感）。
+// 两层匹配，任一层命中即可：
+//   - 名字层：comm 或可执行文件名与关键词完全相等；词尾 * 时按前缀匹配
+//     （x-ui 不会命中 nginx-ui，deluge* 能覆盖 deluged）。
+//   - 命令行层：关键词以整词形式出现，前后必须是非字母数字（串首尾也算）；
+//     词尾 * 时放宽右边界。池地址、/tmp 路径这类片段靠这层抓。
+func matchKeyword(kw, comm, exe, args string) bool {
+	kw = strings.ToLower(strings.TrimSpace(kw))
+	if kw == "" {
+		return false
+	}
+	prefix := strings.HasSuffix(kw, "*")
+	kw = strings.TrimSuffix(kw, "*")
+	if kw == "" {
+		return false
+	}
+	if nameMatch(kw, prefix, comm) || nameMatch(kw, prefix, exeBasename(exe)) {
+		return true
+	}
+	return containsBoundary(strings.ToLower(args), kw, prefix)
+}
+
+func nameMatch(kw string, prefix bool, name string) bool {
+	name = strings.ToLower(name)
+	if name == "" {
+		return false
+	}
+	if prefix {
+		return strings.HasPrefix(name, kw)
+	}
+	return name == kw
+}
+
+// exeBasename 取可执行文件名（/proc/<pid>/exe 可能带 " (deleted)" 后缀，
+// 归属 manager 已剥掉，这里只取路径最后一段）。
+func exeBasename(exe string) string {
+	if exe == "" {
+		return ""
+	}
+	return filepath.Base(exe)
+}
+
+// containsBoundary 判断 kw 是否以整词形式出现在 s 中：出现位置的前后必须是
+// 非字母数字（串首尾也算边界）。prefix 只放宽右侧——`deluge*` 要匹配 deluged。
+func containsBoundary(s, kw string, prefix bool) bool {
+	if s == "" || kw == "" {
+		return false
+	}
+	for i := 0; ; {
+		j := strings.Index(s[i:], kw)
+		if j < 0 {
+			return false
+		}
+		j += i
+		leftOK := j == 0 || !isAlnum(s[j-1])
+		end := j + len(kw)
+		rightOK := prefix || end == len(s) || !isAlnum(s[end])
+		if leftOK && rightOK {
+			return true
+		}
+		i = j + 1
+	}
+}
+
+// isAlnum 是 ASCII 词边界判断：非 ASCII 字节（中文等）一律视为边界，
+// 对进程名的实际取值足够，不引入 unicode 分类的开销。
+func isAlnum(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
 }

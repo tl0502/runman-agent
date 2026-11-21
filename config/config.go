@@ -269,6 +269,9 @@ type PatrolResources struct {
 type PatrolProcesses struct {
 	Enabled   *bool    `json:"enabled"` // nil 视为 true
 	Blacklist []string `json:"blacklist"`
+	// KillStopLimit 连杀升级停机阈值：1 小时窗口内命中次数达到该值，视为
+	// 有守护脚本反复拉起，光杀进程治标不治本，自动停容器。0=关闭（默认）。
+	KillStopLimit int `json:"kill_stop_limit"`
 }
 
 // PatrolAbuse 滥用识别巡查：从 conntrack 原始条目里识别「天生不活跃」的滥用流量。
@@ -518,7 +521,16 @@ func applyPatrolDefaults(p *PatrolConfig) {
 		p.Resources.RestartCooldownMin = 60
 	}
 	if len(p.Processes.Blacklist) == 0 {
-		p.Processes.Blacklist = []string{"xmrig", "minerd", "transmission", "qBittorrent", "aria2c"}
+		// 匹配语义：进程名精确（词尾 * 通配），命令行按词边界匹配。
+		// 挖矿：二进制名 + 协议特征（改名伪装也能从池地址抓到）；
+		// BT/PT、发包工具同理。代理类（v2ray/xray/sing-box 等）不禁用。
+		p.Processes.Blacklist = []string{
+			"xmrig", "minerd", "cpuminer", "xmr-stak", "cnrig",
+			"kdevtmpfsi", "kinsing", "kthreaddi", "monerod",
+			"stratum+tcp", "stratum+ssl",
+			"transmission", "qbittorrent", "aria2c", "deluge*", "rtorrent", "biglybt",
+			"hping*", "xerxes", "torshammer", "slowloris",
+		}
 	}
 	if p.Abuse.UdpConnLimit <= 0 {
 		p.Abuse.UdpConnLimit = 200

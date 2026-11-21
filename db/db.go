@@ -160,7 +160,7 @@ type PatrolThrottle struct {
 // 这是「当前未解决」状态：VM 恢复运行（用户手动启动）后由巡查每轮清除。
 type PatrolStop struct {
 	VMID      string `gorm:"primaryKey"`
-	Reason    string // connections / resources
+	Reason    string // bandwidth / connections / resources / process / abuse_udp / abuse_scan / abuse_smtp
 	StoppedAt time.Time
 }
 

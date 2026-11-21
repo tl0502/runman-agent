@@ -111,7 +111,13 @@ type VMNetStats struct {
 
 // Process 表示容器内运行的一个进程（供巡查黑名单匹配 / 查杀）。
 type Process struct {
-	PID  int
-	Comm string // 进程名（ps 的 comm 字段）
-	Args string // 完整命令行
+	PID     int    // 容器内 PID（命名空间视角）
+	HostPID int    // 宿主机 PID（查杀用）
+	Comm    string // 进程名（/proc/<pid>/comm）
+	Exe     string // 可执行文件路径（/proc/<pid>/exe，已去掉 " (deleted)"）
+	Args    string // 完整命令行（cmdline，NUL 已转空格）
+	Init    bool   // 是否为容器主进程（容器内 PID 1）
+	// Ns 是容器 PID 命名空间标识（/proc/<pid>/ns/pid 的 link 目标）。
+	// 查杀前用它复核宿主机 PID 没有被复用给别的进程。
+	Ns string
 }

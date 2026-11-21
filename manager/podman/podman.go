@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/containers/podman/v5/libpod/define"
@@ -649,33 +650,46 @@ func (m *Manager) getUsage(_ context.Context, vmID string) (cpuPct float32, memU
 		return
 	}
 
-	// 跳过第一个采样（基准值），取第二个计算速率
-	i := 0
-	for report := range statsCh {
-		if i == 0 {
-			i++
-			continue
-		}
-		for _, s := range report.Stats {
-			for name, n := range s.Network {
-				if name == "lo" {
-					continue
-				}
-				netIn += int64(n.RxBytes)
-				netOut += int64(n.TxBytes)
+	// 跳过第一个采样（基准值），取第二个计算速率。
+	// 注意：podman 5.4.x 的 stats 流实测可能一个样本都不返回、也不关闭
+	// channel，`for range` 会永久阻塞并拖死整个巡查循环（ListVMs 卡在
+	// WaitGroup 上，其他 VM 一起停摆）。逐次接收加超时，拿不到就放弃本轮。
+	samples := 0
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case report, ok := <-statsCh:
+			if !ok {
+				goto netdevFallback
 			}
-			cpuPct = float32(s.CPU)
-			memUsed = int64(s.MemUsage)
-			cancel()
-			go func() {
-				for range statsCh {
+			if samples == 0 {
+				samples++
+				continue
+			}
+			for _, s := range report.Stats {
+				for name, n := range s.Network {
+					if name == "lo" {
+						continue
+					}
+					netIn += int64(n.RxBytes)
+					netOut += int64(n.TxBytes)
 				}
-			}()
-			break
+				cpuPct = float32(s.CPU)
+				memUsed = int64(s.MemUsage)
+				cancel()
+				go func() {
+					for range statsCh {
+					}
+				}()
+				goto netdevFallback
+			}
+			goto netdevFallback
+		case <-timeout:
+			goto netdevFallback
 		}
-		break
 	}
 
+netdevFallback:
 	// 兼容 Podman 4.x (如 Debian 12 官方源默认版本)：
 	// Podman 4.x 的 stats 响应中网络统计仅存在于顶层 NetInput/NetOutput 字段，无 Network 字典，
 	// 导致 s.Network 为空，netIn 与 netOut 仍为 0。
@@ -860,40 +874,197 @@ func (m *Manager) getIPsFromInspect(inspect *define.InspectContainerData) (ipv4,
 	return ipv4, ipv6, nil
 }
 
-// ListProcesses 枚举容器内正在运行的进程（供巡查黑名单匹配）。
-// 走 libpod 的 top 接口（内部执行容器内 ps），结果按 tab 分隔，args 不会因空格错位。
-// 注意：镜像没有 ps 时会失败，调用方必须记日志，避免「进程巡查静默失效」。
+// ListProcesses 枚举容器内进程（供巡查黑名单匹配）。
+// 全程在宿主机侧读 /proc，不依赖容器内 ps/kill——精简镜像（distroless）与
+// 容器内 rootkit（ld.so.preload 劫持 ps）都不影响结果。归属判定：与容器
+// init 进程同 PID 命名空间即属该容器，因此也不受 cgroup v1/v2 布局差异影响。
 func (m *Manager) ListProcesses(_ context.Context, vmID string) ([]manager.Process, error) {
-	rows, err := containers.Top(m.timeoutCtx(), vmID,
-		new(containers.TopOptions).WithDescriptors([]string{"pid", "comm", "args"}))
+	inspect, err := containers.Inspect(m.timeoutCtx(), vmID, nil)
 	if err != nil {
 		return nil, err
 	}
-	var procs []manager.Process
-	for i, row := range rows {
-		if i == 0 {
-			continue // 首行是标题
-		}
-		fields := strings.Split(row, "\t")
-		if len(fields) < 2 {
+	if inspect.State == nil {
+		return nil, fmt.Errorf("container %s has no runtime state", vmID)
+	}
+	if inspect.State.Paused {
+		// 冻结中的容器 SIGKILL 不会立即生效，枚举出来只会产生「杀了没死」的假事件。
+		// 必须在 Running 判断之前：paused 时 State.Running 为 false，先判 Running
+		// 会把它误报成「未运行」，排查时看不到真实原因。
+		return nil, fmt.Errorf("container %s is paused", vmID)
+	}
+	if !inspect.State.Running || inspect.State.Pid <= 0 {
+		return nil, fmt.Errorf("container %s is not running", vmID)
+	}
+	initPID := inspect.State.Pid
+	ns, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", initPID))
+	if err != nil {
+		return nil, err
+	}
+	// 容器与宿主共享 PID 命名空间时（--pid=host），归属判定失效，会把宿主
+	// 所有进程都当成容器进程。宁可报错跳过，也不能误枚举、误杀。
+	if hostNS, e := os.Readlink("/proc/1/ns/pid"); e == nil && hostNS == ns {
+		return nil, fmt.Errorf("container %s shares host PID namespace", vmID)
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	procs := make([]manager.Process, 0, 32)
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid <= 0 {
 			continue
 		}
-		pid, err := strconv.Atoi(strings.TrimSpace(fields[0]))
-		if err != nil {
+		// 先比命名空间：绝大多数宿主进程在这一步被排除。
+		link, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", pid))
+		if err != nil || link != ns {
 			continue
 		}
-		args := ""
-		if len(fields) > 2 {
-			args = strings.TrimSpace(fields[2])
+		// 同命名空间不等于是本容器：--pid=container:X 的两个容器共享 PID
+		// 命名空间但 cgroup 不同，必须再用 cgroup 子树排除，否则会杀到
+		// 别的容器的进程。init 的 cgroup 读不到时退回纯 ns 判定。
+		if !inSameCgroup(pid, initPID) {
+			continue
 		}
-		procs = append(procs, manager.Process{PID: pid, Comm: strings.TrimSpace(fields[1]), Args: args})
+		state, comm, nsPID, err := readProcStatus(pid)
+		if err != nil || state == 'Z' || state == 'X' || state == 'x' {
+			continue // 已退出待回收 / 正在销毁的进程杀之无益
+		}
+		if nsPID <= 0 {
+			continue
+		}
+		procs = append(procs, manager.Process{
+			PID:     nsPID,
+			HostPID: pid,
+			Comm:    comm,
+			Exe:     readProcExe(pid),
+			Args:    readProcCmdline(pid),
+			Init:    nsPID == 1,
+			Ns:      ns,
+		})
+	}
+	if len(procs) == 0 {
+		// 运行中的容器至少有一个 init 进程；空结果说明命名空间/cgroup
+		// 判定失效，必须报错让调用方记日志，而不是当作「没有进程」静默跳过。
+		return nil, fmt.Errorf("no process found in container %s (pid namespace/cgroup mismatch?)", vmID)
 	}
 	return procs, nil
 }
 
-// KillProcess 杀掉容器内指定 PID 的进程（SIGKILL）。
-func (m *Manager) KillProcess(_ context.Context, vmID string, pid int) error {
-	return m.execInContainer(vmID, []string{"kill", "-9", strconv.Itoa(pid)})
+// cgroupPaths 读取 /proc/<pid>/cgroup 里的层级路径，跳过根 cgroup（"/"）。
+func cgroupPaths(pid int) []string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		// v1: hierarchy-ID:controllers:path；v2: 0::path
+		i := strings.LastIndex(line, ":")
+		if i < 0 {
+			continue
+		}
+		p := strings.TrimSpace(line[i+1:])
+		if p == "" || p == "/" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// inSameCgroup 判断 pid 是否位于容器 init 的 cgroup 子树内。
+// 这是 PID 命名空间判定的补充：共享命名空间（--pid=container:X）的容器
+// 必须靠 cgroup 区分；嵌套命名空间里的进程仍会被漏掉（需要 CAP_SYS_ADMIN，
+// 当前容器创建参数不授予），属已知边界。
+func inSameCgroup(pid, initPID int) bool {
+	parents := cgroupPaths(initPID)
+	if len(parents) == 0 {
+		return true // init 的 cgroup 不可读（罕见），退回 ns 判定避免巡查整体失效
+	}
+	for _, p := range cgroupPaths(pid) {
+		for _, parent := range parents {
+			if p == parent || strings.HasPrefix(p, parent+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// readProcStatus 解析 /proc/<pid>/status，返回进程状态、comm 与容器内 PID。
+// NSpid 是「宿主 → 各层命名空间」的 PID 链，第 2 项即容器内 PID。
+func readProcStatus(pid int) (state byte, comm string, nsPID int, err error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0, "", 0, err
+	}
+	return parseProcStatus(string(data))
+}
+
+// parseProcStatus 是 readProcStatus 的纯解析部分，便于单测。
+func parseProcStatus(data string) (state byte, comm string, nsPID int, err error) {
+	for _, line := range strings.Split(data, "\n") {
+		switch {
+		case strings.HasPrefix(line, "Name:"):
+			// comm 可以被进程自己改写，甚至塞入换行伪造后续行；只认第一处，
+			// 后出现的同名行一律忽略。
+			if comm == "" {
+				comm = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
+			}
+		case strings.HasPrefix(line, "State:") && state == 0:
+			if f := strings.Fields(line); len(f) >= 2 && f[1] != "" {
+				state = f[1][0]
+			}
+		case strings.HasPrefix(line, "NSpid:") && nsPID == 0:
+			fields := strings.Fields(strings.TrimPrefix(line, "NSpid:"))
+			if len(fields) >= 2 {
+				nsPID, _ = strconv.Atoi(fields[1]) // 第 2 项 = 容器命名空间视角
+			} else if len(fields) == 1 {
+				nsPID, _ = strconv.Atoi(fields[0])
+			}
+		}
+	}
+	if comm == "" {
+		return 0, "", 0, fmt.Errorf("no Name in status")
+	}
+	return state, comm, nsPID, nil
+}
+
+// readProcCmdline 返回完整命令行（NUL 分隔转空格）。
+func readProcCmdline(pid int) string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(strings.ReplaceAll(string(data), "\x00", " "))
+}
+
+// readProcExe 返回可执行文件真实路径。进程启动后文件被删时 readlink 会带
+// " (deleted)" 后缀，剥掉才能与关键词正常比对。
+func readProcExe(pid int) string {
+	exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(exe, " (deleted)")
+}
+
+// KillProcess 从宿主机直接对容器内进程发 SIGKILL，不走容器内 kill：
+// 精简镜像没有 kill，容器内 rootkit 也可能拦截。杀前复核 PID 命名空间，
+// 防止枚举到查杀之间宿主 PID 被复用、误杀别的进程。
+func (m *Manager) KillProcess(_ context.Context, p manager.Process) error {
+	if p.HostPID <= 0 {
+		return fmt.Errorf("invalid host pid %d", p.HostPID)
+	}
+	ns, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", p.HostPID))
+	if err != nil {
+		return err // 进程已退出
+	}
+	if p.Ns != "" && ns != p.Ns {
+		return fmt.Errorf("host pid %d reused by another namespace", p.HostPID)
+	}
+	return syscall.Kill(p.HostPID, syscall.SIGKILL)
 }
 
 // GetVMDiskUsage 返回容器的磁盘占用（overlay 可写层 + 镜像层，字节）。

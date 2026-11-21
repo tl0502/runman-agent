@@ -1,6 +1,8 @@
 package patrol
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -8,6 +10,7 @@ import (
 
 	"runman-agent/config"
 	"runman-agent/db"
+	"runman-agent/manager"
 	"runman-agent/proto/agent"
 )
 
@@ -208,3 +211,214 @@ type fakeErr struct{}
 func (fakeErr) Error() string { return "fake failure" }
 
 var errFake = fakeErr{}
+
+// 匹配语义：名字层精确/尾通配，命令行层整词边界。
+func TestMatchKeyword(t *testing.T) {
+	cases := []struct {
+		name string
+		kw   string
+		comm string
+		exe  string
+		args string
+		want bool
+	}{
+		{"名字精确命中", "x-ui", "x-ui", "/usr/local/x-ui/x-ui", "", true},
+		{"名字不误杀 nginx-ui", "x-ui", "nginx-ui", "/usr/local/nginx-ui/nginx-ui", "", false},
+		{"命令行边界不误杀 nginx-ui", "x-ui", "nginx-ui", "", "/usr/local/nginx-ui/nginx-ui", false},
+		{"命令行路径命中", "x-ui", "x-ui-linux-amd64", "", "/usr/local/x-ui/x-ui-linux-amd64", true},
+		{"后缀变体靠 args 边界", "transmission", "transmission-daemon", "", "/usr/bin/transmission-daemon --foreground", true},
+		{"名字后缀不匹配精确", "deluge", "deluged", "", "", false},
+		{"尾通配匹配 deluged", "deluge*", "deluged", "", "", true},
+		{"尾通配匹配 hping3", "hping*", "hping3", "", "", true},
+		{"池地址命中", "stratum+tcp", "bash", "", "bash -c /tmp/x -o stratum+tcp://pool.example:3333", true},
+		{"exe 文件名命中", "xmrig", "bash", "/tmp/xmrig", "", true},
+		{"右侧字母不算边界", "xmrig", "", "", "/tmp/xmrig2", false},
+		{"大小写不敏感", "XMRIG", "XMRIG", "", "", true},
+		{"空关键词", "", "xmrig", "", "", false},
+		{"只有通配", "*", "xmrig", "", "", false},
+	}
+	for _, c := range cases {
+		if got := matchKeyword(c.kw, c.comm, c.exe, c.args); got != c.want {
+			t.Errorf("%s: matchKeyword(%q,%q,%q,%q)=%v want %v", c.name, c.kw, c.comm, c.exe, c.args, got, c.want)
+		}
+	}
+}
+
+// 连杀窗口：窗口外的记录要被丢弃，窗口内保留。
+func TestPruneKillTimes(t *testing.T) {
+	now := time.Now()
+	st := &vmState{killTimes: []time.Time{
+		now.Add(-61 * time.Minute),
+		now.Add(-30 * time.Minute),
+		now.Add(-time.Minute),
+	}}
+	pruneKillTimes(st, now)
+	if len(st.killTimes) != 2 {
+		t.Fatalf("窗口外记录应被丢弃，got %d 条: %v", len(st.killTimes), st.killTimes)
+	}
+	if !st.killTimes[0].Equal(now.Add(-30 * time.Minute)) {
+		t.Fatalf("保留顺序错误: %v", st.killTimes)
+	}
+}
+
+// fakeProber 只实现巡查用到的探测能力，其余按零值返回。
+type fakeProber struct {
+	procs   []manager.Process
+	listErr error
+	killErr error
+	killed  []int
+}
+
+func (f *fakeProber) ListProcesses(context.Context, string) ([]manager.Process, error) {
+	return f.procs, f.listErr
+}
+func (f *fakeProber) KillProcess(_ context.Context, p manager.Process) error {
+	if f.killErr != nil {
+		return f.killErr
+	}
+	f.killed = append(f.killed, p.HostPID)
+	return nil
+}
+func (f *fakeProber) GetVMDiskUsage(context.Context, string) (int64, error) { return 0, nil }
+func (f *fakeProber) GetVMVeth(context.Context, string) (string, error)     { return "", nil }
+func (f *fakeProber) GetVMIP(context.Context, string) (string, error)       { return "", nil }
+func (f *fakeProber) EnsureEgressTbf(context.Context, string, int64) error  { return nil }
+
+// fakeMgr 只覆盖 StopVM；嵌入接口让未用到的几十个方法不必逐个实现。
+type fakeMgr struct {
+	manager.VMManager
+	stopped []string
+	stopErr error
+}
+
+func (f *fakeMgr) StopVM(_ context.Context, vmID string, _ bool) error {
+	if f.stopErr != nil {
+		return f.stopErr
+	}
+	f.stopped = append(f.stopped, vmID)
+	return nil
+}
+
+func processConf(limit int) config.Config {
+	return config.Config{Patrol: config.PatrolConfig{Processes: config.PatrolProcesses{
+		Blacklist: []string{"xmrig"}, KillStopLimit: limit,
+	}}}
+}
+
+func newProcessService(t *testing.T, p *fakeProber, m *fakeMgr) *Service {
+	s := newTestService(t)
+	s.prober = p
+	s.mgr = m
+	return s
+}
+
+func countEvents(t *testing.T, s *Service, action string) int {
+	t.Helper()
+	events, n, err := s.db.QueryPatrolEvents(db.PatrolEventQuery{}, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := 0
+	for i := 0; i < int(n) && i < len(events); i++ {
+		if events[i].Action == action {
+			c++
+		}
+	}
+	return c
+}
+
+// 普通进程命中：杀掉并记事件，不停机。
+func TestCheckProcessesKillOnly(t *testing.T) {
+	p := &fakeProber{procs: []manager.Process{{PID: 7, HostPID: 107, Comm: "xmrig", Args: "/tmp/xmrig 60"}}}
+	m := &fakeMgr{}
+	s := newProcessService(t, p, m)
+	st := &vmState{}
+	s.checkProcesses(processConf(0), testVM(), st)
+	if len(p.killed) != 1 || p.killed[0] != 107 {
+		t.Fatalf("应杀掉 host pid 107，got %v", p.killed)
+	}
+	if len(m.stopped) != 0 {
+		t.Fatalf("阈值为 0 不应停机，got %v", m.stopped)
+	}
+	if len(st.killTimes) != 1 {
+		t.Fatalf("应记录 1 次命中，got %d", len(st.killTimes))
+	}
+	if c := countEvents(t, s, "kill_process"); c != 1 {
+		t.Fatalf("应产生 1 条 kill_process 事件，got %d", c)
+	}
+}
+
+// 连杀达到阈值：停机 + 记录停机原因 + 清空计数。
+func TestCheckProcessesEscalates(t *testing.T) {
+	p := &fakeProber{procs: []manager.Process{{PID: 7, HostPID: 107, Comm: "xmrig"}}}
+	m := &fakeMgr{}
+	s := newProcessService(t, p, m)
+	st := &vmState{}
+	conf := processConf(2)
+	s.checkProcesses(conf, testVM(), st)
+	if len(m.stopped) != 0 {
+		t.Fatal("第一次命中不应停机")
+	}
+	s.checkProcesses(conf, testVM(), st)
+	if len(m.stopped) != 1 || m.stopped[0] != "vm-1" {
+		t.Fatalf("第二次命中应停机，got %v", m.stopped)
+	}
+	if len(st.killTimes) != 0 {
+		t.Fatalf("停机后计数应清空，got %d", len(st.killTimes))
+	}
+	if c := countEvents(t, s, "stop_vm"); c != 1 {
+		t.Fatalf("应产生 1 条 stop_vm 事件，got %d", c)
+	}
+	stops := s.db.ListPatrolStops()
+	if len(stops) != 1 || stops[0].Reason != "process" {
+		t.Fatalf("应记录 process 原因停机，got %+v", stops)
+	}
+}
+
+// 容器主进程命中：不 kill，直接停机。
+func TestCheckProcessesInitStops(t *testing.T) {
+	p := &fakeProber{procs: []manager.Process{{PID: 1, HostPID: 101, Comm: "xmrig", Init: true}}}
+	m := &fakeMgr{}
+	s := newProcessService(t, p, m)
+	st := &vmState{}
+	s.checkProcesses(processConf(0), testVM(), st)
+	if len(p.killed) != 0 {
+		t.Fatalf("主进程不应被 kill，got %v", p.killed)
+	}
+	if len(m.stopped) != 1 {
+		t.Fatalf("主进程命中应停机，got %v", m.stopped)
+	}
+	if len(st.killTimes) != 0 {
+		t.Fatalf("主进程停机不应计入连杀阈值")
+	}
+}
+
+// 边界匹配：nginx-ui 不得被 x-ui 误杀。
+func TestCheckProcessesBoundaryNoFalsePositive(t *testing.T) {
+	p := &fakeProber{procs: []manager.Process{{
+		PID: 9, HostPID: 109, Comm: "nginx-ui",
+		Exe: "/usr/local/nginx-ui/nginx-ui", Args: "/usr/local/nginx-ui/nginx-ui",
+	}}}
+	m := &fakeMgr{}
+	s := newProcessService(t, p, m)
+	s.checkProcesses(processConf(0), testVM(), &vmState{})
+	if len(p.killed) != 0 {
+		t.Fatalf("nginx-ui 不应被误杀，got %v", p.killed)
+	}
+}
+
+// 停机失败：只告警一次（10 分钟限频），不记录停机、不清空计数。
+func TestCheckProcessesStopFailureRateLimited(t *testing.T) {
+	p := &fakeProber{procs: []manager.Process{{PID: 1, HostPID: 101, Comm: "xmrig", Init: true}}}
+	m := &fakeMgr{stopErr: errors.New("boom")}
+	s := newProcessService(t, p, m)
+	st := &vmState{}
+	s.checkProcesses(processConf(0), testVM(), st)
+	s.checkProcesses(processConf(0), testVM(), st)
+	if c := countEvents(t, s, "alert"); c != 1 {
+		t.Fatalf("停机失败应限频告警，got %d 条", c)
+	}
+	if stops := s.db.ListPatrolStops(); len(stops) != 0 {
+		t.Fatalf("停机失败不应记录停机，got %+v", stops)
+	}
+}

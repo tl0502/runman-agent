@@ -1203,7 +1203,12 @@ function patrolCheckMeta(check) {
 }
 
 function anomalyReasonLabel(a) {
-  if (a.type === 'stopped') return a.reason === 'resources' ? '资源超限停机' : '连接超限停机';
+  if (a.type === 'stopped') {
+    if (a.reason === 'resources') return '资源超限停机';
+    if (a.reason === 'process') return '进程黑名单停机';
+    if ((a.reason || '').startsWith('abuse_')) return '滥用识别停机';
+    return '连接超限停机';
+  }
   return a.reason === 'connections' ? '连接数超限' : '带宽超限';
 }
 
@@ -1647,6 +1652,7 @@ function loadPatrolConfig(c) {
   $('prAction').value = r.action || 'restart';
   $('prCooldown').value = r.restart_cooldown_min ?? 60;
   $('ppEnabled').checked = pr.enabled == null ? true : !!pr.enabled;
+  $('ppKillStop').value = pr.kill_stop_limit ?? 0;
   patrolState.blacklist = (pr.blacklist || []).slice();
   renderPatrolTags();
   $('paEnabled').checked = !!ab.enabled;
@@ -1702,6 +1708,7 @@ function collectPatrolConfig() {
       processes: {
         enabled: $('ppEnabled').checked,
         blacklist: patrolState.blacklist.slice(),
+        kill_stop_limit: num('ppKillStop'),
       },
       abuse: {
         enabled: $('paEnabled').checked,

@@ -670,7 +670,7 @@ func (s *Server) handlePatrolThrottles(w http.ResponseWriter, _ *http.Request) {
 type patrolAnomalyView struct {
 	VMID      string `json:"vm_id"`
 	Type      string `json:"type"`   // throttle | stopped
-	Reason    string `json:"reason"` // bandwidth | connections | resources
+	Reason    string `json:"reason"` // bandwidth | connections | resources | process
 	RateMbps  int    `json:"rate_mbps,omitempty"`
 	ReleaseAt int64  `json:"release_at,omitempty"`
 	StoppedAt int64  `json:"stopped_at,omitempty"`
@@ -788,6 +788,8 @@ func normalizePatrol(p *config.PatrolConfig) {
 	p.Resources.DiskPct = clamp(p.Resources.DiskPct, 1, 100)
 	p.Resources.DiskAlertIntervalMin = clamp(p.Resources.DiskAlertIntervalMin, 10, 10080)
 	p.Resources.RestartCooldownMin = clamp(p.Resources.RestartCooldownMin, 1, 10080)
+	// 0 是合法值（关闭连杀停机），clamp 下限为 0。
+	p.Processes.KillStopLimit = clamp(p.Processes.KillStopLimit, 0, 10000)
 	if p.Resources.Action != "restart" && p.Resources.Action != "stop" && p.Resources.Action != "alert" {
 		p.Resources.Action = "restart"
 	}

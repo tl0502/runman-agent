@@ -19,7 +19,9 @@ import (
 // VMProber 是巡查所需的、由具体驱动（目前仅 podman）提供的探测能力。
 type VMProber interface {
 	ListProcesses(ctx context.Context, vmID string) ([]manager.Process, error)
-	KillProcess(ctx context.Context, vmID string, pid int) error
+	// KillProcess 从宿主机直接对容器内进程发 SIGKILL，不依赖容器内 kill/ps：
+	// 精简镜像（distroless）与容器内 rootkit 都不影响。
+	KillProcess(ctx context.Context, p manager.Process) error
 	GetVMDiskUsage(ctx context.Context, vmID string) (int64, error)
 	GetVMVeth(ctx context.Context, vmID string) (string, error)
 	GetVMIP(ctx context.Context, vmID string) (string, error)
@@ -71,10 +73,14 @@ type vmState struct {
 	// lastDiskAlertAt 上次磁盘告警时间。同一 VM 的磁盘告警按配置间隔限频
 	// （默认 6 小时），避免持续超限/在阈值附近抖动时反复刷日志。
 	lastDiskAlertAt time.Time
-	// procErrAt 进程枚举失败最近一次记日志的时间。容器镜像可能没有 ps
-	// （top 依赖容器内 ps），限频记日志让「进程巡查跳过」可见而不是静默。
-	procErrAt    time.Time
-	lastActionAt time.Time // 最近一次自动动作时间（重启/关机冷却）
+	// procErrAt 进程枚举失败最近一次记日志的时间，限频让失败可见而不刷屏。
+	procErrAt time.Time
+	// killTimes 进程黑名单命中（成功杀掉）的时间戳，只保留 1 小时窗口内的记录。
+	// 反复命中说明有守护脚本拉起，杀进程治标不治本，达到阈值升级为停容器。
+	killTimes []time.Time
+	// lastStopAlertAt 升级停机失败告警的最近时间，10 分钟限频防刷屏。
+	lastStopAlertAt time.Time
+	lastActionAt    time.Time // 最近一次自动动作时间（重启/关机冷却）
 }
 
 func NewService(mgr manager.VMManager, prober VMProber, database *db.DB, cfg *config.Manager, notifier *notify.Notifier) *Service {
