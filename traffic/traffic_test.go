@@ -102,31 +102,31 @@ func TestShouldResetCycle(t *testing.T) {
 		{
 			// 事故场景：已运行一段时间（上次同步 11-21）后切到 rental，
 			// rental 周期起点（10-30）早于上次同步 → 不清零，计数平移保留。
-			name:     "monthly 切 rental 不清零",
-			oldKey:   "2026-11-01", newKey: "2026-10-30",
+			name:   "monthly 切 rental 不清零",
+			oldKey: "2026-11-01", newKey: "2026-10-30",
 			newStart: time.Date(2026, 10, 30, 9, 0, 0, 0, time.Local),
 			lastSync: time.Date(2026, 11, 21, 8, 0, 0, 0, time.Local),
 			want:     false,
 		},
 		{
-			name:     "rental 切回 monthly 不清零",
-			oldKey:   "2026-11-18", newKey: "2026-11-01",
+			name:   "rental 切回 monthly 不清零",
+			oldKey: "2026-11-18", newKey: "2026-11-01",
 			newStart: time.Date(2026, 11, 1, 0, 0, 0, 0, time.Local),
 			lastSync: time.Date(2026, 11, 21, 8, 0, 0, 0, time.Local),
 			want:     false,
 		},
 		{
 			// monthly 下改重置日（1 → 15）：新周期起点在过去 → 不清零。
-			name:     "改重置日不清零",
-			oldKey:   "2026-11-01", newKey: "2026-11-15",
+			name:   "改重置日不清零",
+			oldKey: "2026-11-01", newKey: "2026-11-15",
 			newStart: time.Date(2026, 11, 15, 0, 0, 0, 0, time.Local),
 			lastSync: time.Date(2026, 11, 21, 8, 0, 0, 0, time.Local),
 			want:     false,
 		},
 		{
 			// 锚点偶发失败回落 monthly 键（rental → monthly 键抖动）→ 不清零。
-			name:     "锚点抖动回落不清零",
-			oldKey:   "2026-11-18", newKey: "2026-11-01",
+			name:   "锚点抖动回落不清零",
+			oldKey: "2026-11-18", newKey: "2026-11-01",
 			newStart: time.Date(2026, 11, 1, 0, 0, 0, 0, time.Local),
 			lastSync: time.Date(2026, 11, 21, 8, 30, 0, 0, time.Local),
 			want:     false,
@@ -134,23 +134,23 @@ func TestShouldResetCycle(t *testing.T) {
 		{
 			// rental 自然到期：上次同步在周期切换时刻（锚点时分秒）之前 → 清零。
 			// 覆盖「切换当天、锚点时刻之前同步过」的窗口（起点若取日期 00:00 会漏清零）。
-			name:     "rental 自然到期清零",
-			oldKey:   "2026-11-18", newKey: "2026-12-18",
+			name:   "rental 自然到期清零",
+			oldKey: "2026-11-18", newKey: "2026-12-18",
 			newStart: time.Date(2026, 12, 18, 10, 0, 0, 0, time.Local),
 			lastSync: time.Date(2026, 12, 18, 9, 55, 0, 0, time.Local),
 			want:     true,
 		},
 		{
 			// monthly 自然跨月：上次同步在月末，新周期起点 00:00 晚于它 → 清零。
-			name:     "monthly 自然跨月清零",
-			oldKey:   "2026-10-01", newKey: "2026-11-01",
+			name:   "monthly 自然跨月清零",
+			oldKey: "2026-10-01", newKey: "2026-11-01",
 			newStart: time.Date(2026, 11, 1, 0, 0, 0, 0, time.Local),
 			lastSync: time.Date(2026, 10, 31, 23, 59, 59, 0, time.Local),
 			want:     true,
 		},
 		{
-			name:     "键未变化不清零",
-			oldKey:   "2026-11-18", newKey: "2026-11-18",
+			name:   "键未变化不清零",
+			oldKey: "2026-11-18", newKey: "2026-11-18",
 			newStart: time.Date(2026, 11, 18, 10, 0, 0, 0, time.Local),
 			lastSync: time.Date(2026, 11, 20, 8, 0, 0, 0, time.Local),
 			want:     false,
