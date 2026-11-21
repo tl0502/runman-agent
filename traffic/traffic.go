@@ -2,7 +2,6 @@ package traffic
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"runman-agent/config"
 	"runman-agent/db"
@@ -99,13 +98,16 @@ func (s *Service) syncOnce(ctx context.Context) {
 		resetDay = 1
 	}
 	// monthly 模式下所有 VM 共用一个周期键。
-	monthlyCycle := monthlyCycleKey(now, resetDay)
+	monthlyKey, monthlyStart := monthlyCycle(now, resetDay)
 
 	for _, vm := range vms {
 		// 该 VM 当前所处的计费周期键（monthly 全局；rental 逐 VM 计算）。
-		cycle := monthlyCycle
+		// rental 拿不到创建时间锚点时回落 monthly 周期，避免误用零值。
+		cycle, cycleStart := monthlyKey, monthlyStart
 		if mode == "rental" {
-			cycle = s.rentalCycleKey(ctx, vm.VmId, now, monthlyCycle)
+			if created, err := s.mgr.GetVMCreatedAt(ctx, vm.VmId); err == nil && !created.IsZero() {
+				cycle, cycleStart = rentalCycleFrom(created, now)
+			}
 		}
 
 		// 从驱动获取 VM 的当前流量值（累计字节数）
@@ -147,13 +149,14 @@ func (s *Service) syncOnce(ctx context.Context) {
 			traffic.TotalIn += deltaIn
 			traffic.TotalOut += deltaOut
 
-			// 检查周期是否变化
-			if traffic.Month != cycle {
-				// 周期切换，重置月度数据
-				traffic.Month = cycle
+			// 周期键变化时，仅在「时间自然推进到新周期」时才清零。
+			// 模式切换 / 改重置日 / 锚点抖动造成的键跳变属于「回溯到过去的周期」，
+			// 保留累计值只更新键，否则切一次模式就全员清零（2026-11 实际事故）。
+			if shouldResetCycle(traffic.Month, cycle, cycleStart, traffic.UpdatedAt) {
 				traffic.MonthIn = 0
 				traffic.MonthOut = 0
 			}
+			traffic.Month = cycle
 
 			// 累计月度数据
 			traffic.MonthIn += deltaIn
@@ -172,9 +175,9 @@ func (s *Service) syncOnce(ctx context.Context) {
 	}
 }
 
-// monthlyCycleKey 计算「每月 resetDay」的周期键（如 "2024-03-15"）。
+// monthlyCycle 计算「每月 resetDay」的周期，返回周期键与周期起点。
 // 当前日期在 resetDay 之前时归属上一个月的周期。
-func monthlyCycleKey(now time.Time, resetDay int) string {
+func monthlyCycle(now time.Time, resetDay int) (string, time.Time) {
 	y, m, d := now.Date()
 	if d < resetDay {
 		m -= 1
@@ -183,36 +186,31 @@ func monthlyCycleKey(now time.Time, resetDay int) string {
 			y -= 1
 		}
 	}
-	return fmt.Sprintf("%04d-%02d-%02d", y, m, resetDay)
+	start := time.Date(y, m, resetDay, 0, 0, 0, 0, time.Local)
+	return start.Format("2006-01-02"), start
 }
 
-// rentalCycleKey 计算「VM 首次创建时间 + 30 天」的当前周期键（返回周期开始日）。
-// 创建时间由 VMService.GetVMCreatedAt 提供稳定锚点（DB.CreatedAt），重建不会重置；
-// 拿不到时回落到 monthly 的周期键，避免流量被误归零。
-//
-// 锚点稳定后不再需要本地缓存：GetVMCreatedAt 优先走本地 SQLite，成本可忽略，
-// 且消除了旧 24h 缓存导致「重建后周期延迟最多一天才刷新」的漂移。
-func (s *Service) rentalCycleKey(ctx context.Context, vmID string, now time.Time, fallback string) string {
-	created, err := s.mgr.GetVMCreatedAt(ctx, vmID)
-	if err != nil || created.IsZero() {
-		return fallback
-	}
-	return rentalCycleKeyFrom(created, now, fallback)
-}
-
-// rentalCycleKeyFrom 是 rentalCycleKey 的纯计算部分（便于单测）。
-// 以创建时间为起点，每 30 天一个周期；当前周期开始日即周期键。
-func rentalCycleKeyFrom(created, now time.Time, fallback string) string {
-	if created.IsZero() {
-		return fallback
-	}
+// rentalCycleFrom 计算「VM 首次创建时间 + 30 天」的当前周期，返回周期键与周期起点。
+// 周期起点精确到锚点时分秒（而非格式化日期的 00:00）：周期切换当天、
+// 锚点时刻之前的同步窗口仍必须能判定为「新周期」，否则会漏清零。
+func rentalCycleFrom(created, now time.Time) (string, time.Time) {
 	elapsed := now.Sub(created)
 	if elapsed < 0 {
 		elapsed = 0
 	}
 	n := int64(elapsed / (30 * 24 * time.Hour))
-	cycleStart := created.Add(time.Duration(n) * 30 * 24 * time.Hour)
-	return cycleStart.Format("2006-01-02")
+	start := created.Add(time.Duration(n) * 30 * 24 * time.Hour)
+	return start.Format("2006-01-02"), start
+}
+
+// shouldResetCycle 判定周期键变化是否属于「自然周期推进」（需要清零月度计数）。
+// 仅当新周期起点晚于上次同步时间才清零；键因模式切换 / 改重置日 / 锚点
+// 回落抖动而「跳到过去」时，新周期起点早于上次同步时间，不清零。
+func shouldResetCycle(oldKey, newKey string, newCycleStart, lastSync time.Time) bool {
+	if oldKey == newKey {
+		return false
+	}
+	return newCycleStart.After(lastSync)
 }
 
 // GetVMTraffic 从数据库获取 VM 的累计流量（用于 API）
