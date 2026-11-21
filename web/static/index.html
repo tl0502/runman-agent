@@ -874,6 +874,7 @@
             <div class="pcat-head">
               <label class="check"><input type="checkbox" id="pEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用巡查</label>
             </div>
+            <div class="cfg-group">
             <div class="form-grid cols-2">
               <div class="field">
                 <label for="pInterval">巡查间隔 <span class="hint">秒</span></label>
@@ -885,6 +886,7 @@
               </div>
             </div>
             <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>容器列表或连接表连续 <b>N 次</b>读取失败时推送告警，恢复时同样上报。</span></div>
+            </div>
           </section>
 <section class="scat" data-scat="p-network">
 
@@ -965,18 +967,20 @@
             <div class="pcat-head">
               <label class="check"><input type="checkbox" id="ppEnabled"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 启用</label>
             </div>
+            <div class="cfg-group">
             <div class="field">
-              <label for="ppInput">黑名单关键词 <span class="hint">命中即杀</span></label>
+              <label for="ppInput">黑名单关键词</label>
               <div class="tags-editor">
                 <div class="tag-list" id="ppTagList"></div>
-                <textarea class="tag-input" id="ppInput" rows="1" placeholder="回车添加；可粘贴逗号/换行分隔的多个关键词批量导入" autocomplete="off" spellcheck="false"></textarea>
+                <textarea class="tag-input" id="ppInput" rows="1" placeholder="回车添加；支持逗号 / 换行 / 分号分隔批量粘贴" autocomplete="off" spellcheck="false"></textarea>
               </div>
-              <span class="hint">进程名精确匹配，词尾 * 通配；命令行按词边界匹配。命中即 kill，不发 Telegram。</span>
+              <span class="hint">进程名精确匹配，词尾 * 通配；命令行按词边界匹配。</span>
             </div>
             <div class="form-grid cols-2">
               <div class="field"><label for="ppKillStop">连杀停机 <span class="hint">1 小时内命中次数 · 0 关闭</span></label><input class="input tnum" type="number" id="ppKillStop" min="0" max="10000"></div>
             </div>
-            <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>容器主进程命中直接停机；杀进程本身不发 Telegram，停机事件照常推送。</span></div>
+            <div class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg><span>容器主进程命中直接停机。</span></div>
+            </div>
           </section>
 
 <section class="scat" data-scat="notify">

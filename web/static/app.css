@@ -944,6 +944,8 @@ select.input:disabled { cursor: not-allowed; }
 }
 /* 卡片内紧跟字段网格的独立字段行（如推送事件开关组）与上方留出同款间距 */
 .cfg-group > .form-grid + .field { margin-top: 14px; }
+/* 反向：独立字段行（如黑名单标签编辑器）之后的字段网格同样需要间距 */
+.cfg-group > .field + .form-grid { margin-top: 14px; }
 .cfg-group-head {
   display: flex;
   align-items: center;
