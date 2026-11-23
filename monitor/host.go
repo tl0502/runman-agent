@@ -49,11 +49,15 @@ func hostOSKernel() (string, string) {
 }
 
 type HostMonitor struct {
-	mu            sync.Mutex
-	lastNetIn     int64
-	lastNetOut    int64
-	lastTime      time.Time
-	bandwidthMbps int32
+	mu         sync.Mutex
+	lastNetIn  int64
+	lastNetOut int64
+	lastTime   time.Time
+
+	// 出口带宽取自最近一次测速（见 speedtest.go）。心跳只有一个带宽字段，
+	// 取上下行的较小值；面板通过 /api/status 拿完整的 down/up 与测速时间。
+	speed   SpeedResult
+	speedOK bool
 }
 
 func NewHostMonitor() *HostMonitor {
@@ -62,10 +66,19 @@ func NewHostMonitor() *HostMonitor {
 	}
 }
 
-func (h *HostMonitor) SetBandwidth(mbps int32) {
+// SetSpeed 更新最近一次测速结果：进程启动时从 DB 回填，之后由测速流程写入。
+func (h *HostMonitor) SetSpeed(r SpeedResult) {
 	h.mu.Lock()
-	h.bandwidthMbps = mbps
+	h.speed = r
+	h.speedOK = r.BandwidthMbps > 0
 	h.mu.Unlock()
+}
+
+// Speed 返回最近一次测速结果；从未测出过结果时 ok=false。
+func (h *HostMonitor) Speed() (SpeedResult, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.speed, h.speedOK
 }
 
 func (h *HostMonitor) GetStats(ctx context.Context) (*HostStats, error) {
@@ -127,7 +140,7 @@ func (h *HostMonitor) GetStats(ctx context.Context) (*HostStats, error) {
 		rateOut = 0
 	}
 
-	bwMbps := h.bandwidthMbps
+	bwMbps := h.speed.BandwidthMbps
 	h.lastNetIn, h.lastNetOut, h.lastTime = currentIn, currentOut, now
 	h.mu.Unlock()
 

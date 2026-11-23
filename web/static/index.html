@@ -233,14 +233,17 @@
         <div class="metric-label">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-net"/></svg>
           网络
+          <button class="metric-act" id="btnSpeedTest" title="重新测速" aria-label="重新测速">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
+          </button>
         </div>
         <div class="metric-value" style="gap:14px">
           <span class="row" style="gap:5px"><span class="unit" style="color:var(--green)">↑</span><span class="num" style="font-size:22px" id="mNetOut">0</span></span>
           <span class="row" style="gap:5px"><span class="unit" style="color:var(--blue)">↓</span><span class="num" style="font-size:22px" id="mNetIn">0</span></span>
         </div>
-        <div class="metric-meta" style="margin-top:16px">
+        <div class="metric-meta">
           <span>带宽 <b id="mNetBw">—</b></span>
-          <span id="mNetMeta" class="mono"></span>
+          <span id="mNetMeta"></span>
         </div>
       </div>
     </div>

@@ -246,6 +246,10 @@ func main() {
 		config:  conf,
 	}
 
+	// 出口带宽测速：结果写 System 表并回填 HostMonitor，心跳只带上下行的较小值。
+	// 启动时测一次，面板可手动重测；不做周期性重测。
+	speed := newHostSpeedRunner(database, hostMon)
+
 	// 启动自动更新服务（如果检测到新版本，将在 24-72 小时内强制更新）
 	upd := updater.NewService(database, cfg, version)
 	go upd.Start(context.Background())
@@ -286,6 +290,7 @@ func main() {
 	ws := web.NewServer(database, svc, hostMon, cfg, a.pf, a.wg, a, rawMgr, version, commit, upd)
 	ws.SetPatrol(patrolSvc)
 	ws.SetNotifier(ntf)
+	ws.SetSpeedTester(speed)
 	go func() {
 		log.Printf("Starting web server on %s", conf.Web)
 		if err := ws.ListenAndServe(conf.Web); err != nil {
@@ -314,8 +319,8 @@ func main() {
 		}
 	}()
 
-	// 启动时异步测速，结果只保留内存，不写配置
-	go a.measureBandwidth()
+	// 启动时异步测速（失败按 1m/5m 退避重试），结果落 System 表并回填缓存
+	speed.StartAtStartup()
 	// 启动时检测公网 IPv4/IPv6，附带在心跳中上报；之后每 5 分钟刷新一次
 	go a.detectIPv4()
 	go a.detectIPv6()
@@ -347,40 +352,6 @@ func main() {
 	}
 
 	a.run()
-}
-
-// measureBandwidth 通过下载 Cloudflare 测速文件估算出口带宽，
-// 结果保存到数据库并更新 HostMonitor 缓存。
-func (a *Agent) measureBandwidth() {
-	const testURL = "https://speed.cloudflare.com/__down?bytes=92160000"
-	log.Printf("Starting bandwidth test...")
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
-	if err != nil {
-		log.Printf("Bandwidth test request error: %v", err)
-		return
-	}
-	start := time.Now()
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Printf("Bandwidth test failed: %v", err)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	n, err := io.Copy(io.Discard, resp.Body)
-	if err != nil {
-		log.Printf("Bandwidth test read error: %v", err)
-		return
-	}
-	elapsed := time.Since(start).Seconds()
-	mbps := int32(float64(n) * 8 / elapsed / 1_000_000)
-	log.Printf("Bandwidth test result: %d Mbps (downloaded %d bytes in %.2fs)", mbps, n, elapsed)
-
-	// 将测速结果保留在内存，HostMonitor 使用，不写配置文件
-	a.hostMon.SetBandwidth(mbps)
 }
 
 // run 是主循环：持续从配置管理器读取最新配置，等待 Token 就绪后建立 gRPC 连接，

@@ -79,6 +79,7 @@ type Server struct {
 	updater      *updater.Service
 	patrol       *patrol.Service
 	notifier     *notify.Notifier
+	speedTester  SpeedTester
 
 	monitorHst map[string][]vmListItem
 	monitorMu  sync.RWMutex
@@ -119,6 +120,18 @@ func (s *Server) SetPatrol(p *patrol.Service) {
 // SetNotifier 注入全局通知器（与巡查共享同一实例，配置实时生效）。
 func (s *Server) SetNotifier(n *notify.Notifier) {
 	s.notifier = n
+}
+
+// SpeedTester 是测速模块的调度入口，由 main 包实现（避免 web 反向依赖 main）。
+// Start 返回 false 表示已有测速在进行。
+type SpeedTester interface {
+	Start() bool
+	Status() (running bool, lastErr string)
+}
+
+// SetSpeedTester 注入测速调度器；未注入时手动测速端点返回错误。
+func (s *Server) SetSpeedTester(t SpeedTester) {
+	s.speedTester = t
 }
 
 // authMiddleware 校验 cookie session；未登录返回 401（无 WWW-Authenticate，
@@ -268,6 +281,8 @@ func (s *Server) ListenAndServe(addr string) error {
 
 	// 通知（Agent 侧全局能力，当前通道 Telegram）
 	mux.HandleFunc("POST /api/notify/test", s.handleNotifyTest)
+	// 手动测速：异步触发，结果通过 /api/status 的 speed 字段回传
+	mux.HandleFunc("POST /api/speedtest", s.handleSpeedTest)
 
 	// 启动后台监控收集
 	go s.startMonitorLoop()
@@ -756,6 +771,22 @@ func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOK(w, map[string]bool{"ok": true})
+}
+
+// handleSpeedTest 异步触发一次出口带宽测速。整个过程约 10 秒，
+// 结果通过 /api/status 的 speed 字段回传，面板轮询即可看到变化。
+func (s *Server) handleSpeedTest(w http.ResponseWriter, r *http.Request) {
+	if s.speedTester == nil {
+		jsonErr(w, fmt.Errorf("测速模块未初始化"), http.StatusInternalServerError)
+		return
+	}
+	if !s.speedTester.Start() {
+		jsonErr(w, fmt.Errorf("测速进行中，请稍候"), http.StatusConflict)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]bool{"started": true})
 }
 
 // normalizePatrol 把面板传来的值夹取到合法区间（所有阈值/时长可配置，但须在安全范围）。
@@ -1302,6 +1333,11 @@ type hostStatusResponse struct {
 	*monitor.HostStats
 	MonthInTotal  int64 `json:"month_in_total"`
 	MonthOutTotal int64 `json:"month_out_total"`
+	// Speed 是最近一次测速结果；从未测出过为 null。
+	// 心跳里的 bandwidth_mbps 是它的 min(down, up)，这里给出明细供面板展示。
+	Speed        *monitor.SpeedResult `json:"speed"`
+	SpeedTesting bool                 `json:"speed_testing"`
+	SpeedError   string               `json:"speed_error,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -1325,11 +1361,23 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	jsonOK(w, hostStatusResponse{
+	resp := hostStatusResponse{
 		HostStats:     stats,
 		MonthInTotal:  mIn,
 		MonthOutTotal: mOut,
-	})
+	}
+	if speed, ok := s.hostMon.Speed(); ok {
+		resp.Speed = &speed
+	}
+	if s.speedTester != nil {
+		var lastErr string
+		resp.SpeedTesting, lastErr = s.speedTester.Status()
+		if !resp.SpeedTesting {
+			resp.SpeedError = lastErr
+		}
+	}
+
+	jsonOK(w, resp)
 }
 
 func (s *Server) handleSystemInfo(w http.ResponseWriter, _ *http.Request) {

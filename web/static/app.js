@@ -219,7 +219,7 @@ async function refreshStatus() {
 
     $('mNetOut').textContent = fmtBps(d.net_out_bps);
     $('mNetIn').textContent = fmtBps(d.net_in_bps);
-    $('mNetBw').textContent = d.bandwidth_mbps ? `${d.bandwidth_mbps} Mbps` : '不限';
+    renderBandwidth(d);
     $('mNetMeta').textContent = `累计 ↑ ${fmtBytes(d.net_out_total)} · ↓ ${fmtBytes(d.net_in_total)}`;
 
     $('ovUptime').textContent = fmtUptime(d.uptime);
@@ -236,6 +236,35 @@ async function refreshStatus() {
     $('flowOutBar').style.background = 'var(--green)';
     renderHostKv();
   } catch { /* 静默：面板可能刚启动 */ }
+}
+
+// 带宽显示的是最近一次测速的 min(下行, 上行)：非对称线路按窄的一侧算，
+// 与心跳上报的口径一致。没有结果时显示 —（旧版误显示「不限」），失败原因放 tooltip。
+function renderBandwidth(d) {
+  const btn = $('btnSpeedTest');
+  const busy = !!d.speed_testing;
+  btn.classList.toggle('is-busy', busy);
+  btn.disabled = busy;
+
+  const el = $('mNetBw');
+  const sp = d.speed;
+  if (busy) {
+    el.textContent = '测速中…';
+    el.title = '';
+    return;
+  }
+  if (!sp || !sp.bandwidth_mbps) {
+    el.textContent = '—';
+    el.title = d.speed_error ? `测速失败：${d.speed_error}` : '尚未测速，点右上角图标重测';
+    return;
+  }
+  el.textContent = `${sp.bandwidth_mbps} Mbps`;
+  const detail = [`↓ ${sp.down_mbps || '—'}`, `↑ ${sp.up_mbps || '—'}`];
+  if (sp.partial) detail.push('仅测通一个方向');
+  detail.push(ago(Math.floor(Date.parse(sp.tested_at) / 1000)));
+  // 有旧结果时重测失败不会改变显示值，但必须让人知道这次没测成。
+  if (d.speed_error) detail.push('最近一次重测失败');
+  el.title = detail.join(' · ');
 }
 
 function renderHostKv() {
@@ -434,6 +463,22 @@ qsa('.sort-btn').forEach((btn) => btn.addEventListener('click', () => {
 }));
 $('vmRefresh').addEventListener('click', (e) => withBusy(e.currentTarget, async () => { await refreshVMs(); toast('已刷新'); }));
 $('ovRefresh').addEventListener('click', (e) => withBusy(e.currentTarget, async () => { await refreshStatus(); await refreshVMs(); toast('已刷新'); }));
+
+// 手动测速：后端异步跑约 10 秒，进度与结果都由 2 秒一次的 /api/status 轮询带回来，
+// 这里只负责触发与即时反馈。
+$('btnSpeedTest').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.classList.add('is-busy');
+  $('mNetBw').textContent = '测速中…';
+  try {
+    await api('POST', '/api/speedtest');
+  } catch (err) {
+    toastErr(err);
+  }
+  await refreshStatus();
+});
 
 /* ══════════════════════════════ 抽屉 ═══════════════════════════════════════ */
 function openDrawer(vmId, tab = 'monitor') {
