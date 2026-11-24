@@ -1936,7 +1936,7 @@ function renderIPv6Share(c) {
   if (!edit || !enable) return;
   const isSnat = c.ipv6_mode === 'snat';
   edit.hidden = !isSnat;
-  enable.hidden = isSnat || c.virt_type !== 'podman';
+  enable.hidden = isSnat || c.ipv6_mode === 'subnet' || c.virt_type !== 'podman';
   if (!enable.hidden) void fillSharedV6Options();
 }
 
@@ -2130,6 +2130,8 @@ $('btnEnableSharedV6')?.addEventListener('click', () => {
       loadConfigIntoForm(await api('GET', '/api/config'));
     } catch (e) {
       toast('启用失败：' + (e.message || e), 'bad');
+      // The network/config can be saved while egress application is pending.
+      try { loadConfigIntoForm(await api('GET', '/api/config')); } catch (_) { /* retain the error */ }
     }
   });
 });

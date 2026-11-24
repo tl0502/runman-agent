@@ -1,49 +1,50 @@
-// Package netmigrate 重建 podman 网络，用于在「仅 IPv4」与「双栈」之间切换。
-//
-// podman 的 IPv6 是网络级属性：容器有没有 v6 地址由所在网络决定，容器级没有
-// 开关。所以给一台已经装好的 IPv4-only 机器加共享 IPv6，必须重建网络。
-//
-// 重建方式：先让容器逐个脱离网络（运行中的容器也可以 disconnect，进程不重启），
-// 再删除网络、按目标形态重建，最后用原来的静态地址接回去。代价是网络中断数秒、
-// 已建立的连接会断开，但容器内的进程、状态、磁盘都不受影响。
+// Package netmigrate switches a Podman bridge between IPv4 and dual stack.
+// Container processes remain running; connections are interrupted during the switch.
 package netmigrate
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
+
+	nettypes "go.podman.io/common/libnetwork/types"
 )
 
-// Options 描述目标网络形态。
+const operationTimeout = 5 * time.Minute
+
+// Options describes the target network. Changing an existing IP subnet is unsupported.
 type Options struct {
-	Network   string // 网络名，通常 narwhal-net
-	Interface string // 桥接口名，如 podman1；空则由 podman 分配
-	IPv4      string // v4 子网，如 10.91.0.0/20
-	Gateway4  string // v4 网关
-	IPv6      string // v6 子网；空表示不要 v6（双栈拉平为纯 v4 网络）
-	Gateway6  string // v6 网关
+	Network   string
+	Interface string
+	IPv4      string
+	Gateway4  string
+	IPv6      string // Empty removes IPv6.
+	Gateway6  string
 }
 
-// Result 汇报一次迁移的结果。
 type Result struct {
-	Containers int           // 接回的容器数
-	Downtime   time.Duration // 网络中断时长
-	Rebuilt    bool          // 是否真的重建了网络（形态未变时跳过）
+	Containers int
+	Downtime   time.Duration
+	Rebuilt    bool
 }
 
-// Container 记录容器的网络绑定，用于重建后恢复。
+// Container includes persistent configuration as well as the allocated addresses.
 type Container struct {
-	Name string
-	IPv4 string
-	IPv6 string
-	MAC  string
+	Name    string
+	ID      string
+	IPv4    string
+	IPv6    string
+	MAC     string
+	Options nettypes.PerNetworkOptions
 }
 
-// State 是网络的当前形态。
 type State struct {
 	Exists    bool
 	IPv4      string
@@ -51,78 +52,246 @@ type State struct {
 	IPv6      string
 	Gateway6  string
 	Interface string
+	Config    json.RawMessage // Complete network file, including unknown fields.
 }
 
-// Rebuild 把网络改造成 want 描述的形态，并接回所有使用它的容器。
-// 形态已经匹配时直接返回（Rebuilt=false）。
-// 中途失败会尽力把网络恢复成改造前的样子，避免容器全部失去网络。
-func Rebuild(ctx context.Context, want Options) (*Result, error) {
-	start := time.Now()
+type snapshot struct {
+	Network    string
+	State      State
+	Containers []Container
+	Committed  bool
+}
 
-	cur, err := Inspect(ctx, want.Network)
+// Only the Podman implementation touches the machine; tests drive the transaction
+// through this interface to cover failures at every destructive stage.
+type backend interface {
+	inspect(context.Context, string) (State, error)
+	snapshot(context.Context, string, State) (*snapshot, error)
+	disconnect(context.Context, string, string) error
+	remove(context.Context, string) error
+	create(context.Context, Options, json.RawMessage) error
+	connect(context.Context, string, Container, bool) error
+	load(string) (*snapshot, error)
+	save(*snapshot) error
+	clear(string) error
+}
+
+var networkLocks sync.Map
+
+func networkLock(name string) *sync.Mutex {
+	mu, _ := networkLocks.LoadOrStore(name, &sync.Mutex{})
+	return mu.(*sync.Mutex)
+}
+
+// Rebuild persists recovery data before disconnecting anything. Once started, the
+// operation has its own deadline and is not cancelled when the HTTP client leaves.
+func Rebuild(ctx context.Context, want Options) (*Result, error) {
+	if !nettypes.NameRegex.MatchString(want.Network) {
+		return nil, fmt.Errorf("invalid network name %q", want.Network)
+	}
+	mu := networkLock(want.Network)
+	mu.Lock()
+	defer mu.Unlock()
+	return rebuild(ctx, want, &podmanBackend{dir: networkDir})
+}
+
+// RecoverPending restores an interrupted migration before normal Agent startup.
+// A completed transaction only needs its journal removed.
+func RecoverPending(ctx context.Context, network string) error {
+	if !nettypes.NameRegex.MatchString(network) {
+		return fmt.Errorf("invalid network name %q", network)
+	}
+	mu := networkLock(network)
+	mu.Lock()
+	defer mu.Unlock()
+	return recoverPending(ctx, network, &podmanBackend{dir: networkDir})
+}
+
+func recoverPending(ctx context.Context, network string, b backend) error {
+	s, err := b.load(network)
+	if err != nil || s == nil {
+		return err
+	}
+	if s.Network != network {
+		return fmt.Errorf("migration journal does not match network %q", network)
+	}
+	if !s.Committed {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), operationTimeout)
+		defer cancel()
+		if err := restore(rctx, s, b); err != nil {
+			return fmt.Errorf("恢复上次中断的网络迁移失败（恢复快照已保留）：%w", err)
+		}
+		log.Printf("[NetMigrate] restored interrupted migration of %s", network)
+	}
+	return b.clear(network)
+}
+
+func rebuild(ctx context.Context, want Options, b backend) (*Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := recoverPending(ctx, want.Network, b); err != nil {
+		return nil, err
+	}
+	cur, err := b.inspect(ctx, want.Network)
 	if err != nil {
 		return nil, err
 	}
 	if cur.Exists && sameShape(cur, want) {
-		return &Result{Rebuilt: false}, nil
+		return &Result{}, nil
 	}
-
-	containers, err := listContainers(ctx, want.Network)
+	if err := validateChange(cur, want); err != nil {
+		return nil, err
+	}
+	if cur.Interface != "" && want.Interface == "" {
+		want.Interface = cur.Interface
+	}
+	s, err := b.snapshot(ctx, want.Network, cur)
 	if err != nil {
 		return nil, err
 	}
-
-	// 原网络不存在时没东西可删，直接用目标形态建。
-	if cur.Exists {
-		if cur.Interface != "" && want.Interface == "" {
-			want.Interface = cur.Interface
-		}
-		if err := disconnectAll(ctx, want.Network, containers); err != nil {
-			return nil, err
-		}
-		if out, err := run(ctx, "podman", "network", "rm", want.Network); err != nil {
-			if reattachAll(ctx, want.Network, containers, cur.IPv6 != "") != nil {
-				log.Printf("[NetMigrate] 回滚接回失败，容器可能需要手工恢复网络")
-			}
-			return nil, fmt.Errorf("删除网络失败：%v（%s）", err, strings.TrimSpace(out))
-		}
-	}
-
-	if out, err := run(ctx, "podman", append([]string{"network", "create"}, createArgs(want)...)...); err != nil {
-		// 新网络建不起来：把原形态恢复回去，别让容器悬空。
-		rollback := Options{
-			Network: want.Network, Interface: cur.Interface,
-			IPv4: cur.IPv4, Gateway4: cur.Gateway4,
-			IPv6: cur.IPv6, Gateway6: cur.Gateway6,
-		}
-		if cur.Exists {
-			if _, rerr := run(ctx, "podman", append([]string{"network", "create"}, createArgs(rollback)...)...); rerr == nil {
-				if reattachAll(ctx, want.Network, containers, cur.IPv6 != "") != nil {
-					log.Printf("[NetMigrate] 回滚接回失败，容器可能需要手工恢复网络")
-				}
-			}
-		}
-		return nil, fmt.Errorf("创建网络失败：%v（%s）", err, strings.TrimSpace(out))
-	}
-
-	if err := reattachAll(ctx, want.Network, containers, want.IPv6 != ""); err != nil {
+	targetConfig, err := targetConfig(s.State.Config, want)
+	if err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := b.save(s); err != nil {
+		return nil, fmt.Errorf("保存网络恢复快照失败，未修改网络：%w", err)
+	}
 
-	res := &Result{Containers: len(containers), Downtime: time.Since(start), Rebuilt: true}
-	log.Printf("[NetMigrate] 网络已重建：v4=%s v6=%s，接回 %d 个容器，中断 %s",
-		want.IPv4, describeNet(want.IPv6), res.Containers, res.Downtime.Round(time.Second))
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), operationTimeout)
+	defer cancel()
+	start := time.Now()
+	fail := func(cause error) (*Result, error) {
+		// Never reuse the failed operation's deadline for recovery.
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), operationTimeout)
+		defer rcancel()
+		if err := restore(rctx, s, b); err != nil {
+			return nil, errors.Join(cause, fmt.Errorf("恢复原网络失败（恢复快照已保留）：%w", err))
+		}
+		return nil, errors.Join(cause, b.clear(want.Network))
+	}
+	if cur.Exists {
+		for _, c := range s.Containers {
+			if err := b.disconnect(opCtx, want.Network, c.Name); err != nil {
+				return fail(fmt.Errorf("容器 %s 脱离网络失败：%w", c.Name, err))
+			}
+		}
+		if err := b.remove(opCtx, want.Network); err != nil {
+			return fail(fmt.Errorf("删除网络失败：%w", err))
+		}
+	}
+	if err := b.create(opCtx, want, targetConfig); err != nil {
+		return fail(fmt.Errorf("创建网络失败：%w", err))
+	}
+	if err := reattachAll(opCtx, want.Network, s.Containers, want.IPv6 != "", b); err != nil {
+		return fail(err)
+	}
+	// A crash between commit and journal deletion must not undo a finished switch.
+	s.Committed = true
+	if err := b.save(s); err != nil {
+		s.Committed = false
+		return fail(fmt.Errorf("提交网络迁移失败：%w", err))
+	}
+	if err := b.clear(want.Network); err != nil {
+		return nil, fmt.Errorf("网络迁移已完成，但清理恢复快照失败：%w", err)
+	}
+	res := &Result{Containers: len(s.Containers), Downtime: time.Since(start), Rebuilt: true}
+	log.Printf("[NetMigrate] rebuilt %s: IPv4=%s IPv6=%s, restored %d containers in %s",
+		want.Network, want.IPv4, want.IPv6, res.Containers, res.Downtime.Round(time.Second))
 	return res, nil
 }
 
-func describeNet(s string) string {
-	if s == "" {
-		return "<无>"
+func validateChange(cur State, want Options) error {
+	for _, f := range []struct {
+		cidr, gateway string
+		v6            bool
+	}{
+		{want.IPv4, want.Gateway4, false}, {want.IPv6, want.Gateway6, true},
+	} {
+		if f.cidr == "" {
+			if f.gateway != "" {
+				return fmt.Errorf("gateway requires a subnet")
+			}
+			continue
+		}
+		ip, subnet, err := net.ParseCIDR(f.cidr)
+		if err != nil || (ip.To4() == nil) != f.v6 {
+			return fmt.Errorf("invalid subnet %q", f.cidr)
+		}
+		if f.gateway != "" && !subnet.Contains(net.ParseIP(f.gateway)) {
+			return fmt.Errorf("gateway %s is outside subnet %s", f.gateway, f.cidr)
+		}
 	}
-	return s
+	if want.IPv4 == "" {
+		return fmt.Errorf("IPv4 subnet is required")
+	}
+	if cur.Exists && cur.IPv4 != want.IPv4 {
+		return fmt.Errorf("不支持更换现有 IPv4 子网，未修改网络")
+	}
+	if cur.Exists && cur.IPv6 != "" && want.IPv6 != "" && cur.IPv6 != want.IPv6 {
+		return fmt.Errorf("不支持更换现有 IPv6 子网（subnet → snat），未修改网络")
+	}
+	return nil
 }
 
-// createArgs 返回 podman network create 的参数（不含子命令本身）。
+func stateOptions(name string, s State) Options {
+	return Options{Network: name, Interface: s.Interface, IPv4: s.IPv4,
+		Gateway4: s.Gateway4, IPv6: s.IPv6, Gateway6: s.Gateway6}
+}
+
+func restore(ctx context.Context, s *snapshot, b backend) error {
+	cur, err := b.inspect(ctx, s.Network)
+	if err != nil {
+		return err
+	}
+	// A disconnect/remove failure may have left the original network intact.
+	// Reattach only missing bindings instead of interrupting healthy containers.
+	if s.State.Exists && cur.Exists && sameShape(cur, stateOptions(s.Network, s.State)) && sameNetworkID(cur.Config, s.State.Config) {
+		return reattachAll(ctx, s.Network, s.Containers, s.State.IPv6 != "", b)
+	}
+	if cur.Exists {
+		var errs []error
+		for _, c := range s.Containers {
+			if err := b.disconnect(ctx, s.Network, c.Name); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if len(errs) > 0 {
+			return errors.Join(errs...)
+		}
+		if err := b.remove(ctx, s.Network); err != nil {
+			return err
+		}
+	}
+	if !s.State.Exists {
+		return nil
+	}
+	if err := b.create(ctx, stateOptions(s.Network, s.State), s.State.Config); err != nil {
+		return err
+	}
+	return reattachAll(ctx, s.Network, s.Containers, s.State.IPv6 != "", b)
+}
+
+func sameNetworkID(a, b json.RawMessage) bool {
+	var x, y struct {
+		ID string `json:"id"`
+	}
+	return json.Unmarshal(a, &x) == nil && json.Unmarshal(b, &y) == nil && x.ID != "" && x.ID == y.ID
+}
+
+func reattachAll(ctx context.Context, network string, cs []Container, withV6 bool, b backend) error {
+	var errs []error
+	for _, c := range cs {
+		if err := b.connect(ctx, network, c, withV6); err != nil {
+			errs = append(errs, fmt.Errorf("容器 %s 接回网络失败：%w", c.Name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func createArgs(o Options) []string {
 	args := []string{"--driver=bridge", "--disable-dns"}
 	if o.Interface != "" {
@@ -143,142 +312,33 @@ func createArgs(o Options) []string {
 	return append(args, o.Network)
 }
 
-// sameShape 判断现有网络是否已经是目标形态：v4 段与 v6 段一致即视为一致。
 func sameShape(cur State, want Options) bool {
-	return cur.Exists && cur.IPv4 == want.IPv4 && cur.IPv6 == want.IPv6
+	return cur.Exists && cur.IPv4 == want.IPv4 && cur.IPv6 == want.IPv6 &&
+		(want.Gateway4 == "" || cur.Gateway4 == want.Gateway4) &&
+		(want.Gateway6 == "" || cur.Gateway6 == want.Gateway6) &&
+		(want.Interface == "" || cur.Interface == want.Interface)
 }
 
-// Inspect 读取网络当前形态；网络不存在时返回零值（Exists=false）。
 func Inspect(ctx context.Context, name string) (State, error) {
 	out, err := run(ctx, "podman", "network", "inspect", name)
 	if err != nil {
-		// 网络不存在不是错误：调用方会直接建。
-		if strings.Contains(strings.ToLower(out), "not found") ||
-			strings.Contains(strings.ToLower(err.Error()), "not found") {
+		if strings.Contains(strings.ToLower(out), "not found") {
 			return State{}, nil
 		}
-		return State{}, fmt.Errorf("读取网络 %s 失败：%v（%s）", name, err, strings.TrimSpace(out))
+		return State{}, fmt.Errorf("读取网络 %s 失败：%w（%s）", name, err, strings.TrimSpace(out))
 	}
-
-	var parsed []struct {
-		Subnets []struct {
-			Subnet  string `json:"subnet"`
-			Gateway string `json:"gateway"`
-		} `json:"subnets"`
-		Interface string `json:"network_interface"`
+	var parsed []json.RawMessage
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil || len(parsed) != 1 {
+		return State{}, fmt.Errorf("invalid network inspect response for %s", name)
 	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		return State{}, fmt.Errorf("解析网络信息失败：%w", err)
-	}
-	st := State{Exists: true}
-	if len(parsed) == 0 {
-		return st, nil
-	}
-	st.Interface = parsed[0].Interface
-	for _, s := range parsed[0].Subnets {
-		if strings.Contains(s.Subnet, ":") {
-			st.IPv6, st.Gateway6 = s.Subnet, s.Gateway
-		} else {
-			st.IPv4, st.Gateway4 = s.Subnet, s.Gateway
-		}
-	}
-	return st, nil
-}
-
-func listContainers(ctx context.Context, network string) ([]Container, error) {
-	out, err := run(ctx, "podman", "ps", "-a", "--filter", "network="+network, "--format", "{{.Names}}")
-	if err != nil {
-		return nil, fmt.Errorf("列出容器失败：%v（%s）", err, strings.TrimSpace(out))
-	}
-	var result []Container
-	for _, name := range strings.Split(strings.TrimSpace(out), "\n") {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		c, err := inspectContainerNet(ctx, name, network)
-		if err != nil {
-			return nil, err
-		}
-		if c == nil {
-			continue // 已经不在这个网络上
-		}
-		result = append(result, *c)
-	}
-	return result, nil
-}
-
-// inspectContainerNet 读取容器在网络里的静态地址；容器不在该网络时返回 nil。
-func inspectContainerNet(ctx context.Context, name, network string) (*Container, error) {
-	out, err := run(ctx, "podman", "inspect", name, "--format", "{{json .NetworkSettings.Networks}}")
-	if err != nil {
-		return nil, fmt.Errorf("读取容器 %s 网络信息失败：%v（%s）", name, err, strings.TrimSpace(out))
-	}
-	var nets map[string]struct {
-		IPAddress         string `json:"IPAddress"`
-		GlobalIPv6Address string `json:"GlobalIPv6Address"`
-		MacAddress        string `json:"MacAddress"`
-	}
-	if err := json.Unmarshal([]byte(out), &nets); err != nil {
-		return nil, fmt.Errorf("解析容器 %s 网络信息失败：%w", name, err)
-	}
-	n, ok := nets[network]
-	if !ok {
-		return nil, nil
-	}
-	return &Container{Name: name, IPv4: n.IPAddress, IPv6: n.GlobalIPv6Address, MAC: n.MacAddress}, nil
-}
-
-// disconnectAll 让容器逐个脱离网络；中途失败时把已经断开的接回去，
-// 避免半迁移状态（部分容器没网、部分还在旧网络上）。
-func disconnectAll(ctx context.Context, network string, cs []Container) error {
-	done := make([]Container, 0, len(cs))
-	for _, c := range cs {
-		if out, err := run(ctx, "podman", "network", "disconnect", network, c.Name); err != nil {
-			if rerr := reattachAll(ctx, network, done, true); rerr != nil {
-				log.Printf("[NetMigrate] 回滚接回失败：%v", rerr)
-			}
-			return fmt.Errorf("容器 %s 脱离网络失败：%v（%s）", c.Name, err, strings.TrimSpace(out))
-		}
-		done = append(done, c)
-	}
-	return nil
-}
-
-// reattachAll 按原静态地址把容器接回网络。
-// withV6 表示目标网络是否有 v6 段：目标为纯 v4 时不能带 --ip6，
-// 否则 podman 会报 "requested static ip ... not in any subnet"。
-func reattachAll(ctx context.Context, network string, cs []Container, withV6 bool) error {
-	attached := 0
-	for _, c := range cs {
-		args := []string{"network", "connect"}
-		if c.IPv4 != "" {
-			args = append(args, "--ip", c.IPv4)
-		}
-		if withV6 && c.IPv6 != "" {
-			args = append(args, "--ip6", c.IPv6)
-		}
-		if c.MAC != "" {
-			args = append(args, "--mac-address", c.MAC)
-		}
-		args = append(args, network, c.Name)
-
-		out, err := run(ctx, "podman", args...)
-		if err != nil {
-			// 网络重建后 podman 可能残留旧的连接记录：报 "already connected"
-			// 但容器内没有接口。先 disconnect 清掉记录再试一次。
-			run(ctx, "podman", "network", "disconnect", network, c.Name)
-			if out2, err2 := run(ctx, "podman", args...); err2 != nil {
-				return fmt.Errorf("容器 %s 接回网络失败：%v（%s / %s），已接回 %d/%d",
-					c.Name, err2, strings.TrimSpace(out), strings.TrimSpace(out2), attached, len(cs))
-			}
-		}
-		attached++
-	}
-	return nil
+	return parseState(parsed[0])
 }
 
 func run(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cmdCtx, name, args...)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

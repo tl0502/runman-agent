@@ -26,6 +26,7 @@ import (
 	"runman-agent/manager/cloudhv"
 	"runman-agent/manager/egress"
 	"runman-agent/manager/netmigrate"
+	"runman-agent/manager/podman"
 	"runman-agent/manager/portforward"
 	"runman-agent/manager/wgbind"
 	"runman-agent/monitor"
@@ -69,10 +70,11 @@ type Server struct {
 	cfg          *config.Manager
 	mgr          manager.VMManager
 	cloudHVMgr   *cloudhv.Manager // 如果使用 CloudHV，保存直接引用以便内存上报
+	podmanMgr    *podman.Manager
 	hostMon      *monitor.HostMonitor
 	pf           *portforward.Manager
 	wg           *wgbind.Manager
-	egress       *egress.Applier
+	egress       interface{ Apply(context.Context) error }
 	agent        interface{}
 	sessions     *sessionStore
 	vmSnapshots  map[string]*vmNetSnapshot
@@ -84,8 +86,9 @@ type Server struct {
 	notifier     *notify.Notifier
 	speedTester  SpeedTester
 
-	monitorHst map[string][]vmListItem
-	monitorMu  sync.RWMutex
+	monitorHst  map[string][]vmListItem
+	monitorMu   sync.RWMutex
+	shareIPv6Mu sync.Mutex // serialize network shape, config commit, and application
 }
 
 // NewServer 接收两个 manager：
@@ -96,12 +99,14 @@ func NewServer(database *db.DB, mgr manager.VMManager, hostMon *monitor.HostMoni
 	if ch, ok := rawMgr.(*cloudhv.Manager); ok {
 		cloudHVMgr = ch
 	}
+	podmanMgr, _ := rawMgr.(*podman.Manager)
 
 	return &Server{
 		db:          database,
 		cfg:         cfg,
 		mgr:         mgr,
 		cloudHVMgr:  cloudHVMgr,
+		podmanMgr:   podmanMgr,
 		hostMon:     hostMon,
 		pf:          pf,
 		wg:          wg,
@@ -2899,13 +2904,34 @@ func (s *Server) handleShareIPv6(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "缺少 enabled", http.StatusBadRequest)
 		return
 	}
+	s.shareIPv6Mu.Lock()
+	defer s.shareIPv6Mu.Unlock()
+	if err := r.Context().Err(); err != nil {
+		jsonErr(w, err, http.StatusRequestTimeout)
+		return
+	}
 	conf := s.cfg.Get()
 	if conf.VirtType != "podman" {
 		jsonErr(w, fmt.Errorf("仅 Podman 后端支持共享 IPv6"), http.StatusBadRequest)
 		return
 	}
+	if conf.IPv6Mode == "subnet" {
+		jsonErr(w, fmt.Errorf("subnet 模式暂不支持通过此接口切换共享 IPv6，未修改网络"), http.StatusBadRequest)
+		return
+	}
+	if s.podmanMgr != nil {
+		unlock := s.podmanMgr.LockNetworkMigration()
+		defer unlock()
+		if err := r.Context().Err(); err != nil {
+			jsonErr(w, err, http.StatusRequestTimeout)
+			return
+		}
+	}
+	// Finish the entire operation even if the browser disconnects after confirmation.
+	opCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
+	defer cancel()
 
-	cur, err := netmigrate.Inspect(r.Context(), podmanNetName)
+	cur, err := netmigrate.Inspect(opCtx, podmanNetName)
 	if err != nil {
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
@@ -2937,7 +2963,7 @@ func (s *Server) handleShareIPv6(w http.ResponseWriter, r *http.Request) {
 		}
 		target.IPv6, target.Gateway6 = sharedV6Subnet, sharedV6Gateway
 
-		res, err := netmigrate.Rebuild(r.Context(), target)
+		res, err := netmigrate.Rebuild(opCtx, target)
 		if err != nil {
 			jsonErr(w, err, http.StatusInternalServerError)
 			return
@@ -2953,11 +2979,7 @@ func (s *Server) handleShareIPv6(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, err, http.StatusInternalServerError)
 			return
 		}
-		s.applySharedIPv6(r.Context())
-		jsonOK(w, map[string]any{
-			"enabled": true, "rebuilt": res.Rebuilt,
-			"containers": res.Containers, "downtime_ms": res.Downtime.Milliseconds(),
-		})
+		s.finishSharedIPv6(opCtx, w, res, true)
 		return
 	}
 
@@ -2978,7 +3000,7 @@ func (s *Server) handleShareIPv6(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := netmigrate.Rebuild(r.Context(), target)
+	res, err := netmigrate.Rebuild(opCtx, target)
 	if err != nil {
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
@@ -2991,23 +3013,35 @@ func (s *Server) handleShareIPv6(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, err, http.StatusInternalServerError)
 		return
 	}
-	s.applySharedIPv6(r.Context())
+	s.finishSharedIPv6(opCtx, w, res, false)
+}
+
+func (s *Server) finishSharedIPv6(ctx context.Context, w http.ResponseWriter, res *netmigrate.Result, enabled bool) {
+	if err := s.applySharedIPv6(ctx); err != nil {
+		jsonErr(w, fmt.Errorf("网络和配置已更新，出口或监听应用失败（将重试）：%w", err), http.StatusInternalServerError)
+		return
+	}
 	jsonOK(w, map[string]any{
-		"enabled": false, "rebuilt": res.Rebuilt,
+		"enabled": enabled, "rebuilt": res.Rebuilt,
 		"containers": res.Containers, "downtime_ms": res.Downtime.Milliseconds(),
 	})
 }
 
 // applySharedIPv6 让出站 SNAT 与端口监听跟随新配置。
-func (s *Server) applySharedIPv6(ctx context.Context) {
+func (s *Server) applySharedIPv6(ctx context.Context) error {
+	var errs []error
 	if s.egress != nil {
 		if err := s.egress.Apply(ctx); err != nil {
 			log.Printf("[IPv6] 应用出站地址失败（轮询会重试）：%v", err)
+			errs = append(errs, err)
 		}
 	}
 	if s.pf != nil {
-		s.pf.ReloadAll(ctx)
+		if err := s.pf.ReloadAll(ctx); err != nil {
+			errs = append(errs, err)
+		}
 	}
+	return errors.Join(errs...)
 }
 
 // hostHasIPv6 判断地址是否已配置在本机的物理网卡上。

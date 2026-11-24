@@ -2,6 +2,7 @@ package portforward
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -56,9 +57,10 @@ type Entry struct {
 
 	// Internal live state — do not copy after first use.
 	cancel        context.CancelFunc
-	lns           []io.Closer // one listener per enabled address family
-	connActive    int64       // atomic: current active connections
-	connTotal     int64       // atomic: all-time connections since rule added
+	lns           []io.Closer  // one listener per enabled address family
+	binds         []listenSpec // actual bind addresses, retained for failed replacements
+	connActive    int64        // atomic: current active connections
+	connTotal     int64        // atomic: all-time connections since rule added
 	connIPMu      sync.Mutex
 	connIPs       map[string]int64 // total connections per IP
 	connActiveIPs map[string]int64 // active connections per IP
@@ -309,15 +311,24 @@ func (m *Manager) reconcileLoop(ctx context.Context) {
 func (m *Manager) staleTarget(ctx context.Context, vmID, protocol string, hostPort, guestPort int) (string, bool) {
 	m.mu.RLock()
 	cur := ""
+	bindFamily := BindV4
+	var binds []listenSpec
 	for _, e := range m.mappings[vmID] {
 		if e.Protocol == protocol && e.HostPort == hostPort {
 			cur = e.TargetAddr
+			bindFamily = e.BindFamily
+			binds = append(binds, e.binds...)
 			break
 		}
 	}
 	m.mu.RUnlock()
 	if cur == "" {
 		return "", false
+	}
+	if ips, err := m.bindAddresses(bindFamily); err != nil {
+		return "configured bind address unavailable: " + err.Error(), true
+	} else if !sameListenSpecs(binds, makeListenSpecs(protocol, ips)) {
+		return "configured bind addresses changed", true
 	}
 	ip, err := m.mgr.GetVMLocalIP(ctx, vmID)
 	if err != nil || ip == "" {
@@ -343,41 +354,41 @@ func (m *Manager) hasMapping(vmID, protocol string, hostPort int) bool {
 
 // RefreshVM 重新解析 VM 的 IP 并重建其所有端口转发规则。
 // 用于 VM 重装后 IP 可能发生变化的场景。
-func (m *Manager) RefreshVM(ctx context.Context, vmID string) {
+func (m *Manager) RefreshVM(ctx context.Context, vmID string) error {
 	rules, err := m.db.ListPortForwards(vmID)
-	if err != nil || len(rules) == 0 {
-		return
+	if err != nil {
+		return err
 	}
-	// 先全部移除（只释放 listener，保留 DB 记录），再重新 addMapping（重新调 GetVMIP）。
-	// 保留 DB 记录是为了重建失败时 reconcileLoop 还能继续重试，规则不会丢。
-	m.mu.Lock()
-	for _, r := range rules {
-		m.removeEntryLocked(vmID, r.Protocol, r.HostPort, false)
-	}
-	m.mu.Unlock()
+	var errs []error
 	for _, r := range rules {
 		if err := m.addMapping(ctx, vmID, r.Protocol, r.HostPort, r.GuestPort, r.Description, r.BindFamily, false); err != nil {
 			log.Printf("[PortForward] refresh %s %s :%d->%d failed (reconcile will retry): %v", vmID, r.Protocol, r.HostPort, r.GuestPort, err)
+			errs = append(errs, err)
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // ReloadAll 按当前配置重建所有监听，用于切换对外 IP。
-// 只释放 listener 再重建，DB 记录保留；单条重建失败由 reconcileLoop 兜底重试。
-func (m *Manager) ReloadAll(ctx context.Context) {
-	m.mu.RLock()
-	ids := make([]string, 0, len(m.mappings))
-	for id := range m.mappings {
-		ids = append(ids, id)
+// 同时重试数据库中尚未成功监听的规则，并向调用方返回实际应用结果。
+func (m *Manager) ReloadAll(ctx context.Context) error {
+	rules, err := m.db.ListAllPortForwards()
+	if err != nil {
+		return err
 	}
-	m.mu.RUnlock()
-
-	sort.Strings(ids)
-	for _, id := range ids {
-		m.RefreshVM(ctx, id)
+	var errs []error
+	for _, r := range rules {
+		if err := m.addMapping(ctx, r.VMID, r.Protocol, r.HostPort, r.GuestPort, r.Description, r.BindFamily, false); err != nil {
+			errs = append(errs, fmt.Errorf("%s %s :%d: %w", r.VMID, r.Protocol, r.HostPort, err))
+		}
 	}
 	conf := m.cfg.Get()
-	log.Printf("[PortForward] rebound %d VM(s) to public IPv4 %q IPv6 %q", len(ids), conf.EgressIPv4(), conf.EgressIPv6())
+	if err := errors.Join(errs...); err != nil {
+		log.Printf("[PortForward] rebind failed (reconcile will retry): %v", err)
+		return err
+	}
+	log.Printf("[PortForward] applied %d rules to public IPv4 %q IPv6 %q", len(rules), conf.EgressIPv4(), conf.EgressIPv6())
+	return nil
 }
 
 // listenAddress 返回监听地址。bindIP 为空时监听所有本地地址（旧行为），
@@ -390,13 +401,19 @@ func listenAddress(bindIP string, port int) string {
 	return net.JoinHostPort(bindIP, strconv.Itoa(port))
 }
 
-// AddMapping 添加转发规则，相同规则幂等，配置变更时先删后加。
+// AddMapping 添加转发规则；替换失败时恢复旧监听，旧数据库记录保留到替换成功。
 // bindFamily 取值见 BindV4 / BindV6 / BindBoth。
 func (m *Manager) AddMapping(ctx context.Context, vmId string, protocol string, hostPort, guestPort int, description string, bindFamily int) error {
 	return m.addMapping(ctx, vmId, protocol, hostPort, guestPort, description, bindFamily, true)
 }
 
 func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, hostPort, guestPort int, description string, bindFamily int, checkLimit bool) error {
+	if protocol != "tcp" && protocol != "udp" {
+		return fmt.Errorf("invalid protocol %q", protocol)
+	}
+	if guestPort < 1 || guestPort > MaxPort {
+		return fmt.Errorf("invalid guest port %d", guestPort)
+	}
 	if hostPort < MinPort || hostPort > MaxPort {
 		return fmt.Errorf("host port %d out of allowed range [%d, %d]", hostPort, MinPort, MaxPort)
 	}
@@ -423,26 +440,29 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	exists := false
-	for _, e := range m.mappings[vmId] {
+	binds := makeListenSpecs(protocol, bindIPs)
+	var old *Entry
+	oldIndex := -1
+	for i, e := range m.mappings[vmId] {
 		if e.Protocol == protocol && e.HostPort == hostPort {
-			if e.GuestPort == guestPort && e.Description == description && e.BindFamily == bindFamily {
+			if e.GuestPort == guestPort && e.Description == description && e.BindFamily == bindFamily && e.TargetAddr == targetAddr && sameListenSpecs(e.binds, binds) {
 				return nil
 			}
-			m.removeEntryLocked(vmId, protocol, hostPort, true)
-			exists = true
+			old, oldIndex = e, i
 			break
 		}
 	}
 
-	if checkLimit && !exists {
+	if checkLimit && old == nil {
 		maxPF := int(m.cfg.Get().MaxPortForward)
 		if len(m.mappings[vmId]) >= maxPF {
 			return fmt.Errorf("port forward limit reached (%d/%d)", len(m.mappings[vmId]), maxPF)
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
-	runCtx, cancel := context.WithCancel(context.Background())
 	entry := &Entry{
 		VMID:          vmId,
 		Protocol:      protocol,
@@ -451,55 +471,116 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 		TargetAddr:    targetAddr,
 		Description:   description,
 		BindFamily:    bindFamily,
-		cancel:        cancel,
+		binds:         binds,
 		connIPs:       make(map[string]int64),
 		connActiveIPs: make(map[string]int64),
 	}
 
-	// 每个启用的地址族各监听一份；任一失败则回滚已建的监听，避免半开状态。
-	started := false
-	for _, bindIP := range bindIPs {
-		if protocol == "tcp" {
-			ln, err := net.Listen("tcp", listenAddress(bindIP, hostPort))
-			if err != nil {
-				cancel()
-				closeAll(entry.lns)
-				return err
-			}
-			entry.lns = append(entry.lns, ln)
-			go m.runTCP(runCtx, ln, targetAddr, entry)
-		} else {
-			pc, err := net.ListenPacket("udp", listenAddress(bindIP, hostPort))
-			if err != nil {
-				cancel()
-				closeAll(entry.lns)
-				return err
-			}
-			entry.lns = append(entry.lns, pc)
-			go m.runUDP(runCtx, pc, targetAddr, entry)
+	if old != nil {
+		old.cancel()
+		closeAll(old.lns)
+	}
+	restoreOld := func(cause error) error {
+		if old == nil {
+			return cause
 		}
-		started = true
+		if err := m.startEntry(old); err != nil {
+			// Preserve its DB row so reconciliation can retry after a bind conflict.
+			m.mappings[vmId] = append(m.mappings[vmId][:oldIndex], m.mappings[vmId][oldIndex+1:]...)
+			return errors.Join(cause, fmt.Errorf("restore old mapping (DB rule retained): %w", err))
+		}
+		return cause
 	}
-	if !started {
-		cancel()
-		return fmt.Errorf("no bind address for family %d", bindFamily)
+	if err := m.startEntry(entry); err != nil {
+		return restoreOld(err)
 	}
-
-	m.mappings[vmId] = append(m.mappings[vmId], entry)
-	_ = m.db.SavePortForward(&db.PortForward{
+	if err := m.db.SavePortForward(&db.PortForward{
 		Protocol:    protocol,
 		HostPort:    hostPort,
 		VMID:        vmId,
 		GuestPort:   guestPort,
 		Description: description,
 		BindFamily:  bindFamily,
-	})
+	}); err != nil {
+		entry.cancel()
+		closeAll(entry.lns)
+		return restoreOld(fmt.Errorf("save port forward: %w", err))
+	}
+	if old != nil {
+		m.mappings[vmId][oldIndex] = entry
+	} else {
+		m.mappings[vmId] = append(m.mappings[vmId], entry)
+	}
+	return nil
+}
+
+type listenSpec struct{ network, ip string }
+
+func makeListenSpecs(protocol string, ips []string) []listenSpec {
+	out := make([]listenSpec, 0, len(ips))
+	for _, ip := range ips {
+		network := protocol
+		// Keep the historical wildcard behavior of bind_family=0 with an empty
+		// public IPv4. Explicit IPv4 and all new dual-stack sockets are family-specific.
+		if ip != "" {
+			if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() == nil {
+				network += "6"
+			} else {
+				network += "4"
+			}
+		}
+		out = append(out, listenSpec{network: network, ip: ip})
+	}
+	return out
+}
+
+func sameListenSpecs(a, b []listenSpec) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// Bind every socket before starting forwarding. No partial rule is published.
+func (m *Manager) startEntry(e *Entry) error {
+	if len(e.binds) == 0 {
+		return fmt.Errorf("no bind address for family %d", e.BindFamily)
+	}
+	var sockets []io.Closer
+	for _, bind := range e.binds {
+		var socket io.Closer
+		var err error
+		if e.Protocol == "tcp" {
+			socket, err = net.Listen(bind.network, listenAddress(bind.ip, e.HostPort))
+		} else {
+			socket, err = net.ListenPacket(bind.network, listenAddress(bind.ip, e.HostPort))
+		}
+		if err != nil {
+			closeAll(sockets)
+			return err
+		}
+		sockets = append(sockets, socket)
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	e.cancel, e.lns = cancel, sockets
+	for _, socket := range sockets {
+		if e.Protocol == "tcp" {
+			go m.runTCP(runCtx, socket.(net.Listener), e.TargetAddr, e)
+		} else {
+			go m.runUDP(runCtx, socket.(net.PacketConn), e.TargetAddr, e)
+		}
+	}
 	return nil
 }
 
 // bindAddresses 返回该地址族对应的监听地址列表。
 // v4 沿用旧行为：对外 IPv4 为空时监听所有本地地址（":port"）。
-// 双栈时 v4 必须显式绑 0.0.0.0，否则 ":port" 会同时占用 v6 端口。
+// 双栈时 v4 显式绑 0.0.0.0，并由 makeListenSpecs 使用 tcp4/udp4。
 func (m *Manager) bindAddresses(bindFamily int) ([]string, error) {
 	conf := m.cfg.Get()
 	var out []string

@@ -22,6 +22,7 @@ import (
 	"runman-agent/manager/egress"
 	"runman-agent/manager/hostfw"
 	"runman-agent/manager/incus"
+	"runman-agent/manager/netmigrate"
 	"runman-agent/manager/podman"
 	"runman-agent/manager/portforward"
 	"runman-agent/manager/wgbind"
@@ -154,6 +155,9 @@ func main() {
 	var rawMgr manager.VMManager
 	switch conf.VirtType {
 	case "podman":
+		if err := netmigrate.RecoverPending(context.Background(), podman.NetworkName); err != nil {
+			log.Fatalf("recover interrupted Podman network migration: %v", err)
+		}
 		rawMgr, err = podman.New(database, cfg)
 	case "cloudhv":
 		// cloud-hypervisor 初始化时传入 IPv6 配置（从配置文件读取）
@@ -627,18 +631,21 @@ func (a *Agent) watchPublicIP(ctx context.Context) {
 		}
 
 		current := baseline()
-		if appliedOK && current == applied {
-			continue
+		if current != applied {
+			log.Printf("[Agent] public address changed: %q -> %q", applied, current)
 		}
-
-		log.Printf("[Agent] public address changed: %q -> %q", applied, current)
 		if err := a.egress.Apply(ctx); err != nil {
 			log.Printf("[Egress] apply on change failed (will retry): %v", err)
 			appliedOK = false
 			continue
 		}
-
-		a.pf.ReloadAll(ctx)
+		if appliedOK && current == applied {
+			continue
+		}
+		if err := a.pf.ReloadAll(ctx); err != nil {
+			appliedOK = false
+			continue
+		}
 		applied, appliedOK = current, true
 	}
 }
@@ -799,8 +806,9 @@ func (a *Agent) sendHeartbeat(stream agent.AgentGateway_ConnectClient) {
 	// entry_host 优先级：host（手动入口，支持 DDNS 域名）> public_ipv4（弹性 IP，对外入口地址）
 	// > 自动探测的公网 IPv4。弹性 IP 场景下平台展示的入口地址应与对外 IPv4 一致，
 	// 而不是 NAT 出口探测结果。
-	liveHost := a.cfg.Get().Host
-	livePublic := a.cfg.Get().PublicIPv4
+	live := a.cfg.Get()
+	liveHost := live.Host
+	livePublic := live.PublicIPv4
 	switch {
 	case liveHost != "":
 		hb.EntryHost = liveHost
@@ -810,6 +818,9 @@ func (a *Agent) sendHeartbeat(stream agent.AgentGateway_ConnectClient) {
 		hb.EntryHost = a.entryIPv4
 	}
 	hb.EntryIpv6 = a.entryIPv6
+	if virtType == "podman" && live.SharedIPv6Enabled() {
+		hb.EntryIpv6 = live.EgressIPv6()
+	}
 	a.mu.RUnlock()
 
 	vms, _ := a.mgr.ListVMs(ctx)

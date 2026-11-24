@@ -89,6 +89,14 @@ func (m *Manager) timeoutCtx() context.Context {
 	return ctx
 }
 
+// LockNetworkMigration keeps IP allocation, start/stop, deletion and cleanup out
+// of a network snapshot/rebuild. Read-only IP lookup remains available to rebind
+// forwarding rules after the containers have reconnected.
+func (m *Manager) LockNetworkMigration() func() {
+	m.mu.Lock()
+	return m.mu.Unlock
+}
+
 func buildResourceConfig(cpu int64, ramMb int64, cpuset string, pidsLimit int64) specgen.ContainerResourceConfig {
 	res := &specs.LinuxResources{}
 	if ramMb > 0 {
