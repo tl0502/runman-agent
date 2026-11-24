@@ -122,8 +122,9 @@ func describeNet(s string) string {
 	return s
 }
 
+// createArgs 返回 podman network create 的参数（不含子命令本身）。
 func createArgs(o Options) []string {
-	args := []string{"create", "--driver=bridge", "--disable-dns"}
+	args := []string{"--driver=bridge", "--disable-dns"}
 	if o.Interface != "" {
 		args = append(args, "--interface-name", o.Interface)
 	}
