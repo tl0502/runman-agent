@@ -428,8 +428,10 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 	pConf.Cpuset = cpuSet
 	_ = m.db.SavePodmanConfig(pConf)
 
-	// 设置 root 密码
-	return m.setRootPassword(res.ID, req.RootPassword)
+	// 设置 root 密码。必须赋给 err 再返回：上面的 defer 靠 err 判断是否回滚删容器，
+	// 而 err 此前已被「新实例查不到配置」的 record not found 赋过值。
+	err = m.setRootPassword(res.ID, req.RootPassword)
+	return err
 }
 
 // setRootPassword 设置容器 root 密码。密码按 shell 单引号规则转义后传入：
