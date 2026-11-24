@@ -219,6 +219,8 @@ func (s *Service) checkBandwidth(conf config.Config, vm *agent.VMSummary, st *vm
 	}
 	st.lastIn, st.lastOut, st.lastNetAt = vm.TrafficInBytes, vm.TrafficOutBytes, now
 	if rateBps <= 0 {
+		// 零流量或计数器重置：连续超限已中断，不能沿用旧起点。
+		st.bwOverSince = time.Time{}
 		return
 	}
 
@@ -275,6 +277,7 @@ func (s *Service) checkConnections(conf config.Config, vm *agent.VMSummary, conn
 				log.Printf("[Patrol] stop VM %s: %v", vm.VmId, err)
 				return
 			}
+			st.stopped = true
 			_ = s.db.SavePatrolStop(vm.VmId, "connections")
 			mbps := cc.ThrottleMbps
 			release := now.Add(time.Duration(cc.ReleaseMin) * time.Minute)
@@ -467,6 +470,7 @@ func (s *Service) abuseGate(vm *agent.VMSummary, st *vmState, now time.Time, ove
 			s.emit(vm.VmId, check, "alert", detail+"，停机失败："+err.Error(), true)
 			return
 		}
+		st.stopped = true
 		_ = s.db.SavePatrolStop(vm.VmId, check)
 		s.emit(vm.VmId, check, "stop_vm", detail+"，已停机", true)
 	default: // alert

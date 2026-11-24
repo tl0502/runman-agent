@@ -521,7 +521,7 @@ func applyPatrolDefaults(p *PatrolConfig) {
 	if p.Resources.RestartCooldownMin <= 0 {
 		p.Resources.RestartCooldownMin = 60
 	}
-	if len(p.Processes.Blacklist) == 0 {
+	if p.Processes.Blacklist == nil {
 		// 匹配语义：进程名精确（词尾 * 通配），命令行按词边界匹配。
 		// 挖矿：二进制名 + 协议特征（改名伪装也能从池地址抓到）；
 		// BT/PT、发包工具同理。代理类（v2ray/xray/sing-box 等）不禁用。

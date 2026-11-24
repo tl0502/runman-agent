@@ -727,7 +727,10 @@ func (s *Server) handlePatrolRelease(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, fmt.Errorf("巡查未启用"), http.StatusBadRequest)
 		return
 	}
-	s.patrol.ReleaseThrottle(r.PathValue("vmID"))
+	if err := s.patrol.ReleaseThrottle(r.PathValue("vmID")); err != nil {
+		jsonErr(w, fmt.Errorf("带宽恢复未完成，将自动重试：%w", err), http.StatusInternalServerError)
+		return
+	}
 	jsonOK(w, map[string]bool{"ok": true})
 }
 

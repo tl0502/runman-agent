@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"runman-agent/db"
+	"runman-agent/proto/agent"
 )
 
 // errThrottleNoEffect 表示限速值不低于容器自身的带宽上限，施加后不会更严格。
@@ -22,6 +23,8 @@ var errThrottleNoEffect = errors.New("throttle rate not below allocated cap")
 // noEffect 时回滚已写入的内存与 DB 状态：这条限速永远不会生效，不该进入
 // reconcile 的重放队列，否则每轮巡查都记一条 failed log 且 DB 残留无效记录。
 func (s *Service) applyThrottle(vmID string, mbps int, releaseAt time.Time, reason string) (applied, noEffect bool) {
+	s.throttleMu.Lock()
+	defer s.throttleMu.Unlock()
 	s.mu.Lock()
 	s.throttles[vmID] = db.PatrolThrottle{VMID: vmID, RateMbps: mbps, ReleaseAt: releaseAt, Reason: reason}
 	s.mu.Unlock()
@@ -45,26 +48,59 @@ func (s *Service) applyThrottle(vmID string, mbps int, releaseAt time.Time, reas
 	return true, false
 }
 
-// releaseThrottle 解除限速：恢复原上限 + 落库删除 + 内存删除 + 记录事件 + 通知。
-func (s *Service) releaseThrottle(vmID string) {
+// releaseThrottle 解除限速（人工解除入口）。恢复失败时返回错误，记录保留并标记为
+// 已到期，由下一轮 reconcile 继续重试。
+func (s *Service) releaseThrottle(vmID string) error {
+	s.throttleMu.Lock()
+	defer s.throttleMu.Unlock()
+	return s.releaseLocked(vmID, true)
+}
+
+// releaseLocked 先恢复带宽，成功后才删除记录（调用方持有 throttleMu）。
+// 旧实现先删记录再恢复：恢复失败后记录已丢，残留的限速 qdisc 再也没人清理。
+// VM 未运行或已删除时无 qdisc 可恢复——重新启动时 netavark 与 StartVM 会按套餐
+// 重装两个方向——直接清掉记录即可。
+func (s *Service) releaseLocked(vmID string, manual bool) error {
 	s.mu.Lock()
 	t, ok := s.throttles[vmID]
-	if ok {
-		delete(s.throttles, vmID)
-	}
 	s.mu.Unlock()
 	if !ok {
-		return
+		return nil
 	}
+	if err := s.tcRestore(vmID); err != nil && s.vmRunning(vmID) {
+		log.Printf("[Patrol] tc restore %s failed (will retry): %v", vmID, err)
+		if manual {
+			// 标记为已到期：下一轮走恢复重试，而不是把限速重放回去。
+			t.ReleaseAt = time.Now().Add(-time.Second)
+			s.mu.Lock()
+			s.throttles[vmID] = t
+			s.mu.Unlock()
+			_ = s.db.SavePatrolThrottle(vmID, t.RateMbps, t.ReleaseAt, t.Reason)
+		}
+		return err
+	}
+	s.mu.Lock()
+	delete(s.throttles, vmID)
+	s.mu.Unlock()
 	_ = s.db.DeletePatrolThrottle(vmID)
-	if err := s.tcRestore(vmID); err != nil {
-		log.Printf("[Patrol] tc restore %s failed: %v", vmID, err)
+	s.emit(vmID, t.Reason, "release", "限速解除，恢复原带宽上限", true)
+	return nil
+}
+
+// vmRunning 判断 VM 是否仍登记且在运行。状态查不到时按运行处理（保留记录重试）。
+func (s *Service) vmRunning(vmID string) bool {
+	if cfg, err := s.db.GetVMConfig(vmID); err != nil || cfg == nil {
+		return false
 	}
-	s.emit(vmID, t.Reason, "release", fmt.Sprintf("限速解除，恢复原带宽上限"), true)
+	info, err := s.mgr.GetVMInfo(context.Background(), vmID)
+	return err != nil || info == nil || info.Status == agent.VMStatus_VM_STATUS_RUNNING
 }
 
 // reconcileThrottles 每轮巡检执行：到期释放 + 未到期幂等重放（兜住 veth 重建）。
 func (s *Service) reconcileThrottles() {
+	// 与人工解除、新施加串行：否则旧快照的重放会把刚解除的限速写回去。
+	s.throttleMu.Lock()
+	defer s.throttleMu.Unlock()
 	now := time.Now()
 	s.mu.Lock()
 	var expired []string
@@ -79,7 +115,7 @@ func (s *Service) reconcileThrottles() {
 	s.mu.Unlock()
 
 	for _, id := range expired {
-		s.releaseThrottle(id)
+		_ = s.releaseLocked(id, false)
 	}
 	for _, t := range active {
 		if err := s.tcApply(t.VMID, t.RateMbps); err != nil {

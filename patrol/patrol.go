@@ -39,6 +39,9 @@ type Service struct {
 	cfg      *config.Manager
 	notifier *notify.Notifier
 
+	// throttleMu 串行化限速的施加、解除与重放（它们各自要跑 tc，不能拿 mu 包住）。
+	throttleMu sync.Mutex
+
 	mu        sync.Mutex
 	states    map[string]*vmState
 	throttles map[string]db.PatrolThrottle
@@ -81,6 +84,7 @@ type vmState struct {
 	// lastStopAlertAt 升级停机失败告警的最近时间，10 分钟限频防刷屏。
 	lastStopAlertAt time.Time
 	lastActionAt    time.Time // 最近一次自动动作时间（重启/关机冷却）
+	stopped         bool      // 本轮巡检内已被停机
 }
 
 func NewService(mgr manager.VMManager, prober VMProber, database *db.DB, cfg *config.Manager, notifier *notify.Notifier) *Service {
@@ -168,8 +172,25 @@ func (s *Service) ActiveStops() []db.PatrolStop {
 }
 
 // ReleaseThrottle 人工解除某个 VM 的限速（立即恢复原上限）。
-func (s *Service) ReleaseThrottle(vmID string) {
-	s.releaseThrottle(vmID)
+func (s *Service) ReleaseThrottle(vmID string) error {
+	return s.releaseThrottle(vmID)
+}
+
+// resetTimers 清空「持续 N 分钟」的计时。观察中断后必须重新取得连续证据，
+// 否则恢复后的第一份超限样本会把没采样的时间也算进持续时长。
+func (st *vmState) resetTimers() {
+	st.lastNetAt = time.Time{}
+	st.bwOverSince, st.connOverSince = time.Time{}, time.Time{}
+	st.udpOverSince, st.scanOverSince, st.smtpOverSince = time.Time{}, time.Time{}, time.Time{}
+	st.cpuOverSince, st.memOverSince = time.Time{}, time.Time{}
+}
+
+func (s *Service) resetAllTimers() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, st := range s.states {
+		st.resetTimers()
+	}
 }
 
 func (s *Service) tick() {
@@ -178,6 +199,7 @@ func (s *Service) tick() {
 	s.reconcileThrottles()
 
 	if !conf.PatrolEnabled() {
+		s.resetAllTimers()
 		return
 	}
 
@@ -186,6 +208,7 @@ func (s *Service) tick() {
 	if err != nil {
 		log.Printf("[Patrol] list VMs: %v", err)
 		s.sourceFailed(conf, "podman", err)
+		s.resetAllTimers()
 		return
 	}
 	s.sourceHealthy(conf, "podman", "容器列表")
@@ -214,13 +237,19 @@ func (s *Service) tick() {
 
 	now := time.Now()
 	for _, vm := range vms {
+		st := s.getState(vm.VmId)
 		if vm.Status != agent.VMStatus_VM_STATUS_RUNNING {
+			st.resetTimers()
 			continue
 		}
-		st := s.getState(vm.VmId)
+		st.stopped = false
 		s.checkBandwidth(conf, vm, st, now)
 		s.checkConnections(conf, vm, connMap, st, now)
 		s.checkAbuse(conf, vm, connMap, st, now)
+		if st.stopped {
+			// 本轮已被连接/滥用策略停机：不能再让资源检查的自动重启把它拉起来。
+			continue
+		}
 		s.checkResources(conf, vm, st, now)
 		s.checkProcesses(conf, vm, st)
 	}

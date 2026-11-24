@@ -774,6 +774,7 @@ func (m *Manager) ListVMs(ctx context.Context) ([]*agent.VMSummary, error) {
 	}
 
 	summaries := make([]*agent.VMSummary, len(list))
+	inspectErrs := make([]error, len(list))
 	var wg sync.WaitGroup
 	for i, c := range list {
 		wg.Add(1)
@@ -781,6 +782,11 @@ func (m *Manager) ListVMs(ctx context.Context) ([]*agent.VMSummary, error) {
 			defer wg.Done()
 			inspect, err2 := containers.Inspect(m.timeoutCtx(), id, nil)
 			if err2 != nil {
+				// 容器在 List 之后被删属正常竞态，跳过；其余失败不能静默丢掉这台 VM，
+				// 否则调用方会把「没读到」当成「已删除」。
+				if !strings.Contains(err2.Error(), "no such container") {
+					inspectErrs[i] = fmt.Errorf("inspect %s: %w", id, err2)
+				}
 				return
 			}
 			var ips []string
@@ -815,6 +821,11 @@ func (m *Manager) ListVMs(ctx context.Context) ([]*agent.VMSummary, error) {
 		}(i, c.ID)
 	}
 	wg.Wait()
+	for _, e := range inspectErrs {
+		if e != nil {
+			return nil, e
+		}
+	}
 
 	var result []*agent.VMSummary
 	for _, s := range summaries {

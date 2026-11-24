@@ -82,8 +82,8 @@ func (s *VMService) StartVM(ctx context.Context, vmID string) error {
 		log.Printf("[StartVM] success: vmID=%s", vmID)
 		// 容器 netns 随重启重建，容器内出方向限速丢失，按套餐重装
 		// （下载方向由 netavark 在 start 时自动恢复，无需处理）。
-		if conf, cfgErr := s.db.GetVMConfig(vmID); cfgErr == nil && conf != nil && conf.BandwidthMbps > 0 {
-			s.ensureEgressCap(ctx, vmID, int64(conf.BandwidthMbps)*1000000)
+		if rate := s.egressRateBps(vmID); rate > 0 {
+			s.ensureEgressCap(ctx, vmID, rate)
 		}
 	}
 	return err
@@ -111,10 +111,9 @@ func (s *VMService) RestartVM(ctx context.Context, vmID string) error {
 		log.Printf("[RestartVM] error: vmID=%s, err=%v", vmID, err)
 	} else {
 		log.Printf("[RestartVM] success: vmID=%s", vmID)
-		// 重启同样重建 netns，出方向限速按套餐重装（巡查 throttle 未到期时
-		// 由 patrol 的限速重放覆盖回来）。
-		if conf, cfgErr := s.db.GetVMConfig(vmID); cfgErr == nil && conf != nil && conf.BandwidthMbps > 0 {
-			s.ensureEgressCap(ctx, vmID, int64(conf.BandwidthMbps)*1000000)
+		// 重启同样重建 netns，出方向限速重装。
+		if rate := s.egressRateBps(vmID); rate > 0 {
+			s.ensureEgressCap(ctx, vmID, rate)
 		}
 	}
 	return err
@@ -152,6 +151,25 @@ func (s *VMService) EnsureEgressTbf(ctx context.Context, vmID string, rateBps in
 		return es.EnsureEgressTbf(ctx, vmID, rateBps)
 	}
 	return nil
+}
+
+// egressRateBps 返回 VM 当前应生效的出方向速率（bit/s，0 = 不限）：套餐上限与
+// 未到期巡查限速取较严者。只按套餐装的话，被限速的 VM 重启一次就能把上传放宽
+// 到套餐值，直到下一轮巡查重放。
+func (s *VMService) egressRateBps(vmID string) int64 {
+	var rate int64
+	if conf, err := s.db.GetVMConfig(vmID); err == nil && conf != nil && conf.BandwidthMbps > 0 {
+		rate = int64(conf.BandwidthMbps) * 1000000
+	}
+	for _, t := range s.db.ListPatrolThrottles() {
+		if t.VMID != vmID || t.RateMbps <= 0 || (!t.ReleaseAt.IsZero() && time.Now().After(t.ReleaseAt)) {
+			continue
+		}
+		if penalty := int64(t.RateMbps) * 1000000; rate == 0 || penalty < rate {
+			rate = penalty
+		}
+	}
+	return rate
 }
 
 // ensureEgressCap 按套餐在容器内补装出方向限速。失败只记日志不阻塞生命周期操作：
