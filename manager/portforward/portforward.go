@@ -251,6 +251,10 @@ func (m *Manager) Restore(ctx context.Context) {
 
 // reconcileLoop 周期性检查 DB 中登记但内存中缺失的规则并尝试重建。
 // 覆盖场景：重启时容器尚未就绪、VM 停机后再次启动、RefreshVM 期间重建失败。
+//
+// 同时检查已存在规则的目标地址是否过期：容器若换了 IP（网络重建、IPAM 重排、
+// 手工重连），targetAddr 会一直指向旧地址，连接全部失败，而 hasMapping 仍为
+// true 使 reconcile 永远不会重建它。
 func (m *Manager) reconcileLoop(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -266,10 +270,14 @@ func (m *Manager) reconcileLoop(ctx context.Context) {
 			continue
 		}
 		active := make(map[string]bool)
+		staleVMs := make(map[string]bool) // 目标地址过期的 VM，循环结束后统一重建
 		for _, pf := range all {
 			key := fmt.Sprintf("%s/%d", pf.Protocol, pf.HostPort)
 			active[key] = true
 			if m.hasMapping(pf.VMID, pf.Protocol, pf.HostPort) {
+				if _, stale := m.staleTarget(ctx, pf.VMID, pf.Protocol, pf.HostPort, pf.GuestPort); stale {
+					staleVMs[pf.VMID] = true
+				}
 				delete(failCount, key)
 				continue
 			}
@@ -283,12 +291,43 @@ func (m *Manager) reconcileLoop(ctx context.Context) {
 				delete(failCount, key)
 			}
 		}
+		for vmID := range staleVMs {
+			log.Printf("[PortForward] target address changed for VM %s, rebinding all its rules", vmID)
+			m.RefreshVM(ctx, vmID)
+		}
 		for key := range failCount {
 			if !active[key] {
 				delete(failCount, key)
 			}
 		}
 	}
+}
+
+// staleTarget 判断某条已有规则的目标地址是否与容器当前 IP 不一致。
+// 第二个返回值表示"能否判定"：容器 IP 取不到（停机/查询失败）时无法判断，
+// 此时不处理，避免把正常规则误判为过期。
+func (m *Manager) staleTarget(ctx context.Context, vmID, protocol string, hostPort, guestPort int) (string, bool) {
+	m.mu.RLock()
+	cur := ""
+	for _, e := range m.mappings[vmID] {
+		if e.Protocol == protocol && e.HostPort == hostPort {
+			cur = e.TargetAddr
+			break
+		}
+	}
+	m.mu.RUnlock()
+	if cur == "" {
+		return "", false
+	}
+	ip, err := m.mgr.GetVMLocalIP(ctx, vmID)
+	if err != nil || ip == "" {
+		return "", false
+	}
+	want := formatTargetAddress(ip, guestPort)
+	if want == cur {
+		return "", false
+	}
+	return cur + " -> " + want, true
 }
 
 func (m *Manager) hasMapping(vmID, protocol string, hostPort int) bool {

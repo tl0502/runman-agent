@@ -1640,6 +1640,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 						return fmt.Errorf("public_ipv6 必须是合法的 IPv6 地址")
 					}
 					v = ip.String()
+					// 端口映射直接 bind 这个地址：地址不在本机时该 VM 的所有 v6
+					// 映射都会 bind 失败并整体回滚（连双栈的 v4 侧一起没了），
+					// 而 egress 侧不报错，面板上看不出根因。保存前就拦下来。
+					if !hostHasIPv6(v) {
+						return fmt.Errorf("public_ipv6 %s 不在本机网卡上，请先在系统中配置该地址，或留空以回落到安装时探测的地址", v)
+					}
 				}
 				cfg.PublicIPv6 = v
 			}
@@ -2856,6 +2862,21 @@ func listHostIPv4() []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+// hostHasIPv6 判断地址是否已配置在本机的物理网卡上。
+// 共享 IPv6 的端口监听直接 bind 该地址，地址不存在时 bind 会失败。
+func hostHasIPv6(addr string) bool {
+	target := net.ParseIP(addr)
+	if target == nil {
+		return false
+	}
+	for _, a := range listHostIPv6() {
+		if ip := net.ParseIP(a); ip != nil && ip.Equal(target) {
+			return true
+		}
+	}
+	return false
 }
 
 // listHostIPv6 枚举本机网卡上的全局 IPv6 地址。
