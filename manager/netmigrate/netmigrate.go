@@ -81,7 +81,7 @@ func Rebuild(ctx context.Context, want Options) (*Result, error) {
 			return nil, err
 		}
 		if out, err := run(ctx, "podman", "network", "rm", want.Network); err != nil {
-			if reattachAll(ctx, want.Network, containers) != nil {
+			if reattachAll(ctx, want.Network, containers, cur.IPv6 != "") != nil {
 				log.Printf("[NetMigrate] 回滚接回失败，容器可能需要手工恢复网络")
 			}
 			return nil, fmt.Errorf("删除网络失败：%v（%s）", err, strings.TrimSpace(out))
@@ -97,7 +97,7 @@ func Rebuild(ctx context.Context, want Options) (*Result, error) {
 		}
 		if cur.Exists {
 			if _, rerr := run(ctx, "podman", append([]string{"network", "create"}, createArgs(rollback)...)...); rerr == nil {
-				if reattachAll(ctx, want.Network, containers) != nil {
+				if reattachAll(ctx, want.Network, containers, cur.IPv6 != "") != nil {
 					log.Printf("[NetMigrate] 回滚接回失败，容器可能需要手工恢复网络")
 				}
 			}
@@ -105,7 +105,7 @@ func Rebuild(ctx context.Context, want Options) (*Result, error) {
 		return nil, fmt.Errorf("创建网络失败：%v（%s）", err, strings.TrimSpace(out))
 	}
 
-	if err := reattachAll(ctx, want.Network, containers); err != nil {
+	if err := reattachAll(ctx, want.Network, containers, want.IPv6 != ""); err != nil {
 		return nil, err
 	}
 
@@ -235,7 +235,7 @@ func disconnectAll(ctx context.Context, network string, cs []Container) error {
 	done := make([]Container, 0, len(cs))
 	for _, c := range cs {
 		if out, err := run(ctx, "podman", "network", "disconnect", network, c.Name); err != nil {
-			if rerr := reattachAll(ctx, network, done); rerr != nil {
+			if rerr := reattachAll(ctx, network, done, true); rerr != nil {
 				log.Printf("[NetMigrate] 回滚接回失败：%v", rerr)
 			}
 			return fmt.Errorf("容器 %s 脱离网络失败：%v（%s）", c.Name, err, strings.TrimSpace(out))
@@ -245,23 +245,33 @@ func disconnectAll(ctx context.Context, network string, cs []Container) error {
 	return nil
 }
 
-func reattachAll(ctx context.Context, network string, cs []Container) error {
+// reattachAll 按原静态地址把容器接回网络。
+// withV6 表示目标网络是否有 v6 段：目标为纯 v4 时不能带 --ip6，
+// 否则 podman 会报 "requested static ip ... not in any subnet"。
+func reattachAll(ctx context.Context, network string, cs []Container, withV6 bool) error {
 	attached := 0
 	for _, c := range cs {
 		args := []string{"network", "connect"}
 		if c.IPv4 != "" {
 			args = append(args, "--ip", c.IPv4)
 		}
-		if c.IPv6 != "" {
+		if withV6 && c.IPv6 != "" {
 			args = append(args, "--ip6", c.IPv6)
 		}
 		if c.MAC != "" {
 			args = append(args, "--mac-address", c.MAC)
 		}
 		args = append(args, network, c.Name)
-		if out, err := run(ctx, "podman", args...); err != nil {
-			return fmt.Errorf("容器 %s 接回网络失败：%v（%s），已接回 %d/%d",
-				c.Name, err, strings.TrimSpace(out), attached, len(cs))
+
+		out, err := run(ctx, "podman", args...)
+		if err != nil {
+			// 网络重建后 podman 可能残留旧的连接记录：报 "already connected"
+			// 但容器内没有接口。先 disconnect 清掉记录再试一次。
+			run(ctx, "podman", "network", "disconnect", network, c.Name)
+			if out2, err2 := run(ctx, "podman", args...); err2 != nil {
+				return fmt.Errorf("容器 %s 接回网络失败：%v（%s / %s），已接回 %d/%d",
+					c.Name, err2, strings.TrimSpace(out), strings.TrimSpace(out2), attached, len(cs))
+			}
 		}
 		attached++
 	}
