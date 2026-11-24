@@ -1923,8 +1923,40 @@ function loadConfigIntoForm(c) {
   state.snapshot = confSnapshot();
   syncDirty();
   loadNetworkAddresses(c.public_ipv4 || '', c.public_ipv6 || '');
-  // 共享 IPv6 只在 snat 模式有意义；subnet 模式容器自带公网地址。
-  $('publicIpv6Field').hidden = c.ipv6_mode !== 'snat';
+  // 共享 IPv6：snat 模式显示地址选择；未启用时给出启用入口。
+  renderIPv6Share(c);
+}
+
+// renderIPv6Share 控制共享 IPv6 的两种形态：
+// 已启用（snat）→ 可换地址；未启用 → 提供一键启用入口。
+// podman 的 IPv6 是网络级属性，启用必须重建容器网络，故实际操作放在按钮里二次确认。
+function renderIPv6Share(c) {
+  const edit = $('publicIpv6Field');
+  const enable = $('ipv6EnableField');
+  if (!edit || !enable) return;
+  const isSnat = c.ipv6_mode === 'snat';
+  edit.hidden = !isSnat;
+  enable.hidden = isSnat || c.virt_type !== 'podman';
+  if (!enable.hidden) void fillSharedV6Options();
+}
+
+async function fillSharedV6Options() {
+  const sel = $('sharedV6Addr');
+  if (!sel) return;
+  try {
+    const data = await api('GET', '/api/network/addresses');
+    const v6 = (data && data.ipv6) || [];
+    sel.innerHTML = '<option value="">选择本机 IPv6 地址</option>';
+    v6.forEach((ip) => {
+      const o = document.createElement('option');
+      o.value = ip;
+      o.textContent = ip;
+      sel.appendChild(o);
+    });
+    if (v6.length === 1) sel.value = v6[0];
+  } catch (e) {
+    // 拉不到地址就留空，用户刷新页面可重试
+  }
 }
 
 // 流量重置模式切换：rental（创建 + 30 天）时隐藏「重置日」输入。
@@ -2078,6 +2110,29 @@ function addPortTags() {
 
 CONF_FIELDS.forEach((id) => $(id)?.addEventListener('input', syncDirty));
 $('platformInsecure').addEventListener('change', () => { $('platformInsecureWarn').hidden = !$('platformInsecure').checked; syncDirty(); });
+
+// 启用共享 IPv6：podman 的网络 IPv6 是网络级属性，启用必须重建容器网络。
+// 先确认影响（容器数、连接中断），再交给后端一次性完成迁移 + 写配置。
+$('btnEnableSharedV6')?.addEventListener('click', () => {
+  const sel = $('sharedV6Addr');
+  const addr = sel ? sel.value : '';
+  if (!addr) { toast('请先选择要使用的 IPv6 地址', 'bad'); return; }
+  const ok = window.confirm(
+    '将重建容器网络以启用共享 IPv6：\n\n' +
+    '· 所有容器的网络会中断数秒（进程不重启）\n' +
+    '· 已建立的连接会断开，客户端需要重连\n\n确认继续？'
+  );
+  if (!ok) return;
+  withBusy($('btnEnableSharedV6'), async () => {
+    try {
+      const res = await api('POST', '/api/ipv6/share', { enabled: true, addr });
+      toast(`已启用共享 IPv6：${res.containers} 个容器，中断 ${(res.downtime_ms / 1000).toFixed(1)} 秒`);
+      loadConfigIntoForm(await api('GET', '/api/config'));
+    } catch (e) {
+      toast('启用失败：' + (e.message || e), 'bad');
+    }
+  });
+});
 $('containerIsolate').addEventListener('change', syncDirty);
 $('trafficResetMode').addEventListener('change', () => { syncTrafficResetUI(); syncDirty(); });
 $('portInput').addEventListener('keydown', (e) => {

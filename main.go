@@ -290,6 +290,7 @@ func main() {
 	ws := web.NewServer(database, svc, hostMon, cfg, a.pf, a.wg, a, rawMgr, version, commit, upd)
 	ws.SetPatrol(patrolSvc)
 	ws.SetNotifier(ntf)
+	ws.SetEgress(a.egress)
 	ws.SetSpeedTester(speed)
 	go func() {
 		log.Printf("Starting web server on %s", conf.Web)

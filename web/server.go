@@ -24,6 +24,8 @@ import (
 	"runman-agent/db"
 	"runman-agent/manager"
 	"runman-agent/manager/cloudhv"
+	"runman-agent/manager/egress"
+	"runman-agent/manager/netmigrate"
 	"runman-agent/manager/portforward"
 	"runman-agent/manager/wgbind"
 	"runman-agent/monitor"
@@ -70,6 +72,7 @@ type Server struct {
 	hostMon      *monitor.HostMonitor
 	pf           *portforward.Manager
 	wg           *wgbind.Manager
+	egress       *egress.Applier
 	agent        interface{}
 	sessions     *sessionStore
 	vmSnapshots  map[string]*vmNetSnapshot
@@ -115,6 +118,11 @@ func NewServer(database *db.DB, mgr manager.VMManager, hostMon *monitor.HostMoni
 // SetPatrol 注入巡查服务引用（非 Podman 后端时为 nil，相关端点返回未启用）。
 func (s *Server) SetPatrol(p *patrol.Service) {
 	s.patrol = p
+}
+
+// SetEgress 注入出站地址管理器，供共享 IPv6 开关在配置变更后立即生效。
+func (s *Server) SetEgress(a *egress.Applier) {
+	s.egress = a
 }
 
 // SetNotifier 注入全局通知器（与巡查共享同一实例，配置实时生效）。
@@ -200,6 +208,7 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("DELETE /api/security/ban/{ip}", s.handleSecurityBanDelete)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/config", s.handleConfig)
+	mux.HandleFunc("POST /api/ipv6/share", s.handleShareIPv6)
 	mux.HandleFunc("GET /api/network/addresses", s.handleNetworkAddresses)
 	mux.HandleFunc("/api/brand/icon", s.handleBrandIcon)
 	// 自定义图标同时充当 tab 图标；没有配置时回落到内置 favicon。
@@ -2862,6 +2871,143 @@ func listHostIPv4() []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+const (
+	podmanNetName   = "narwhal-net"
+	sharedV6Subnet  = "fd91:cafe:cafe:10::/64"
+	sharedV6Gateway = "fd91:cafe:cafe:10::1"
+)
+
+type shareIPv6Request struct {
+	Enabled *bool  `json:"enabled"`
+	Addr    string `json:"addr"`
+}
+
+// handleShareIPv6 启用/停用共享 IPv6。
+//
+// podman 的 IPv6 是网络级属性，容器级没有开关：一台装成纯 IPv4 的机器要加共享
+// IPv6，必须重建容器网络。这里把「重建网络 → 写配置 → 刷新出口与监听」包成一个
+// 动作，前端二次确认后调用。容器进程不重启，但网络会中断数秒、已建立的连接会断。
+func (s *Server) handleShareIPv6(w http.ResponseWriter, r *http.Request) {
+	var req shareIPv6Request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Enabled == nil {
+		http.Error(w, "缺少 enabled", http.StatusBadRequest)
+		return
+	}
+	conf := s.cfg.Get()
+	if conf.VirtType != "podman" {
+		jsonErr(w, fmt.Errorf("仅 Podman 后端支持共享 IPv6"), http.StatusBadRequest)
+		return
+	}
+
+	cur, err := netmigrate.Inspect(r.Context(), podmanNetName)
+	if err != nil {
+		jsonErr(w, err, http.StatusInternalServerError)
+		return
+	}
+	target := netmigrate.Options{
+		Network:   podmanNetName,
+		Interface: cur.Interface,
+		IPv4:      cur.IPv4,
+		Gateway4:  cur.Gateway4,
+	}
+	if target.IPv4 == "" {
+		target.IPv4, target.Gateway4 = "10.91.0.0/20", "10.91.0.1"
+	}
+
+	if *req.Enabled {
+		addr := strings.TrimSpace(req.Addr)
+		if addr == "" {
+			addr = conf.EgressIPv6()
+		}
+		ip := net.ParseIP(addr)
+		if ip == nil || ip.To4() != nil {
+			jsonErr(w, fmt.Errorf("需要提供合法的 IPv6 地址"), http.StatusBadRequest)
+			return
+		}
+		addr = ip.String()
+		if !hostHasIPv6(addr) {
+			jsonErr(w, fmt.Errorf("地址 %s 不在本机网卡上，请先在系统中配置该地址", addr), http.StatusBadRequest)
+			return
+		}
+		target.IPv6, target.Gateway6 = sharedV6Subnet, sharedV6Gateway
+
+		res, err := netmigrate.Rebuild(r.Context(), target)
+		if err != nil {
+			jsonErr(w, err, http.StatusInternalServerError)
+			return
+		}
+		if err := s.cfg.Update(func(c *config.Config) {
+			c.IPv6Mode = "snat"
+			c.IPv6Addr = addr
+			c.PublicIPv6 = addr
+			if c.IPv6Iface == "" {
+				c.IPv6Iface = conf.MonitorNIC
+			}
+		}); err != nil {
+			jsonErr(w, err, http.StatusInternalServerError)
+			return
+		}
+		s.applySharedIPv6(r.Context())
+		jsonOK(w, map[string]any{
+			"enabled": true, "rebuilt": res.Rebuilt,
+			"containers": res.Containers, "downtime_ms": res.Downtime.Milliseconds(),
+		})
+		return
+	}
+
+	// 停用：v6 映射会失去监听地址，必须先清掉，否则重建后全部 bind 失败。
+	all, err := s.db.ListAllPortForwards()
+	if err != nil {
+		jsonErr(w, err, http.StatusInternalServerError)
+		return
+	}
+	v6Rules := 0
+	for _, pf := range all {
+		if pf.BindFamily != 0 {
+			v6Rules++
+		}
+	}
+	if v6Rules > 0 {
+		jsonErr(w, fmt.Errorf("还有 %d 条映射绑定了 IPv6，请先删除这些映射再停用", v6Rules), http.StatusBadRequest)
+		return
+	}
+
+	res, err := netmigrate.Rebuild(r.Context(), target)
+	if err != nil {
+		jsonErr(w, err, http.StatusInternalServerError)
+		return
+	}
+	if err := s.cfg.Update(func(c *config.Config) {
+		c.IPv6Mode = "none"
+		c.PublicIPv6 = ""
+		c.IPv6Addr = ""
+	}); err != nil {
+		jsonErr(w, err, http.StatusInternalServerError)
+		return
+	}
+	s.applySharedIPv6(r.Context())
+	jsonOK(w, map[string]any{
+		"enabled": false, "rebuilt": res.Rebuilt,
+		"containers": res.Containers, "downtime_ms": res.Downtime.Milliseconds(),
+	})
+}
+
+// applySharedIPv6 让出站 SNAT 与端口监听跟随新配置。
+func (s *Server) applySharedIPv6(ctx context.Context) {
+	if s.egress != nil {
+		if err := s.egress.Apply(ctx); err != nil {
+			log.Printf("[IPv6] 应用出站地址失败（轮询会重试）：%v", err)
+		}
+	}
+	if s.pf != nil {
+		s.pf.ReloadAll(ctx)
+	}
 }
 
 // hostHasIPv6 判断地址是否已配置在本机的物理网卡上。
