@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runman-agent/manager/podman/cpualloc"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -192,6 +193,13 @@ func (m *Manager) createWithRetry(spec *specgen.SpecGenerator) (entTypes.Contain
 func (m *Manager) CreateVM(ctx context.Context, req *agent.CmdCreateVM) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// 平台断流后可能重发同一条创建命令。不拦住的话会走到 createWithRetry 的
+	// 名称冲突分支，把正在运行的同名实例连同数据一起删掉。
+	if exists, err := containers.Exists(m.timeoutCtx(), req.VmId, nil); err != nil {
+		return fmt.Errorf("check existing container %s: %w", req.VmId, err)
+	} else if exists {
+		return fmt.Errorf("VM %s already exists", req.VmId)
+	}
 	return m.createVM(ctx, req)
 }
 
@@ -421,8 +429,17 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 	_ = m.db.SavePodmanConfig(pConf)
 
 	// 设置 root 密码
-	err = m.execInContainer(res.ID, []string{"bash", "-c", fmt.Sprintf("echo 'root:%s' | chpasswd", req.RootPassword)})
-	return err
+	return m.setRootPassword(res.ID, req.RootPassword)
+}
+
+// setRootPassword 设置容器 root 密码。密码按 shell 单引号规则转义后传入：
+// 直接拼接时，含单引号的合法密码会破坏命令语法。
+func (m *Manager) setRootPassword(id, password string) error {
+	if strings.ContainsAny(password, "\n\r\x00") {
+		return fmt.Errorf("password must not contain line breaks")
+	}
+	quoted := "'" + strings.ReplaceAll("root:"+password, "'", `'\''`) + "'"
+	return m.execInContainer(id, []string{"bash", "-c", "printf '%s\\n' " + quoted + " | chpasswd"})
 }
 
 func (m *Manager) execInContainer(id string, cmd []string) error {
@@ -489,7 +506,12 @@ func (m *Manager) deleteByID(id string) error {
 	// 5. 若 bindings 仍报错，使用命令行强制清除 storage 兜底
 	if err != nil {
 		log.Printf("[Podman] deleteByID %s: fallback to podman rm --storage --force", name)
-		_ = exec.Command("podman", "rm", "-f", "--storage", name).Run()
+		if fbErr := exec.Command("podman", "rm", "-f", "--storage", name).Run(); fbErr != nil {
+			// 兜底也失败且容器确实还在：必须报错，不能让调用方以为已删除。
+			if exists, _ := containers.Exists(m.timeoutCtx(), name, nil); exists {
+				return fmt.Errorf("remove container %s: %w", name, err)
+			}
+		}
 	}
 	return nil
 }
@@ -530,12 +552,16 @@ func (m *Manager) DeleteVM(ctx context.Context, vmID string) error {
 }
 
 func (m *Manager) deleteVM(ctx context.Context, vmID string) error {
-	// 先删 DB 记录：DB 失败时中止，避免出现"容器已删但 DB 仍有记录"的不一致状态。
+	// 先删容器再删 DB 记录：容器删除失败时记录保留，平台重试即可；
+	// 反过来的话容器还在、记录已丢，实例就成了没人管的残留。
+	if err := m.deleteByID(vmID); err != nil {
+		return err
+	}
 	if err := m.db.DeleteVMConfig(vmID); err != nil {
 		log.Printf("[Podman][DeleteVM] error: failed to delete VMConfig for %s: %v", vmID, err)
 		return fmt.Errorf("delete VMConfig: %w", err)
 	}
-	return m.deleteByID(vmID)
+	return nil
 }
 
 func (m *Manager) ReinstallVM(ctx context.Context, req *agent.CmdReinstallVM) error {
@@ -545,6 +571,10 @@ func (m *Manager) ReinstallVM(ctx context.Context, req *agent.CmdReinstallVM) er
 	log.Printf("[Podman][Reinstall] start: vmID=%s image=%s diskGb=%d", req.VmId, req.OsImage, req.DiskGb)
 
 	// 1. 强制停止旧容器
+	// 先拉镜像再动旧实例：镜像不存在或下载失败时旧系统必须原样保留。
+	if err := m.PullImage(ctx, req.OsImage); err != nil {
+		return fmt.Errorf("pull image %s: %w", req.OsImage, err)
+	}
 	if err := m.stopVM(req.VmId, true); err != nil {
 		log.Printf("[Podman][Reinstall] %s: stop failed (continuing): %v", req.VmId, err)
 	}
@@ -579,7 +609,7 @@ func (m *Manager) ReinstallVM(ctx context.Context, req *agent.CmdReinstallVM) er
 
 func (m *Manager) ResetPassword(_ context.Context, vmID, password string) error {
 	// 密码重设通常涉及 exec，并不会导致并发资源冲突，但为了严谨也可以加锁或不加
-	return m.execInContainer(vmID, []string{"bash", "-c", fmt.Sprintf("echo 'root:%s' | chpasswd", password)})
+	return m.setRootPassword(vmID, password)
 }
 
 func (m *Manager) GetVMLocalIP(_ context.Context, vmID string) (string, error) {
@@ -1424,6 +1454,11 @@ func (m *Manager) Cleanup(ctx context.Context) error {
 		}
 		// 跳过临时容器
 		if strings.HasPrefix(name, "tmp-") {
+			continue
+		}
+		// 只清理挂在本项目网络上的容器：宿主上运营者自己跑的其他 Podman
+		// 容器不在这个网络里，不属于 Agent，不能碰。
+		if !slices.Contains(c.Networks, NetworkName) {
 			continue
 		}
 

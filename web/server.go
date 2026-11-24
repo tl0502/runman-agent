@@ -353,7 +353,10 @@ func (s *Server) ListenAndServe(addr string) error {
 	if err != nil {
 		return err
 	}
-	return http.Serve(ln, s.authMiddleware(mux))
+	// 只限制请求头读取：慢速连接不能无限占住 goroutine；不设读写总超时，
+	// 以免误杀 TTY 等长连接。
+	srv := &http.Server{Handler: s.authMiddleware(mux), ReadHeaderTimeout: 10 * time.Second}
+	return srv.Serve(ln)
 }
 
 // tlsPaths 返回自签证书的存放路径（与 agent 数据目录同级）。
@@ -2256,6 +2259,7 @@ func (s *Server) handleDeleteVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 与 gRPC 删除路径保持一致：清理该 VM 的端口转发规则及 IP 限制覆盖
+	_ = s.db.DeleteTraffic(vmID)
 	s.pf.DeleteVM(r.Context(), vmID)
 	s.wg.DeleteVM(vmID)
 	_ = s.db.DeleteVMConfig(vmID)
@@ -2460,7 +2464,8 @@ func (s *Server) handleSyncPortFwds(w http.ResponseWriter, r *http.Request) {
 	desired := make([]portforward.DesiredRule, 0, len(rules))
 	for _, rule := range rules {
 		if rule.Protocol != "tcp" && rule.Protocol != "udp" {
-			continue
+			jsonErr(w, fmt.Errorf("unsupported protocol %q", rule.Protocol), http.StatusBadRequest)
+			return
 		}
 		if err := s.validatePortFwdBind(rule.BindFamily); err != nil {
 			jsonErr(w, err, http.StatusBadRequest)

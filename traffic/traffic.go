@@ -2,12 +2,15 @@ package traffic
 
 import (
 	"context"
+	"errors"
 	"log"
 	"runman-agent/config"
 	"runman-agent/db"
 	"runman-agent/manager"
 	"sync"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // VMNetStats 表示 VM 的网络流量统计
@@ -119,6 +122,11 @@ func (s *Service) syncOnce(ctx context.Context) {
 
 		// 从数据库获取或创建 Traffic 记录
 		traffic, err := s.db.GetTraffic(vm.VmId)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			// 读库失败不等于新 VM：按新 VM 初始化会把已有累计流量清零。
+			log.Printf("failed to read traffic record for VM %s, skipping this round: %v", vm.VmId, err)
+			continue
+		}
 		if err != nil {
 			// 新 VM，初始化记录
 			traffic = &db.Traffic{

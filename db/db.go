@@ -412,6 +412,12 @@ func (d *DB) SaveWebSession(tokenHash, user string, lastSeen time.Time) error {
 	return d.orm.Save(&WebSession{TokenHash: tokenHash, User: user, LastSeen: lastSeen}).Error
 }
 
+// TouchWebSession 刷新已存在会话的 last_seen。只 UPDATE 不插入：
+// 续期是异步的，可能晚于登出/改密码的删除执行，用 Save 会把已撤销的会话写回去。
+func (d *DB) TouchWebSession(tokenHash string, lastSeen time.Time) error {
+	return d.orm.Model(&WebSession{}).Where("token_hash = ?", tokenHash).Update("last_seen", lastSeen).Error
+}
+
 // DeleteWebSession 删除单个会话（登出）。
 func (d *DB) DeleteWebSession(tokenHash string) error {
 	return d.orm.Delete(&WebSession{}, "token_hash = ?", tokenHash).Error

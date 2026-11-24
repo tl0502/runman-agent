@@ -742,7 +742,11 @@ release_asset_digest() {
         https://github.com/*/releases/download/*) api="https://api.github.com/repos/${base#https://github.com/}" ;;
     esac
     [ -n "$api" ] || return 0
-    api="${api%/releases/*}/releases/latest"
+    # 摘要必须取自所下载的那个 release：固定 tag 时查 latest 会拿到别的版本的摘要。
+    case "$api" in
+        */releases/latest/download) api="${api%/download}" ;;
+        */releases/download/*) api="${api%/releases/download/*}/releases/tags/${api##*/releases/download/}" ;;
+    esac
     curl -fsSL --max-time 20 "$api" 2>/dev/null \
         | python3 -c "
 import json, sys

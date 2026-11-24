@@ -643,6 +643,7 @@ func (m *Manager) SyncForVM(ctx context.Context, vmId string, desired []DesiredR
 	copy(current, m.mappings[vmId])
 	m.mu.RUnlock()
 
+	var errs []error
 	// 删除不在期望列表中的规则
 	for _, c := range current {
 		found := false
@@ -653,16 +654,20 @@ func (m *Manager) SyncForVM(ctx context.Context, vmId string, desired []DesiredR
 			}
 		}
 		if !found {
-			_ = m.RemoveMapping(ctx, vmId, c.Protocol, c.HostPort)
+			if err := m.RemoveMapping(ctx, vmId, c.Protocol, c.HostPort); err != nil {
+				errs = append(errs, fmt.Errorf("remove %s/%d: %w", c.Protocol, c.HostPort, err))
+			}
 		}
 	}
 
 	// 添加或更新期望的规则
 	for _, d := range desired {
-		_ = m.AddMapping(ctx, vmId, d.Protocol, d.HostPort, d.GuestPort, d.Description, d.BindFamily)
+		if err := m.AddMapping(ctx, vmId, d.Protocol, d.HostPort, d.GuestPort, d.Description, d.BindFamily); err != nil {
+			errs = append(errs, fmt.Errorf("add %s/%d: %w", d.Protocol, d.HostPort, err))
+		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // DeleteVM 删除某 VM 的所有转发规则（内存 + DB）
@@ -782,6 +787,13 @@ func (m *Manager) handleTCP(ctx context.Context, src net.Conn, target string, e 
 	select {
 	case <-ctx.Done():
 	case <-done:
+		// 一个方向结束后等另一个方向收尾（与 wgbind 一致）：客户端发完请求
+		// 半关闭写端时，VM 的响应还没回完，立即关两端会把响应截断。
+		select {
+		case <-done:
+		case <-ctx.Done():
+		case <-time.After(30 * time.Second):
+		}
 	}
 }
 
@@ -847,6 +859,10 @@ func (m *Manager) runUDP(ctx context.Context, pc net.PacketConn, target string, 
 	}
 }
 
+// proxy 单向拷贝，源端 EOF 后半关闭目标的写方向，让对端感知到流结束。
 func (m *Manager) proxy(dst io.Writer, src io.Reader) {
 	_, _ = io.Copy(dst, src)
+	if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
 }

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -49,5 +50,26 @@ func TestVMConfigCreatedAtStable(t *testing.T) {
 	}
 	if !after.CreatedAt.Equal(anchor) {
 		t.Fatalf("CreatedAt drifted across rebuild: %v -> %v", anchor, after.CreatedAt)
+	}
+}
+
+// 异步续期晚于登出执行时，不能把已删除的会话写回去。
+func TestTouchWebSessionDoesNotResurrect(t *testing.T) {
+	d, err := Init(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := d.SaveWebSession("h", "admin", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DeleteWebSession("h"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.TouchWebSession("h", now); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(d.ListWebSessions()); n != 0 {
+		t.Fatalf("已撤销的会话被续期写回，got %d", n)
 	}
 }

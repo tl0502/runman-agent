@@ -134,6 +134,13 @@ func main() {
 		}); err != nil {
 			log.Fatalf("update password: %v", err)
 		}
+		// 重置密码必须同时作废已有登录：否则旧会话在 Agent 重启后从库里恢复，
+		// 「怀疑泄漏所以重置」就等于没重置。
+		if database, dbErr := db.Init(cfg.Get().DB); dbErr != nil {
+			log.Printf("warning: password updated, but existing sessions were not revoked: %v", dbErr)
+		} else if err := database.DeleteAllWebSessions(); err != nil {
+			log.Printf("warning: password updated, but existing sessions were not revoked: %v", err)
+		}
 		fmt.Println("Password updated successfully.")
 		return
 	}
@@ -906,10 +913,12 @@ func (a *Agent) handleCommand(stream agent.AgentGateway_ConnectClient, env *agen
 		}
 	case *agent.PlatformEnvelope_DeleteVm:
 		err = a.mgr.DeleteVM(ctx, p.DeleteVm.VmId)
-		// DeleteVM already removes VMConfig from DB; only clean up ancillary records here.
-		_ = a.db.DeleteTraffic(p.DeleteVm.VmId)
-		a.pf.DeleteVM(ctx, p.DeleteVm.VmId)
-		a.wg.DeleteVM(p.DeleteVm.VmId)
+		// 删除失败时实例还在，附属数据（流量、端口转发、WG）必须保留。
+		if err == nil {
+			_ = a.db.DeleteTraffic(p.DeleteVm.VmId)
+			a.pf.DeleteVM(ctx, p.DeleteVm.VmId)
+			a.wg.DeleteVM(p.DeleteVm.VmId)
+		}
 
 	case *agent.PlatformEnvelope_StartVm:
 		err = a.mgr.StartVM(ctx, p.StartVm.VmId)

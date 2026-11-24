@@ -396,8 +396,15 @@ func (m *Manager) Dir() string {
 func (m *Manager) Update(fn func(*Config)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	fn(&m.cfg)
-	return m.save()
+	// 在副本上修改，落盘成功后才替换内存值：写盘失败时不能留下
+	// 「接口报失败、内存却已变」的半生效状态。
+	next := m.cfg
+	fn(&next)
+	if err := m.save(next); err != nil {
+		return err
+	}
+	m.cfg = next
+	return nil
 }
 
 // UpdateChecked 与 Update 相同，但 fn 可以返回错误；fn 返回错误时不落盘、
@@ -411,17 +418,26 @@ func (m *Manager) UpdateChecked(fn func(*Config) error) error {
 	if err := fn(&next); err != nil {
 		return err
 	}
+	if err := m.save(next); err != nil {
+		return err
+	}
 	m.cfg = next
-	return m.save()
+	return nil
 }
 
-// save 将当前内存配置写回文件（调用方持有写锁）。
-func (m *Manager) save() error {
-	data, err := json.MarshalIndent(m.cfg, "", "    ")
+// save 将配置写回文件（调用方持有写锁）。先写同目录临时文件再 rename：
+// 直接覆盖写时，磁盘满或断电会留下截断的 JSON，Agent 下次无法启动。
+func (m *Manager) save(cfg Config) error {
+	data, err := json.MarshalIndent(cfg, "", "    ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.path, data, 0600)
+	tmp := m.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, m.path)
 }
 
 // applyDefaults 在字段为空时填充默认值。

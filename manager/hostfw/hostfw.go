@@ -210,18 +210,13 @@ func (a *Applier) rulesPresent(hasIPv6 bool) bool {
 	return true
 }
 
-// applyRuleset 先删旧表（不存在则忽略），再用 stdin 原子灌入完整规则集。
+// applyRuleset 用 stdin 原子替换整张表。
 func (a *Applier) applyRuleset(ctx context.Context, family, ruleset string) error {
-	del := exec.CommandContext(ctx, "nft", "delete", "table", family, tableName)
-	if out, err := del.CombinedOutput(); err != nil {
-		msg := strings.TrimSpace(string(out))
-		if !strings.Contains(msg, "No such file or directory") && !strings.Contains(msg, "does not exist") {
-			log.Printf("[HostFW] delete table %s %s: %v (%s)", family, tableName, err, msg)
-		}
-	}
-
+	// 「声明表（不存在则创建）→ 删表 → 重建」写进同一次 nft -f，由内核作为一个
+	// 事务提交。分两条命令时，新规则加载失败会留下旧表已删、新表没建的无隔离窗口。
+	replace := fmt.Sprintf("table %s %s\ndelete table %s %s\n", family, tableName, family, tableName)
 	cmd := exec.CommandContext(ctx, "nft", "-f", "-")
-	cmd.Stdin = strings.NewReader(ruleset)
+	cmd.Stdin = strings.NewReader(replace + ruleset)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("apply %s %s ruleset: %v (%s)", family, tableName, err, strings.TrimSpace(string(out)))
 	}

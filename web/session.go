@@ -181,7 +181,7 @@ func (s *sessionStore) validate(token string) (string, bool) {
 
 	if needSync {
 		go func() {
-			if err := s.db.SaveWebSession(h, user, now); err != nil {
+			if err := s.db.TouchWebSession(h, now); err != nil {
 				log.Printf("[Web] refresh session failed: %v", err)
 			}
 		}()

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -141,7 +142,8 @@ func (n *Notifier) postMessage(token, chatID, text string) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		// net/http 的错误带完整请求 URL，而 Bot Token 就在路径里：脱敏后再外传。
+		return errors.New(strings.ReplaceAll(err.Error(), token, "***"))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
