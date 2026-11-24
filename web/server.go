@@ -1449,6 +1449,10 @@ type configRequest struct {
 	// 容器对外 IPv4：端口映射监听该地址，出站 SNAT 也用它。空串表示恢复默认。
 	PublicIPv4 *string `json:"public_ipv4"`
 
+	// 共享 IPv6 的对外地址（snat 模式）：端口映射监听它、出站 SNAT 也用它。
+	// 空串 = 回落安装脚本探测的 ipv6_addr；指针用于区分"未提交"。
+	PublicIPv6 *string `json:"public_ipv6"`
+
 	// 容器网络隔离。指针用于区分"未提交"（保持原值）与"显式 false"。
 	ContainerIsolate      *bool   `json:"container_isolate"`
 	HostAllowPorts        *string `json:"host_allow_ports"`        // 逗号分隔端口，空串 = 清空
@@ -1488,6 +1492,15 @@ type configResponse struct {
 	// 前端「入口地址」在 host / public_ipv4 都为空时用它，避免回落到浏览器
 	// 地址栏（SSH 隧道访问时会显示成 127.0.0.1）。
 	DetectedIPv4 string `json:"detected_ipv4"`
+
+	// 共享 IPv6（仅 snat 模式有意义）：PublicIPv6 是可配置的对外地址，
+	// IPv6Addr 是安装脚本探测写入的地址（只读），SharedIPv6 是最终生效值
+	// （public_ipv6 优先，回落 ipv6_addr），供前端展示与映射表单判断。
+	PublicIPv6   string `json:"public_ipv6"`
+	IPv6Mode     string `json:"ipv6_mode"`
+	IPv6Addr     string `json:"ipv6_addr"`
+	SharedIPv6   string `json:"shared_ipv6"`
+	DetectedIPv6 string `json:"detected_ipv6"`
 
 	AllowInsecureDownload bool `json:"allow_insecure_download"`
 	AllowInternalDownload bool `json:"allow_internal_download"`
@@ -1619,6 +1632,17 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if req.PublicIPv4 != nil {
 				cfg.PublicIPv4 = strings.TrimSpace(*req.PublicIPv4)
 			}
+			if req.PublicIPv6 != nil {
+				v := strings.TrimSpace(*req.PublicIPv6)
+				if v != "" {
+					ip := net.ParseIP(v)
+					if ip == nil || ip.To4() != nil {
+						return fmt.Errorf("public_ipv6 必须是合法的 IPv6 地址")
+					}
+					v = ip.String()
+				}
+				cfg.PublicIPv6 = v
+			}
 			if req.ContainerIsolate != nil {
 				cfg.ContainerIsolate = req.ContainerIsolate
 			}
@@ -1701,6 +1725,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		NetavarkBase:     conf.NetavarkBase,
 		PublicIPv4:       conf.PublicIPv4,
 		DetectedIPv4:     s.detectedIPv4(),
+		PublicIPv6:       conf.PublicIPv6,
+		IPv6Mode:         conf.IPv6Mode,
+		IPv6Addr:         conf.IPv6Addr,
+		SharedIPv6:       conf.EgressIPv6(),
+		DetectedIPv6:     s.detectedIPv6(),
 
 		AllowInsecureDownload: conf.AllowInsecureDownload,
 		AllowInternalDownload: conf.AllowInternalDownload,
@@ -1724,6 +1753,17 @@ func (s *Server) detectedIPv4() string {
 	}
 	if p, ok := s.agent.(interface{ DetectedIPv4() string }); ok {
 		return p.DetectedIPv4()
+	}
+	return ""
+}
+
+// detectedIPv6 取后端自动探测的公网 IPv6；agent 未提供时返回空。
+func (s *Server) detectedIPv6() string {
+	if s.agent == nil {
+		return ""
+	}
+	if p, ok := s.agent.(interface{ DetectedIPv6() string }); ok {
+		return p.DetectedIPv6()
 	}
 	return ""
 }
@@ -2282,10 +2322,12 @@ func (s *Server) handleResetTraffic(w http.ResponseWriter, r *http.Request) {
 // ─── 端口转发 ──────────────────────────────────────────────────────────────────
 
 // portFwdEntry 是端口转发规则的 JSON 表示，含实时连接统计。
+// bind_family: 0 = 仅 IPv4（默认）、1 = 仅 IPv6、2 = 双栈。
 type portFwdEntry struct {
 	Protocol    string                `json:"protocol"`
 	HostPort    int                   `json:"host_port"`
 	GuestPort   int                   `json:"guest_port"`
+	BindFamily  int                   `json:"bind_family"`
 	TargetAddr  string                `json:"target_addr,omitempty"`
 	Description string                `json:"description,omitempty"`
 	ActiveConns int64                 `json:"active_conns"`
@@ -2304,6 +2346,7 @@ func (s *Server) handleListPortFwds(w http.ResponseWriter, r *http.Request) {
 				Protocol:    e.Protocol,
 				HostPort:    e.HostPort,
 				GuestPort:   e.GuestPort,
+				BindFamily:  e.BindFamily,
 				TargetAddr:  e.TargetAddr,
 				Description: e.Description,
 				ActiveConns: e.ActiveConns,
@@ -2313,6 +2356,25 @@ func (s *Server) handleListPortFwds(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	jsonOK(w, result)
+}
+
+// validatePortFwdBind 校验映射的地址族与当前 IPv6 配置是否匹配。
+// 仅 IPv4 映射始终允许；含 IPv6 时要求处于共享 IPv6（snat）模式且地址已配置。
+func (s *Server) validatePortFwdBind(bindFamily int) error {
+	if !portforward.ValidBindFamily(bindFamily) {
+		return fmt.Errorf("bind_family 取值应为 0（IPv4）、1（IPv6）或 2（双栈）")
+	}
+	if bindFamily == portforward.BindV4 {
+		return nil
+	}
+	conf := s.cfg.Get()
+	if conf.IPv6Mode != "snat" {
+		return fmt.Errorf("当前 IPv6 模式不支持端口映射，需使用共享 IPv6 模式")
+	}
+	if conf.EgressIPv6() == "" {
+		return fmt.Errorf("共享 IPv6 地址未配置")
+	}
+	return nil
 }
 
 func (s *Server) handleAddPortFwd(w http.ResponseWriter, r *http.Request) {
@@ -2330,8 +2392,12 @@ func (s *Server) handleAddPortFwd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host_port and guest_port must be positive", 400)
 		return
 	}
+	if err := s.validatePortFwdBind(req.BindFamily); err != nil {
+		jsonErr(w, err, http.StatusBadRequest)
+		return
+	}
 
-	if err := s.pf.AddMapping(r.Context(), vmID, req.Protocol, req.HostPort, req.GuestPort, req.Description); err != nil {
+	if err := s.pf.AddMapping(r.Context(), vmID, req.Protocol, req.HostPort, req.GuestPort, req.Description, req.BindFamily); err != nil {
 		jsonErr(w, err, 500)
 		return
 	}
@@ -2373,11 +2439,16 @@ func (s *Server) handleSyncPortFwds(w http.ResponseWriter, r *http.Request) {
 		if rule.Protocol != "tcp" && rule.Protocol != "udp" {
 			continue
 		}
+		if err := s.validatePortFwdBind(rule.BindFamily); err != nil {
+			jsonErr(w, err, http.StatusBadRequest)
+			return
+		}
 		desired = append(desired, portforward.DesiredRule{
 			Protocol:    rule.Protocol,
 			HostPort:    rule.HostPort,
 			GuestPort:   rule.GuestPort,
 			Description: rule.Description,
+			BindFamily:  rule.BindFamily,
 		})
 	}
 
@@ -2740,14 +2811,16 @@ func (s *Server) handleVMTTY(w http.ResponseWriter, r *http.Request) {
 // netAddressResponse 返回宿主机可选的对外地址，供面板下拉使用。
 type netAddressResponse struct {
 	IPv4    []string `json:"ipv4"`
+	IPv6    []string `json:"ipv6"`
 	Primary string   `json:"primary"`
 }
 
-// handleNetworkAddresses 枚举本机网卡上的 IPv4 地址。
+// handleNetworkAddresses 枚举本机网卡上的公网地址（IPv4 / IPv6）。
 // 过滤掉回环、容器网桥、veth 等虚拟接口，只留下真正可对外使用的地址。
 func (s *Server) handleNetworkAddresses(w http.ResponseWriter, _ *http.Request) {
 	jsonOK(w, netAddressResponse{
 		IPv4:    listHostIPv4(),
+		IPv6:    listHostIPv6(),
 		Primary: primaryIPv4(),
 	})
 }
@@ -2779,6 +2852,41 @@ func listHostIPv4() []string {
 				continue
 			}
 			result = append(result, ip4.String())
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+// listHostIPv6 枚举本机网卡上的全局 IPv6 地址。
+// 过滤回环、链路本地与 ULA 私网（fc00::/7），只留可对外使用的公网地址。
+func listHostIPv6() []string {
+	result := []string{}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return result
+	}
+	for _, ifi := range ifaces {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if isVirtualInterface(ifi.Name) {
+			continue
+		}
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip := ipnet.IP
+			if ip.To4() != nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsPrivate() {
+				continue
+			}
+			result = append(result, ip.String())
 		}
 	}
 	sort.Strings(result)

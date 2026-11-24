@@ -422,3 +422,110 @@ func TestCheckProcessesStopFailureRateLimited(t *testing.T) {
 		t.Fatalf("停机失败不应记录停机，got %+v", stops)
 	}
 }
+
+func TestNormalizeIPCompressesIPv6(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"2001:db8:0:0:0:0:0:2", "2001:db8::2"},
+		{"2001:db8::2", "2001:db8::2"},
+		{"10.91.0.2", "10.91.0.2"},
+		{"", ""},
+		{"not-an-ip", "not-an-ip"},
+	}
+	for _, c := range cases {
+		if got := normalizeIP(c.in); got != c.want {
+			t.Fatalf("normalizeIP(%q)=%q want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestVMIPsNormalizesAndDedupes(t *testing.T) {
+	vm := &agent.VMSummary{Ips: []string{
+		"10.91.0.2",
+		"fd91:cafe:cafe:10:0:0:0:2",
+		"fd91:cafe:cafe:10::2", // 与上一项等价，应去重
+		"bogus",
+	}}
+	got := vmIPs(vm)
+	want := []string{"10.91.0.2", "fd91:cafe:cafe:10::2"}
+	if len(got) != len(want) {
+		t.Fatalf("vmIPs=%v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("vmIPs=%v want %v", got, want)
+		}
+	}
+}
+
+// conntrack 里同一 v6 地址可能以非压缩形式出现，统计必须落到同一个键上，
+// 否则按 VMSummary 里的压缩地址查表会漏。
+func TestCountConnectionsMergesIPv6Forms(t *testing.T) {
+	data := `ipv6 2 tcp 6 100 ESTABLISHED src=2001:db8:0:0:0:0:0:2 dst=2001:db8::9 sport=1 dport=2 src=2001:db8::9 dst=2001:db8::2 sport=2 dport=1 [ASSURED] mark=0
+ipv6 2 tcp 6 100 ESTABLISHED src=2001:db8::2 dst=2001:db8::10 sport=3 dport=4 src=2001:db8::10 dst=2001:db8::2 sport=4 dport=3 [ASSURED] mark=0
+`
+	m := countConnections(data, nil, 100, nil)
+	cs := m["2001:db8::2"]
+	if cs == nil {
+		t.Fatalf("压缩地址键不存在，got keys %v", keysOf(m))
+	}
+	if cs.out != 2 {
+		t.Fatalf("out=%d want 2", cs.out)
+	}
+	if _, ok := m["2001:db8:0:0:0:0:0:2"]; ok {
+		t.Fatalf("非压缩形式不应单独成键")
+	}
+}
+
+func keysOf(m map[string]*ipConnStats) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// 共享 IPv6 下 v4 与 ULA 的画像必须合并：v6 出站只挂在 ULA 键上。
+func TestSumConnStatsAggregatesFamilies(t *testing.T) {
+	connMap := map[string]*ipConnStats{
+		"10.91.0.2":            {in: 2, out: 1, udpIn: 1},
+		"fd91:cafe:cafe:10::2": {out: 5, udpOut: 4, smtpOut: 3, distinct: map[string]struct{}{"a": {}, "b": {}}},
+	}
+	got := sumConnStats(connMap, []string{"10.91.0.2", "fd91:cafe:cafe:10::2"})
+	if got.in != 2 || got.out != 6 || got.udpIn != 1 || got.udpOut != 4 || got.smtpOut != 3 {
+		t.Fatalf("聚合结果 = %+v", got)
+	}
+	if len(got.distinct) != 2 {
+		t.Fatalf("distinct=%v want 2 项", got.distinct)
+	}
+}
+
+// 实机抓样（AWS Lightsail，共享 IPv6）：conntrack 里的 v6 是非压缩、每段补零到 4 位的格式，
+// 且回程 dst 已被 SNAT 成共享地址。巡查必须把这个 src 归一到 "fd91:cafe:cafe:10::3"，
+// 否则按 vm.ips 查表永远落空，v6 出站完全失明。
+func TestRealConntrackV6FromLightsail(t *testing.T) {
+	data := `ipv6     10 tcp      6 431996 ESTABLISHED src=fd91:cafe:cafe:0010:0000:0000:0000:0003 dst=2606:4700:4700:0000:0000:0000:0000:1111 sport=50504 dport=443 src=2606:4700:4700:0000:0000:0000:0000:1111 dst=2406:da14:0df3:4600:2f2b:f2c5:20b5:2e52 sport=443 dport=50504 [ASSURED] mark=0 zone=0 use=2
+ipv6     10 tcp      6 431996 ESTABLISHED src=fd91:cafe:cafe:0010:0000:0000:0000:0003 dst=2606:4700:4700:0000:0000:0000:0000:1111 sport=50524 dport=443 src=2606:4700:4700:0000:0000:0000:0000:1111 dst=2406:da14:0df3:4600:2f2b:f2c5:20b5:2e52 sport=443 dport=50524 [ASSURED] mark=0 zone=0 use=2
+`
+	vm := &agent.VMSummary{Ips: []string{"10.91.0.3", "fd91:cafe:cafe:10::3"}}
+	watch := map[string]bool{}
+	for _, ip := range vmIPs(vm) {
+		watch[ip] = true
+	}
+	connMap := countConnections(data, watch, 0, nil)
+
+	cs := connMap["fd91:cafe:cafe:10::3"]
+	if cs == nil {
+		t.Fatalf("v6 键缺失，got keys %v", keysOf(connMap))
+	}
+	if cs.out != 2 {
+		t.Fatalf("v6 out=%d want 2", cs.out)
+	}
+
+	agg := sumConnStats(connMap, vmIPs(vm))
+	if agg.out != 2 {
+		t.Fatalf("聚合 out=%d want 2（v6 出站必须计入容器画像）", agg.out)
+	}
+	if agg.in != 0 {
+		t.Fatalf("聚合 in=%d want 0", agg.in)
+	}
+}

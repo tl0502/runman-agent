@@ -92,8 +92,9 @@ type Config struct {
 	// 为空时保持旧行为（监听 0.0.0.0，出站走 netavark 默认 masquerade）。
 	PublicIPv4 string `json:"public_ipv4"`
 
-	// PublicIPv6 为预留字段：当前版本未实现 IPv6 对外地址，仅保留键位，
-	// 避免以后新增字段还要再做一次配置迁移。
+	// PublicIPv6 是共享 IPv6 的对外地址（snat 模式）：端口映射在该地址上监听，
+	// 容器出站流量 SNAT 成它也走它。为空时回落安装脚本探测写入的 IPv6Addr。
+	// subnet 模式（容器自带公网 IPv6）不使用该字段。
 	PublicIPv6 string `json:"public_ipv6"`
 
 	// ── 容器隔离与安全加固 ────────────────────────────────────────────────────
@@ -694,6 +695,21 @@ func (c Config) NetavarkDownloadBase() string {
 // EgressIPv4 返回对外 IPv4（去掉空白）。空表示不指定，走默认行为。
 func (c Config) EgressIPv4() string {
 	return strings.TrimSpace(c.PublicIPv4)
+}
+
+// EgressIPv6 返回共享 IPv6 的对外地址：public_ipv6 优先，回落安装脚本
+// 探测写入的 ipv6_addr。仅在 snat 模式下有意义。
+func (c Config) EgressIPv6() string {
+	if v := strings.TrimSpace(c.PublicIPv6); v != "" {
+		return v
+	}
+	return strings.TrimSpace(c.IPv6Addr)
+}
+
+// SharedIPv6Enabled 表示共享 IPv6 是否启用：snat 模式且拿到可用地址。
+// subnet 模式下容器自带公网地址，不需要共享出口，也不做端口映射。
+func (c Config) SharedIPv6Enabled() bool {
+	return c.IPv6Mode == "snat" && c.EgressIPv6() != ""
 }
 
 // IsolateEnabled 返回是否启用容器间网络隔离（runman-hostfw bridge 表 nft 规则）。

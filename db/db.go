@@ -85,12 +85,15 @@ type WGBinding struct {
 }
 
 // PortForward 持久化端口转发规则。(Protocol, HostPort) 联合主键保证宿主机端口唯一。
+// BindFamily 决定监听哪些地址族的对外地址：0 = 仅 IPv4（默认，存量行为）、
+// 1 = 仅 IPv6（共享 IPv6）、2 = 双栈。
 type PortForward struct {
 	Protocol    string `gorm:"primaryKey"`
 	HostPort    int    `gorm:"primaryKey"`
 	VMID        string `gorm:"index"`
 	GuestPort   int
 	Description string
+	BindFamily  int `gorm:"default:0"`
 }
 
 type Traffic struct {

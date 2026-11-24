@@ -209,6 +209,9 @@ message PortForwardEntry {
   int32    host_port   = 3; // 宿主机端口 / host (external) port
   int32    guest_port  = 4; // VM 内部端口 / guest (VM-internal) port
   string   description = 5; // 备注，例如 "SSH" / description e.g. "SSH"
+  // 绑定地址族 / bind address family: 0=IPv4 only, 1=IPv6 only, 2=dual-stack.
+  // 缺省 0 保持旧行为，旧平台不传该字段时按 IPv4 处理。
+  int32    bind_family = 6;
 }
 
 // ---- 控制台 TTY ---------------------------------------------------------
@@ -356,6 +359,9 @@ message CmdSetPortForward {
   int32    host_port   = 3; // 宿主机（外部）端口 / host (external) port
   int32    guest_port  = 4; // VM 内部端口 / guest (VM-internal) port
   string   description = 5; // 备注，例如 "SSH 22" / description e.g. "SSH 22"
+  // 绑定地址族 / bind address family: 0=IPv4 only, 1=IPv6 only, 2=dual-stack.
+  // 缺省 0 保持旧行为，旧平台不传该字段时按 IPv4 处理。
+  int32    bind_family = 6;
 }
 
 // CmdDelPortForward — 删除一条已有的端口转发规则。

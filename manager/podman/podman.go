@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -861,6 +862,43 @@ func (m *Manager) AttachTTY(ctx context.Context, vmID string, stdin io.Reader, s
 			WithOutputStream(stdout).
 			WithErrorStream(stdout),
 	)
+}
+
+// isPublicIPv6 判断地址是否可作为公网 IPv6 上报给平台。
+// 共享 IPv6（snat）下容器只有 ULA（fd91:...），公网不可路由，不应进入
+// VMSummary.ips；subnet 模式下容器持有公网 IPv6，正常上报。
+func isPublicIPv6(ip net.IP) bool {
+	if ip == nil || ip.To4() != nil {
+		return false
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	if !addr.Is6() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsMulticast() {
+		return false
+	}
+	b := addr.As16()
+	return b[0]&0xfe != 0xfc // 排除 ULA fc00::/7
+}
+
+// FilterReportableIPs 去掉不能作为公网入口上报给平台的地址（ULA / 链路本地 / 回环）。
+// 共享 IPv6（snat）下容器只持有 ULA，平台展示会给客户「可用」的错觉；
+// subnet 模式下容器持有公网 IPv6，会被保留。
+// 只在心跳上报前调用——巡查等内部逻辑需要完整地址（含 ULA）。
+func FilterReportableIPs(ips []string) []string {
+	out := make([]string, 0, len(ips))
+	for _, s := range ips {
+		ip := net.ParseIP(s)
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil || isPublicIPv6(ip) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (m *Manager) getIPsFromInspect(inspect *define.InspectContainerData) (ipv4, ipv6 net.IP, err error) {

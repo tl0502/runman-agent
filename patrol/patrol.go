@@ -196,9 +196,9 @@ func (s *Service) tick() {
 	// 一次读取 conntrack，为所有 VM 统计连接画像（活跃 in/out + 滥用识别三件套），
 	// 避免每个 VM 重复解析。watch 限定容器 IP：滥用画像只对容器有意义，
 	// 也把不同目标集合的内存开销约束在「容器数 × 饱和上限」内。
-	watch := make(map[string]bool, len(vms))
+	watch := make(map[string]bool, len(vms)*2)
 	for _, vm := range vms {
-		if ip := vmIPv4(vm); ip != "" {
+		for _, ip := range vmIPs(vm) {
 			watch[ip] = true
 		}
 	}

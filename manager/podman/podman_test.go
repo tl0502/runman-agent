@@ -2,7 +2,10 @@
 
 package podman
 
-import "testing"
+import (
+	"net"
+	"testing"
+)
 
 // 容器内进程的 status 样本：NSpid 第 2 项才是容器命名空间视角的 PID。
 func TestParseProcStatus(t *testing.T) {
@@ -53,5 +56,43 @@ func TestParseProcStatusIgnoresInjectedLines(t *testing.T) {
 	}
 	if comm != "fake" {
 		t.Fatalf("comm=%q", comm)
+	}
+}
+
+// 共享 IPv6 模式下容器只有 ULA，不能作为公网地址上报给平台。
+func TestIsPublicIPv6(t *testing.T) {
+	cases := []struct {
+		ip   string
+		want bool
+	}{
+		{"", false},
+		{"10.91.0.2", false},
+		{"fd91:cafe:cafe:10::2", false}, // 共享模式 ULA
+		{"fc00::1", false},              // ULA 另一端
+		{"fe80::1", false},              // 链路本地
+		{"::1", false},                  // 回环
+		{"ff02::1", false},              // 组播
+		{"2001:db8::1", true},           // subnet 模式公网段
+		{"2408:8000::1", true},
+	}
+	for _, c := range cases {
+		if got := isPublicIPv6(net.ParseIP(c.ip)); got != c.want {
+			t.Fatalf("isPublicIPv6(%q)=%v want %v", c.ip, got, c.want)
+		}
+	}
+}
+
+// 上报前过滤：ULA / 链路本地 / 非法值剔除，v4 与公网 v6 保留。
+func TestFilterReportableIPs(t *testing.T) {
+	in := []string{"10.91.0.2", "fd91:cafe:cafe:10::2", "2001:db8::1", "fe80::1", "bogus"}
+	got := FilterReportableIPs(in)
+	want := []string{"10.91.0.2", "2001:db8::1"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
+		}
 	}
 }

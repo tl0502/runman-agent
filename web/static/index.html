@@ -835,6 +835,12 @@
                   <option value="">未指定（默认）</option>
                 </select>
               </div>
+              <div class="field" id="publicIpv6Field" hidden>
+                <label for="publicIpv6">共享 IPv6 <span class="hint">端口监听与出站；留空用安装检测值</span></label>
+                <select class="input" id="publicIpv6">
+                  <option value="">未指定（用检测值）</option>
+                </select>
+              </div>
               <label class="check"><input type="checkbox" id="platformInsecure"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 跳过平台 TLS 证书校验 <span class="warn" id="platformInsecureWarn" hidden>连接平台时不校验证书，仅用于自签证书场景</span></label>
             </div>
           </div>
@@ -1429,11 +1435,21 @@
         <button class="pf-seg-btn" data-pfmode="batch" aria-pressed="false">批量</button>
       </div>
       <div id="pfSingle" style="margin-top:14px">
-        <div class="form-grid cols-3">
+        <div class="form-grid cols-2">
           <div class="field">
             <label>协议</label>
             <select class="input" id="pfProto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
           </div>
+          <div class="field" id="pfBindField" hidden>
+            <label>地址族</label>
+            <select class="input" id="pfBind">
+              <option value="0">IPv4</option>
+              <option value="1">IPv6</option>
+              <option value="2">双栈</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-grid cols-2" style="margin-top:10px">
           <div class="field">
             <label>宿主端口</label>
             <input class="input tnum" type="number" id="pfHost" min="1" max="65535" placeholder="2222">
@@ -1446,6 +1462,14 @@
       </div>
       <div id="pfBatch" style="margin-top:14px" hidden>
         <textarea class="input textarea" id="pfBatchText" rows="6" placeholder="每行一条，可带协议（默认 TCP）&#10;tcp:2222:22&#10;udp:51820:51820&#10;8080:80"></textarea>
+        <div class="field" id="pfBatchBindField" style="margin-top:10px" hidden>
+          <label>地址族</label>
+          <select class="input" id="pfBatchBind">
+            <option value="0">IPv4</option>
+            <option value="1">IPv6</option>
+            <option value="2">双栈</option>
+          </select>
+        </div>
       </div>
       <div class="err" id="pfErr"></div>
     </div>

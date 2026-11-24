@@ -1,8 +1,12 @@
 // Package egress 维护 Podman 网络的出站源地址（SNAT）。
 //
-// 依赖 netavark 的网络级选项 outbound_addr4：写了它，netavark 生成的规则是
-// `snat to <ip>` 而不是默认的 masquerade。容器本身仍在 narwhal-net 的内网段里，
-// 对外只体现为这一个地址。
+// 依赖 netavark 的网络级选项 outbound_addr4 / outbound_addr6：写了它，
+// netavark 生成的规则是 `snat to <ip>` 而不是默认的 masquerade。容器本身
+// 仍在 narwhal-net 的内网段里，对外只体现为这两个地址。
+//
+// IPv6 只在 snat 模式（共享 IPv6）下接管：此时容器只有 ULA 内网地址，
+// 出站需要 SNAT 成配置的单个公网 IPv6。subnet 模式下容器自带公网地址、
+// netavark 也不做 v6 NAT（snat_ipv6=false），这里不写 outbound_addr6。
 //
 // 一个必须注意的行为：netavark 在规则链已存在时会跳过重建（日志里的
 // "Found chain ..."），因此改完配置只执行 podman network reload 不会生效，
@@ -14,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"regexp"
@@ -24,51 +29,67 @@ import (
 )
 
 const (
-	networkName   = "narwhal-net"
-	networkFile   = "/etc/containers/networks/" + networkName + ".json"
-	subnetCIDR    = "10.91.0.0/20"
-	nftTable      = "netavark"
-	optionKey     = "outbound_addr4"
-	networkPerm   = 0o644
-	subnetPattern = `ip saddr ` + subnetCIDR + ` jump (nv_[A-Za-z0-9_]+)`
+	networkName  = "narwhal-net"
+	networkFile  = "/etc/containers/networks/" + networkName + ".json"
+	subnetCIDR   = "10.91.0.0/20"
+	nftTable     = "netavark"
+	option4Key   = "outbound_addr4"
+	option6Key   = "outbound_addr6"
+	networkPerm  = 0o644
+	subnetFormat = `%s saddr %s jump (nv_[A-Za-z0-9_-]+)`
 )
 
-var subnetRe = regexp.MustCompile(subnetPattern)
-
-// Applier 负责把配置里的对外 IPv4 落到网络配置和防火墙规则上。
+// Applier 负责把配置里的对外地址落到网络配置和防火墙规则上。
 type Applier struct {
 	cfg *config.Manager
 	mu  sync.Mutex
 
-	// lastApplied / lastKnown 用于避免每次轮询都重复执行破坏性重建。
-	lastApplied string
-	lastKnown   bool
+	// last4 / last6 用于避免每次轮询都重复执行破坏性重建。
+	last4, last6 string
+	lastKnown    bool
 }
 
 func New(cfg *config.Manager) *Applier {
 	return &Applier{cfg: cfg}
 }
 
-// Apply 让网络配置与防火墙规则和 cfg.PublicIPv4 保持一致。幂等。
+// Apply 让网络配置与防火墙规则和 cfg 的对外地址保持一致。幂等。
 func (a *Applier) Apply(ctx context.Context) error {
-	if a.cfg.Get().VirtType != "podman" {
+	conf := a.cfg.Get()
+	if conf.VirtType != "podman" {
 		return nil
 	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	want := a.cfg.Get().EgressIPv4()
+	want4 := conf.EgressIPv4()
+	// IPv6 出口只在容器网络真的带 v6 段时才接管：没有 v6 段的网络里
+	// netavark 不会生成 v6 NAT 规则，写 outbound_addr6 无意义且会让
+	// 规则一致性校验永远失败（每 10 秒重试刷日志）。
+	want6 := ""
+	if conf.SharedIPv6Enabled() {
+		if _, v6Subnet := networkSubnets(); v6Subnet != "" {
+			want6 = conf.EgressIPv6()
+		}
+	}
 
-	changed, err := writeNetworkOption(optionKey, want)
+	changed4, err := writeNetworkOption(option4Key, want4)
 	if err != nil {
 		return err
 	}
-	if !changed && a.lastKnown && a.lastApplied == want {
+	// 改动两次写文件之间只隔毫秒级，且 Apply 有互斥；随后统一 rebuild。
+	changed6, err := writeNetworkOption(option6Key, want6)
+	if err != nil {
+		return err
+	}
+	changed := changed4 || changed6
+
+	if !changed && a.lastKnown && a.last4 == want4 && a.last6 == want6 {
 		return nil
 	}
-	if !changed && a.rulesMatch(ctx, want) {
-		a.lastApplied, a.lastKnown = want, true
+	if !changed && a.rulesMatch(ctx, want4, want6) {
+		a.last4, a.last6, a.lastKnown = want4, want6, true
 		return nil
 	}
 
@@ -76,13 +97,13 @@ func (a *Applier) Apply(ctx context.Context) error {
 		a.lastKnown = false
 		return err
 	}
-	if !a.rulesMatch(ctx, want) {
+	if !a.rulesMatch(ctx, want4, want6) {
 		a.lastKnown = false
-		return fmt.Errorf("nft rules did not converge to %q", describe(want))
+		return fmt.Errorf("nft rules did not converge to v4=%q v6=%q", describe(want4), describe(want6))
 	}
 
-	a.lastApplied, a.lastKnown = want, true
-	log.Printf("[Egress] container egress IPv4 set to %s", describe(want))
+	a.last4, a.last6, a.lastKnown = want4, want6, true
+	log.Printf("[Egress] container egress set to IPv4=%s IPv6=%s", describe(want4), describe(want6))
 	return nil
 }
 
@@ -177,31 +198,97 @@ func (a *Applier) rebuild(ctx context.Context) error {
 }
 
 // rulesMatch 检查当前 nft 规则是否已经是期望形态。
-func (a *Applier) rulesMatch(ctx context.Context, want string) bool {
+func (a *Applier) rulesMatch(ctx context.Context, want4, want6 string) bool {
 	out, err := exec.CommandContext(ctx, "nft", "list", "ruleset").Output()
 	if err != nil {
 		return false
 	}
 	ruleset := string(out)
 
-	chain := subnetChain(ruleset)
-	if chain == "" {
+	// 网络里还没有容器时 netavark 根本不会创建规则表（podman network reload
+	// 对空网络不产生任何规则）。这种状态下没有任何可校验的目标，直接视为一致，
+	// 否则新装机会每 10 秒报一次「未收敛」并反复重建。
+	if !strings.Contains(ruleset, "table inet "+nftTable) {
+		return true
+	}
+
+	v4Subnet, v6Subnet := networkSubnets()
+
+	// IPv4：子网链里的 snat/masquerade 形态。
+	if v4Subnet == "" {
+		v4Subnet = subnetCIDR
+	}
+	chain4 := subnetChain(ruleset, "ip", v4Subnet)
+	if chain4 == "" {
 		return false
 	}
-	body := chainBody(ruleset, chain)
-	if body == "" {
+	body4 := chainBody(ruleset, chain4)
+	if body4 == "" {
+		return false
+	}
+	if want4 == "" {
+		if !strings.Contains(body4, "masquerade") || strings.Contains(body4, "snat ") {
+			return false
+		}
+	} else if !strings.Contains(body4, "snat ip to "+want4) && !strings.Contains(body4, "snat to "+want4) {
 		return false
 	}
 
-	if want == "" {
-		return strings.Contains(body, "masquerade") && !strings.Contains(body, "snat ")
+	// IPv6：网络没有 v6 段时不参与；subnet 模式（want6 为空）下 netavark
+	// 不做 v6 NAT，链可能不存在，只要没有残留的 snat 规则即可。
+	if v6Subnet == "" {
+		return want6 == ""
 	}
-	return strings.Contains(body, "snat ip to "+want)
+	chain6 := subnetChain(ruleset, "ip6", v6Subnet)
+	if want6 == "" {
+		if chain6 == "" {
+			return true
+		}
+		body6 := chainBody(ruleset, chain6)
+		return !strings.Contains(body6, "snat ip6 to") && !strings.Contains(body6, "snat ip to")
+	}
+	if chain6 == "" {
+		return false
+	}
+	body6 := chainBody(ruleset, chain6)
+	return strings.Contains(body6, "snat ip6 to "+want6) || strings.Contains(body6, "snat ip to "+want6)
 }
 
-// subnetChain 从规则集里找出该子网对应的链名。
-func subnetChain(ruleset string) string {
-	m := subnetRe.FindStringSubmatch(ruleset)
+// networkSubnets 从 narwhal-net.json 读取容器网络的 v4/v6 子网。
+// 读取失败时返回空串，调用方回落到默认值或不校验。
+func networkSubnets() (v4, v6 string) {
+	raw, err := os.ReadFile(networkFile)
+	if err != nil {
+		return "", ""
+	}
+	var doc struct {
+		Subnets []struct {
+			Subnet string `json:"subnet"`
+		} `json:"subnets"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return "", ""
+	}
+	for _, s := range doc.Subnets {
+		if ip, _, err := net.ParseCIDR(s.Subnet); err == nil {
+			if ip.To4() != nil {
+				v4 = s.Subnet
+			} else {
+				v6 = s.Subnet
+			}
+		}
+	}
+	return v4, v6
+}
+
+// subnetChain 从规则集里找出指定协议族子网对应的链名。
+// family 是 nft 的匹配关键字："ip" 或 "ip6"。
+func subnetChain(ruleset, family, subnet string) string {
+	if subnet == "" {
+		return ""
+	}
+	re := regexp.MustCompile(fmt.Sprintf(subnetFormat, regexp.QuoteMeta(family), regexp.QuoteMeta(subnet)))
+	m := re.FindStringSubmatch(ruleset)
 	if len(m) != 2 {
 		return ""
 	}

@@ -701,10 +701,12 @@ async function refreshPorts() {
         return `<span class="pf-ip${a ? ' is-active' : ''}"><b>${a ? '●' + a : '·'}</b>${esc(ip.ip)}<i>${ip.count}</i></span>`;
       }).join('') + (restCount > 0 ? `<span class="pf-ip more">+${restCount}</span>` : '');
 
+      const famLabel = r.bind_family === 1 ? 'v6' : (r.bind_family === 2 ? 'v4+v6' : '');
       return `
       <div class="pf-row">
         <div class="pf-main">
           <span class="pf-proto">${esc(r.protocol)}</span>
+          ${famLabel ? `<span class="pf-fam">${famLabel}</span>` : ''}
           <span class="mono pf-port">:${r.host_port}</span>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dim"><use href="#i-arrow-right"/></svg>
           <span class="pf-target">${esc(r.target_addr || ':' + r.guest_port)}</span>
@@ -737,6 +739,13 @@ $('pfOpenModal').addEventListener('click', () => {
   $('pfErr').classList.remove('show');
   setPFMode('single');
   $('pfHost').value = ''; $('pfGuest').value = ''; $('pfBatchText').value = '';
+  // 地址族选择只在共享 IPv6（snat 模式）下出现；其余情况固定 IPv4。
+  const conf = state.config || {};
+  const hasV6 = conf.ipv6_mode === 'snat' && !!(conf.shared_ipv6 || conf.public_ipv6 || conf.ipv6_addr);
+  $('pfBindField').hidden = !hasV6;
+  $('pfBatchBindField').hidden = !hasV6;
+  $('pfBind').value = '0';
+  $('pfBatchBind').value = '0';
   setTimeout(() => $('pfHost').focus(), 60);
 });
 
@@ -777,9 +786,10 @@ $('pfAdd').addEventListener('click', (e) => withBusy(e.currentTarget, async () =
     const bad = parsed.filter((p) => p.err);
     if (bad.length) { $('pfErr').textContent = `无法解析：${bad.map((b) => b.err).join('、')}`; $('pfErr').classList.add('show'); return; }
     if (!parsed.length) { $('pfErr').textContent = '请填写要映射的端口'; $('pfErr').classList.add('show'); return; }
-    parsed.forEach((p) => items.push({ protocol: p.protocol, host_port: p.host, guest_port: p.guest }));
+    const fam = Number($('pfBatchBind').value) || 0;
+    parsed.forEach((p) => items.push({ protocol: p.protocol, host_port: p.host, guest_port: p.guest, bind_family: fam }));
   } else {
-    const body = { protocol: $('pfProto').value, host_port: Number($('pfHost').value), guest_port: Number($('pfGuest').value) };
+    const body = { protocol: $('pfProto').value, host_port: Number($('pfHost').value), guest_port: Number($('pfGuest').value), bind_family: Number($('pfBind').value) || 0 };
     if (!body.host_port || !body.guest_port) { $('pfErr').textContent = '端口不能为空'; $('pfErr').classList.add('show'); return; }
     items.push(body);
   }
@@ -1833,7 +1843,7 @@ $('patrolRefresh').addEventListener('click', (e) => withBusy(e.currentTarget, as
 /* ══════════════════════════════ 设置 ═══════════════════════════════════════ */
 const CONF_FIELDS = ['siteName', 'token', 'platformAddr', 'monitorNIC', 'monitorDisk', 'maxPortForward',
   'maxForwardIPs', 'trafficResetDay', 'entryHost', 'updateRepo', 'updateBase', 'updateApi', 'netavarkBase',
-  'publicIpv4', 'webUser', 'webPass', 'containerAllowSubnets'];
+  'publicIpv4', 'publicIpv6', 'webUser', 'webPass', 'containerAllowSubnets'];
 
 // 独立模式下「平台凭据」相关控件保留可见但不可编辑——用户能直接看到重新接入
 // 需要填什么，不用先开开关才知道。开关本身就是这一组字段的生效前提。
@@ -1912,7 +1922,9 @@ function loadConfigIntoForm(c) {
   loadPatrolConfig(c);
   state.snapshot = confSnapshot();
   syncDirty();
-  loadNetworkAddresses(c.public_ipv4 || '');
+  loadNetworkAddresses(c.public_ipv4 || '', c.public_ipv6 || '');
+  // 共享 IPv6 只在 snat 模式有意义；subnet 模式容器自带公网地址。
+  $('publicIpv6Field').hidden = c.ipv6_mode !== 'snat';
 }
 
 // 流量重置模式切换：rental（创建 + 30 天）时隐藏「重置日」输入。
@@ -1923,14 +1935,16 @@ function syncTrafficResetUI() {
 
 // loadNetworkAddresses 拉取宿主机可用的 IPv4 填充下拉框。
 // 当前配置值若不在列表里（IP 尚未绑到网卡），补一项保留，避免保存时被清空。
-async function loadNetworkAddresses(selected) {
+async function loadNetworkAddresses(selected, selected6) {
   const sel = $('publicIpv4');
   if (!sel) return;
   let addrs = [];
+  let addrs6 = [];
   let primary = '';
   try {
     const data = await api('GET', '/api/network/addresses');
     addrs = (data && data.ipv4) || [];
+    addrs6 = (data && data.ipv6) || [];
     primary = (data && data.primary) || '';
   } catch (e) { /* 拉不到就只留空选项 */ }
 
@@ -1948,6 +1962,25 @@ async function loadNetworkAddresses(selected) {
     sel.appendChild(opt);
   }
   sel.value = selected || '';
+
+  const sel6 = $('publicIpv6');
+  if (sel6) {
+    sel6.innerHTML = '<option value="">未指定（用检测值）</option>';
+    addrs6.forEach((ip) => {
+      const opt = document.createElement('option');
+      opt.value = ip;
+      opt.textContent = ip;
+      sel6.appendChild(opt);
+    });
+    if (selected6 && !addrs6.includes(selected6)) {
+      const opt = document.createElement('option');
+      opt.value = selected6;
+      opt.textContent = `${selected6}（当前配置）`;
+      sel6.appendChild(opt);
+    }
+    sel6.value = selected6 || '';
+  }
+
   state.snapshot = confSnapshot();
   syncDirty();
 }
@@ -2112,6 +2145,7 @@ async function saveConfig(btn) {
       allow_insecure_download: $('allowInsecureDownload').checked,
       allow_internal_download: $('allowInternalDownload').checked,
       public_ipv4: $('publicIpv4').value,
+      public_ipv6: $('publicIpv6').value,
       platform_insecure: $('platformInsecure').checked,
       container_isolate: $('containerIsolate').checked,
       host_allow_ports: state.allowPorts.join(','),

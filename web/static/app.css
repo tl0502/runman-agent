@@ -603,6 +603,16 @@ main {
   flex: none;
 }
 .pf-port { font-size: 12px; font-weight: 560; flex: none; }
+.pf-fam {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .03em;
+  color: var(--ink-2);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  padding: 1px 4px;
+  flex: none;
+}
 .pf-target {
   font-family: var(--mono);
   font-size: 11.5px;

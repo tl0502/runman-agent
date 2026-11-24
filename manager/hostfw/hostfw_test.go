@@ -99,7 +99,7 @@ func TestReadNetworkFileNoIPv6(t *testing.T) {
 func TestInet6Ruleset(t *testing.T) {
 	rules := inet6Ruleset([]int{8792}, []string{"fd91:cafe:cafe:10::/64"}, "fd91:cafe:cafe:10::/64", nil)
 	for _, want := range []string{
-		"table inet6 runman-hostfw",
+		"table ip6 runman-hostfw",
 		"ip6 saddr fd91:cafe:cafe:10::/64 jump allow6",
 		"ip6 daddr fc00::/7 drop",
 		"ip6 daddr fe80::/10 drop",

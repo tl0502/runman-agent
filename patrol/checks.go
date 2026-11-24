@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -60,8 +61,8 @@ func countConnections(data string, watch map[string]bool, scanCap int, smtpPorts
 			continue
 		}
 		proto := fields[2]
-		src := firstKV(line, "src=")
-		dst := firstKV(line, "dst=")
+		src := normalizeIP(firstKV(line, "src="))
+		dst := normalizeIP(firstKV(line, "dst="))
 		if src == "" || dst == "" || src == dst {
 			continue
 		}
@@ -132,13 +133,60 @@ func firstKV(line, key string) string {
 	return rest
 }
 
-func vmIPv4(vm *agent.VMSummary) string {
+// normalizeIP 把 IPv6 规范成压缩格式，保证与 conntrack 文本里的地址可比。
+// 解析失败或 IPv4 原样返回。
+func normalizeIP(s string) string {
+	if !strings.Contains(s, ":") {
+		return s
+	}
+	if a, err := netip.ParseAddr(s); err == nil {
+		return a.String()
+	}
+	return s
+}
+
+// vmIPs 返回 VM 的全部可用地址（v4 + v6），归一化后去重。
+// 巡查按地址聚合：共享 IPv6 下容器的 v6 出站条目挂在 ULA 地址上，
+// 只查 v4 会漏掉这部分流量。
+func vmIPs(vm *agent.VMSummary) []string {
+	seen := make(map[string]bool, len(vm.Ips))
+	out := make([]string, 0, len(vm.Ips))
 	for _, ip := range vm.Ips {
-		if p := net.ParseIP(ip); p != nil && p.To4() != nil {
-			return ip
+		if net.ParseIP(ip) == nil {
+			continue
+		}
+		n := normalizeIP(ip)
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
+}
+
+// sumConnStats 汇总一个 VM 所有地址的连接画像。
+// distinct 取并集：扫描判定只看不同目标数是否达阈值，无需保留每地址独立集合。
+func sumConnStats(connMap map[string]*ipConnStats, ips []string) *ipConnStats {
+	out := &ipConnStats{}
+	for _, ip := range ips {
+		cs := connMap[ip]
+		if cs == nil {
+			continue
+		}
+		out.in += cs.in
+		out.out += cs.out
+		out.udpIn += cs.udpIn
+		out.udpOut += cs.udpOut
+		out.smtpOut += cs.smtpOut
+		for d := range cs.distinct {
+			if out.distinct == nil {
+				out.distinct = make(map[string]struct{}, len(cs.distinct))
+			}
+			out.distinct[d] = struct{}{}
 		}
 	}
-	return ""
+	return out
 }
 
 // checkBandwidth 单容器带宽占用巡查：占用 ≥ 上限 thresholdPct% 持续 durationMin 分钟 → 限速。
@@ -211,15 +259,12 @@ func (s *Service) checkConnections(conf config.Config, vm *agent.VMSummary, conn
 	if s.isThrottled(vm.VmId) {
 		return
 	}
-	ip := vmIPv4(vm)
-	if ip == "" {
+	ips := vmIPs(vm)
+	if len(ips) == 0 {
 		return
 	}
-	cs := connMap[ip]
-	var in, out int
-	if cs != nil {
-		in, out = cs.in, cs.out
-	}
+	cs := sumConnStats(connMap, ips)
+	in, out := cs.in, cs.out
 	if in >= cc.InLimit || out >= cc.OutLimit {
 		if st.connOverSince.IsZero() {
 			st.connOverSince = now
@@ -355,14 +400,11 @@ func (s *Service) checkAbuse(conf config.Config, vm *agent.VMSummary, connMap ma
 	if !ac.EnabledOn() {
 		return
 	}
-	ip := vmIPv4(vm)
-	if ip == "" {
+	ips := vmIPs(vm)
+	if len(ips) == 0 {
 		return
 	}
-	cs := connMap[ip]
-	if cs == nil {
-		cs = &ipConnStats{}
-	}
+	cs := sumConnStats(connMap, ips)
 	dur := time.Duration(ac.DurationMin) * time.Minute
 
 	// UDP 发包/被打：任一方向条目数达到阈值（含 UNREPLIED，单向洪水的主要形态）

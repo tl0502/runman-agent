@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	tableName   = "runman-hostfw" // inet/inet6/bridge 不同家族，可同名
+	tableName   = "runman-hostfw" // inet/ip6/bridge 不同家族，可同名
 	networkFile = "/etc/containers/networks/narwhal-net.json"
 
 	// defaultSubnetCIDR 是读不到 narwhal-net.json 时回落的 IPv4 网段。
@@ -103,7 +103,7 @@ func (a *Applier) Healthy() (bool, string) {
 	return true, ""
 }
 
-// Apply 校验配置并（必要时）重建 inet、inet6 与 bridge 三张表。
+// Apply 校验配置并（必要时）重建 inet、ip6 与 bridge 三张表。
 func (a *Applier) Apply(ctx context.Context) error {
 	if a.cfg.Get().VirtType != "podman" {
 		return nil
@@ -164,7 +164,7 @@ func (a *Applier) Apply(ctx context.Context) error {
 		return err
 	}
 	if info.ipv6 != "" {
-		if err := a.applyRuleset(ctx, "inet6", inet6Ruleset(ports, subnets, info.ipv6, fwdPorts)); err != nil {
+		if err := a.applyRuleset(ctx, "ip6", inet6Ruleset(ports, subnets, info.ipv6, fwdPorts)); err != nil {
 			a.setErrLocked(err.Error())
 			return err
 		}
@@ -195,11 +195,11 @@ func (a *Applier) setErrLocked(msg string) {
 }
 
 // rulesPresent 检查规则表是否都还在。轻量：只探测表存在性，不比对规则内容。
-// hasIPv6 表示是否应存在 inet6 表（配置了 IPv6 网段时）。
+// hasIPv6 表示是否应存在 ip6 表（配置了 IPv6 网段时）。
 func (a *Applier) rulesPresent(hasIPv6 bool) bool {
 	families := []string{"inet", "bridge"}
 	if hasIPv6 {
-		families = append(families, "inet6")
+		families = append(families, "ip6")
 	}
 	for _, family := range families {
 		cmd := exec.Command("nft", "list", "table", family, tableName)
@@ -278,13 +278,13 @@ func inetRuleset(ports []int, subnets []string, ipv4 string, fwdPorts map[string
 	return b.String()
 }
 
-// inet6Ruleset 生成 inet6 家族规则集，与 inetRuleset 对称：
+// inet6Ruleset 生成 IPv6（ip6 家族）规则集，与 inetRuleset 对称：
 // INPUT 端口白名单 + FORWARD 拦截内网（ULA / 链路本地）。
 // 容器 IPv6 网段从 narwhal-net.json 读取（snat 模式 fd91:cafe:cafe:10::/64，
 // subnet 模式为 /112），不硬编码。
 func inet6Ruleset(ports []int, subnets []string, ipv6 string, fwdPorts map[string][]int) string {
 	var b strings.Builder
-	b.WriteString("table inet6 " + tableName + " {\n")
+	b.WriteString("table ip6 " + tableName + " {\n")
 
 	b.WriteString("\tchain input {\n")
 	b.WriteString("\t\ttype filter hook input priority -10; policy accept;\n")
@@ -292,6 +292,10 @@ func inet6Ruleset(ports []int, subnets []string, ipv6 string, fwdPorts map[strin
 	b.WriteString("\t}\n")
 	b.WriteString("\tchain allow6 {\n")
 	b.WriteString("\t\tct state established,related accept\n")
+	// ICMPv6 是 IPv6 的基础协议：NDP 邻居发现/路由器通告都走它。不放行的话
+	// 容器连网关 MAC 都解析不到（v4 用 ARP 在二层，不过 ip filter），
+	// 所有 v6 流量一个包都发不出去。
+	b.WriteString("\t\tmeta l4proto ipv6-icmp accept\n")
 	// 与 inet 表一致：放行 DNS，避免启用 IPv6 DNS 代理后解析被拦。
 	b.WriteString("\t\tudp dport 53 accept\n")
 	b.WriteString("\t\ttcp dport 53 accept\n")

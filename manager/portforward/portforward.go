@@ -28,6 +28,16 @@ const (
 	MaxPort = 65535
 )
 
+// 端口映射的地址族。0 为存量默认值（仅 IPv4），落库前不做迁移。
+const (
+	BindV4   = 0
+	BindV6   = 1
+	BindBoth = 2
+)
+
+// ValidBindFamily 校验地址族取值。
+func ValidBindFamily(f int) bool { return f >= BindV4 && f <= BindBoth }
+
 // --- 转发管理实现 ---
 
 type Entry struct {
@@ -37,6 +47,7 @@ type Entry struct {
 	GuestPort   int
 	TargetAddr  string // resolved "ip:port" at setup time, for diagnostics
 	Description string
+	BindFamily  int // 0 = v4 only, 1 = v6 only, 2 = both
 
 	// Stats — populated by GetReport(), zero in live entries.
 	ActiveConns int64
@@ -45,9 +56,9 @@ type Entry struct {
 
 	// Internal live state — do not copy after first use.
 	cancel        context.CancelFunc
-	ln            io.Closer
-	connActive    int64 // atomic: current active connections
-	connTotal     int64 // atomic: all-time connections since rule added
+	lns           []io.Closer // one listener per enabled address family
+	connActive    int64       // atomic: current active connections
+	connTotal     int64       // atomic: all-time connections since rule added
 	connIPMu      sync.Mutex
 	connIPs       map[string]int64 // total connections per IP
 	connActiveIPs map[string]int64 // active connections per IP
@@ -99,6 +110,7 @@ type DesiredRule struct {
 	HostPort    int
 	GuestPort   int
 	Description string
+	BindFamily  int
 }
 
 type Manager struct {
@@ -230,7 +242,7 @@ func (m *Manager) Restore(ctx context.Context) {
 		log.Printf("[PortForward] restore: list rules failed: %v", err)
 	}
 	for _, pf := range all {
-		if err := m.addMapping(ctx, pf.VMID, pf.Protocol, pf.HostPort, pf.GuestPort, pf.Description, false); err != nil {
+		if err := m.addMapping(ctx, pf.VMID, pf.Protocol, pf.HostPort, pf.GuestPort, pf.Description, pf.BindFamily, false); err != nil {
 			log.Printf("[PortForward] restore %s %s :%d->%d failed (will retry): %v", pf.VMID, pf.Protocol, pf.HostPort, pf.GuestPort, err)
 		}
 	}
@@ -261,7 +273,7 @@ func (m *Manager) reconcileLoop(ctx context.Context) {
 				delete(failCount, key)
 				continue
 			}
-			if err := m.addMapping(ctx, pf.VMID, pf.Protocol, pf.HostPort, pf.GuestPort, pf.Description, false); err != nil {
+			if err := m.addMapping(ctx, pf.VMID, pf.Protocol, pf.HostPort, pf.GuestPort, pf.Description, pf.BindFamily, false); err != nil {
 				failCount[key]++
 				if failCount[key] == 1 || failCount[key]%20 == 0 {
 					log.Printf("[PortForward] reconcile %s %s :%d->%d failed %d time(s): %v", pf.VMID, pf.Protocol, pf.HostPort, pf.GuestPort, failCount[key], err)
@@ -305,7 +317,7 @@ func (m *Manager) RefreshVM(ctx context.Context, vmID string) {
 	}
 	m.mu.Unlock()
 	for _, r := range rules {
-		if err := m.addMapping(ctx, vmID, r.Protocol, r.HostPort, r.GuestPort, r.Description, false); err != nil {
+		if err := m.addMapping(ctx, vmID, r.Protocol, r.HostPort, r.GuestPort, r.Description, r.BindFamily, false); err != nil {
 			log.Printf("[PortForward] refresh %s %s :%d->%d failed (reconcile will retry): %v", vmID, r.Protocol, r.HostPort, r.GuestPort, err)
 		}
 	}
@@ -325,7 +337,8 @@ func (m *Manager) ReloadAll(ctx context.Context) {
 	for _, id := range ids {
 		m.RefreshVM(ctx, id)
 	}
-	log.Printf("[PortForward] rebound %d VM(s) to public IPv4 %q", len(ids), m.cfg.Get().EgressIPv4())
+	conf := m.cfg.Get()
+	log.Printf("[PortForward] rebound %d VM(s) to public IPv4 %q IPv6 %q", len(ids), conf.EgressIPv4(), conf.EgressIPv6())
 }
 
 // listenAddress 返回监听地址。bindIP 为空时监听所有本地地址（旧行为），
@@ -338,14 +351,34 @@ func listenAddress(bindIP string, port int) string {
 	return net.JoinHostPort(bindIP, strconv.Itoa(port))
 }
 
-// AddMapping 添加转发规则，相同规则幂等，配置变更时先删后加
-func (m *Manager) AddMapping(ctx context.Context, vmId string, protocol string, hostPort, guestPort int, description string) error {
-	return m.addMapping(ctx, vmId, protocol, hostPort, guestPort, description, true)
+// AddMapping 添加转发规则，相同规则幂等，配置变更时先删后加。
+// bindFamily 取值见 BindV4 / BindV6 / BindBoth。
+func (m *Manager) AddMapping(ctx context.Context, vmId string, protocol string, hostPort, guestPort int, description string, bindFamily int) error {
+	return m.addMapping(ctx, vmId, protocol, hostPort, guestPort, description, bindFamily, true)
 }
 
-func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, hostPort, guestPort int, description string, checkLimit bool) error {
+func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, hostPort, guestPort int, description string, bindFamily int, checkLimit bool) error {
 	if hostPort < MinPort || hostPort > MaxPort {
 		return fmt.Errorf("host port %d out of allowed range [%d, %d]", hostPort, MinPort, MaxPort)
+	}
+	if !ValidBindFamily(bindFamily) {
+		return fmt.Errorf("invalid bind family %d", bindFamily)
+	}
+
+	// 先解析目标地址和监听地址：这两步都可能失败（容器未就绪、共享 IPv6 未配置）。
+	// 必须在删除旧规则之前完成——否则一次失败的操作会把已有映射连同 DB 记录一起删掉。
+	ip, err := m.mgr.GetVMLocalIP(ctx, vmId)
+	if err != nil {
+		return err
+	}
+	if ip == "" {
+		return fmt.Errorf("VM %s has no IP address (is it running?)", vmId)
+	}
+	targetAddr := formatTargetAddress(ip, guestPort)
+
+	bindIPs, err := m.bindAddresses(bindFamily)
+	if err != nil {
+		return err
 	}
 
 	m.mu.Lock()
@@ -354,7 +387,7 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 	exists := false
 	for _, e := range m.mappings[vmId] {
 		if e.Protocol == protocol && e.HostPort == hostPort {
-			if e.GuestPort == guestPort && e.Description == description {
+			if e.GuestPort == guestPort && e.Description == description && e.BindFamily == bindFamily {
 				return nil
 			}
 			m.removeEntryLocked(vmId, protocol, hostPort, true)
@@ -370,15 +403,6 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 		}
 	}
 
-	ip, err := m.mgr.GetVMLocalIP(ctx, vmId)
-	if err != nil {
-		return err
-	}
-	if ip == "" {
-		return fmt.Errorf("VM %s has no IP address (is it running?)", vmId)
-	}
-	targetAddr := formatTargetAddress(ip, guestPort)
-
 	runCtx, cancel := context.WithCancel(context.Background())
 	entry := &Entry{
 		VMID:          vmId,
@@ -387,30 +411,39 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 		GuestPort:     guestPort,
 		TargetAddr:    targetAddr,
 		Description:   description,
+		BindFamily:    bindFamily,
 		cancel:        cancel,
 		connIPs:       make(map[string]int64),
 		connActiveIPs: make(map[string]int64),
 	}
 
-	// 对外 IPv4 非空时只在该地址上监听；为空则保持旧行为（所有本地地址）。
-	bindIP := m.cfg.Get().EgressIPv4()
-
-	if protocol == "tcp" {
-		ln, err := net.Listen("tcp", listenAddress(bindIP, hostPort))
-		if err != nil {
-			cancel()
-			return err
+	// 每个启用的地址族各监听一份；任一失败则回滚已建的监听，避免半开状态。
+	started := false
+	for _, bindIP := range bindIPs {
+		if protocol == "tcp" {
+			ln, err := net.Listen("tcp", listenAddress(bindIP, hostPort))
+			if err != nil {
+				cancel()
+				closeAll(entry.lns)
+				return err
+			}
+			entry.lns = append(entry.lns, ln)
+			go m.runTCP(runCtx, ln, targetAddr, entry)
+		} else {
+			pc, err := net.ListenPacket("udp", listenAddress(bindIP, hostPort))
+			if err != nil {
+				cancel()
+				closeAll(entry.lns)
+				return err
+			}
+			entry.lns = append(entry.lns, pc)
+			go m.runUDP(runCtx, pc, targetAddr, entry)
 		}
-		entry.ln = ln
-		go m.runTCP(runCtx, ln, targetAddr, entry)
-	} else {
-		pc, err := net.ListenPacket("udp", listenAddress(bindIP, hostPort))
-		if err != nil {
-			cancel()
-			return err
-		}
-		entry.ln = pc
-		go m.runUDP(runCtx, pc, targetAddr, entry)
+		started = true
+	}
+	if !started {
+		cancel()
+		return fmt.Errorf("no bind address for family %d", bindFamily)
 	}
 
 	m.mappings[vmId] = append(m.mappings[vmId], entry)
@@ -420,8 +453,38 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 		VMID:        vmId,
 		GuestPort:   guestPort,
 		Description: description,
+		BindFamily:  bindFamily,
 	})
 	return nil
+}
+
+// bindAddresses 返回该地址族对应的监听地址列表。
+// v4 沿用旧行为：对外 IPv4 为空时监听所有本地地址（":port"）。
+// 双栈时 v4 必须显式绑 0.0.0.0，否则 ":port" 会同时占用 v6 端口。
+func (m *Manager) bindAddresses(bindFamily int) ([]string, error) {
+	conf := m.cfg.Get()
+	var out []string
+	if bindFamily == BindV4 || bindFamily == BindBoth {
+		ip := conf.EgressIPv4()
+		if ip == "" && bindFamily == BindBoth {
+			ip = "0.0.0.0"
+		}
+		out = append(out, ip)
+	}
+	if bindFamily == BindV6 || bindFamily == BindBoth {
+		ip := conf.EgressIPv6()
+		if ip == "" {
+			return nil, fmt.Errorf("shared IPv6 address is not configured")
+		}
+		out = append(out, ip)
+	}
+	return out, nil
+}
+
+func closeAll(closers []io.Closer) {
+	for _, c := range closers {
+		_ = c.Close()
+	}
 }
 
 func formatTargetAddress(ip string, port int) string {
@@ -436,9 +499,7 @@ func (m *Manager) removeEntryLocked(vmId, protocol string, hostPort int, deleteD
 	for i, e := range entries {
 		if e.Protocol == protocol && e.HostPort == hostPort {
 			e.cancel()
-			if e.ln != nil {
-				_ = e.ln.Close()
-			}
+			closeAll(e.lns)
 			m.mappings[vmId] = append(entries[:i], entries[i+1:]...)
 			if deleteDB {
 				_ = m.db.DeletePortForward(protocol, hostPort)
@@ -478,7 +539,7 @@ func (m *Manager) SyncForVM(ctx context.Context, vmId string, desired []DesiredR
 
 	// 添加或更新期望的规则
 	for _, d := range desired {
-		_ = m.AddMapping(ctx, vmId, d.Protocol, d.HostPort, d.GuestPort, d.Description)
+		_ = m.AddMapping(ctx, vmId, d.Protocol, d.HostPort, d.GuestPort, d.Description, d.BindFamily)
 	}
 
 	return nil
@@ -541,6 +602,7 @@ func (m *Manager) GetReport() []Entry {
 				GuestPort:   e.GuestPort,
 				TargetAddr:  e.TargetAddr,
 				Description: e.Description,
+				BindFamily:  e.BindFamily,
 				ActiveConns: atomic.LoadInt64(&e.connActive),
 				TotalConns:  atomic.LoadInt64(&e.connTotal),
 				TopIPs:      e.getTopIPs(),

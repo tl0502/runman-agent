@@ -601,8 +601,8 @@ func (a *Agent) watchPlatformAddr(ctx context.Context, cancel context.CancelFunc
 	}
 }
 
-// watchPublicIP 轮询配置里的对外 IPv4。变化时先改出口 SNAT，再重建所有端口监听。
-// 应用失败时不更新基线，下一轮自动重试。
+// watchPublicIP 轮询配置里的对外地址（IPv4 / 共享 IPv6）。变化时先改出口 SNAT，
+// 再重建所有端口监听。应用失败时不更新基线，下一轮自动重试。
 func (a *Agent) watchPublicIP(ctx context.Context) {
 	if a.egress == nil || a.pf == nil {
 		return
@@ -611,7 +611,11 @@ func (a *Agent) watchPublicIP(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	applied := a.cfg.Get().EgressIPv4()
+	baseline := func() string {
+		c := a.cfg.Get()
+		return c.EgressIPv4() + "|" + c.EgressIPv6() + "|" + c.IPv6Mode
+	}
+	applied := baseline()
 	appliedOK := true
 
 	for {
@@ -621,12 +625,12 @@ func (a *Agent) watchPublicIP(ctx context.Context) {
 		case <-ticker.C:
 		}
 
-		current := a.cfg.Get().EgressIPv4()
+		current := baseline()
 		if appliedOK && current == applied {
 			continue
 		}
 
-		log.Printf("[Agent] public IPv4 changed: %q -> %q", applied, current)
+		log.Printf("[Agent] public address changed: %q -> %q", applied, current)
 		if err := a.egress.Apply(ctx); err != nil {
 			log.Printf("[Egress] apply on change failed (will retry): %v", err)
 			appliedOK = false
@@ -812,7 +816,9 @@ func (a *Agent) sendHeartbeat(stream agent.AgentGateway_ConnectClient) {
 	// 上架且就绪的镜像清单（内置 + 自定义统一，随心跳上报，平台 os_images 自动跟随）
 	images = manager.BuildImageList(a.db, images)
 
-	// 流量数据由 TrafficService 后台定期写入 DB，这里只读取累计值填充心跳
+	// 流量数据由 TrafficService 后台定期写入 DB，这里只读取累计值填充心跳。
+	// 上报地址同时过滤：共享 IPv6 下容器的 ULA 公网不可路由，不能让平台误以为可用；
+	// 巡查等内部逻辑走 ListVMs，拿到的仍是完整地址。
 	for _, vm := range vms {
 		if t, err := a.db.GetTraffic(vm.VmId); err == nil {
 			vm.TrafficInBytes = t.TotalIn
@@ -820,6 +826,7 @@ func (a *Agent) sendHeartbeat(stream agent.AgentGateway_ConnectClient) {
 			vm.MonthlyTrafficIn = t.MonthIn
 			vm.MonthlyTrafficOut = t.MonthOut
 		}
+		vm.Ips = podman.FilterReportableIPs(vm.Ips)
 	}
 	hb.Vms = vms
 	hb.OsImages = images
@@ -913,7 +920,12 @@ func (a *Agent) handleCommand(stream agent.AgentGateway_ConnectClient, env *agen
 		if p.SetPortFwd.Protocol == agent.Protocol_PROTOCOL_UDP {
 			proto = "udp"
 		}
-		err = a.pf.AddMapping(ctx, p.SetPortFwd.VmId, proto, int(p.SetPortFwd.HostPort), int(p.SetPortFwd.GuestPort), p.SetPortFwd.Description)
+		// 旧平台不传 bind_family（0）或传非法值时按 IPv4 处理，保持原有行为。
+		bindFamily := int(p.SetPortFwd.BindFamily)
+		if !portforward.ValidBindFamily(bindFamily) {
+			bindFamily = portforward.BindV4
+		}
+		err = a.pf.AddMapping(ctx, p.SetPortFwd.VmId, proto, int(p.SetPortFwd.HostPort), int(p.SetPortFwd.GuestPort), p.SetPortFwd.Description, bindFamily)
 
 	case *agent.PlatformEnvelope_DelPortFwd:
 		proto := "tcp"
@@ -938,6 +950,7 @@ func (a *Agent) handleCommand(stream agent.AgentGateway_ConnectClient, env *agen
 					HostPort:    int32(pf.HostPort),
 					GuestPort:   int32(pf.GuestPort),
 					Description: pf.Description,
+					BindFamily:  int32(pf.BindFamily),
 				})
 			}
 			_ = a.safeSend(stream, &agent.AgentEnvelope{
@@ -1180,6 +1193,14 @@ func (a *Agent) DetectedIPv4() string {
 	return a.entryIPv4
 }
 
+// DetectedIPv6 返回自动探测到的公网 IPv6（未探测到则为空）。
+// 共享 IPv6 配置页用它作为「检测值」展示。
+func (a *Agent) DetectedIPv6() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.entryIPv6
+}
+
 // fetchPublicIPv4 通过 api-ipv4.ip.sb 获取本机公网 IPv4 地址。
 func fetchPublicIPv4() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1267,7 +1288,7 @@ func addDefaultSSHForward(ctx context.Context, pf *portforward.Manager, vmID str
 			lastErr = err
 			break
 		}
-		if err := pf.AddMapping(ctx, vmID, "tcp", port, 22, "ssh"); err != nil {
+		if err := pf.AddMapping(ctx, vmID, "tcp", port, 22, "ssh", portforward.BindV4); err != nil {
 			lastErr = err
 			continue
 		}
