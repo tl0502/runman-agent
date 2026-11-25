@@ -400,6 +400,10 @@ function renderVMs() {
         <span class="dim" style="margin:0 4px">/</span>
         <span class="dim">↓</span> ${fmtBps(vm.net_in_bps)}
       </td>
+      <td class="mono-cell">
+        <div style="font-size:12px">↓ ${vm.conn_in || 0} <span class="dim" style="font-size:10px">单 ${vm.conn_in_uni || 0}</span></div>
+        <div style="font-size:12px">↑ ${vm.conn_out || 0} <span class="dim" style="font-size:10px">单 ${vm.conn_out_uni || 0}</span></div>
+      </td>
       <td class="num-cell">
         <div class="sub" style="font-size:12px">${fmtBytes(monthTotal)}</div>
         <div class="sub" style="font-size:10px">↓ ${fmtBytes(vm.monthly_traffic_in)} · ↑ ${fmtBytes(vm.monthly_traffic_out)}</div>

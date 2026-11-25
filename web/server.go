@@ -89,6 +89,12 @@ type Server struct {
 	monitorHst  map[string][]vmListItem
 	monitorMu   sync.RWMutex
 	shareIPv6Mu sync.Mutex // serialize network shape, config commit, and application
+
+	// 实例活跃连接快照（conntrack 全表解析 + 短 TTL 缓存）。
+	// 面板实例列表每几秒轮询一次，而 conntrack 可能有几万行，不能每次请求都读。
+	connMu      sync.Mutex
+	connCache   map[string]patrol.ActiveConns
+	connCacheAt time.Time
 }
 
 // NewServer 接收两个 manager：
@@ -2205,13 +2211,52 @@ type vmListItem struct {
 	MonthlyTrafficOut int64    `json:"monthly_traffic_out"`
 	Ips               []string `json:"ips"`
 	CreatedAt         int64    `json:"created_at"`
+	// 活跃连接数（按方向 × 单向/双向），由 conntrack 解析得出。
+	// In/Out 是已建立的双向连接；*Uni 是只见到一个方向的（TCP 握手中、UDP 未应答）。
+	ConnIn     int `json:"conn_in"`
+	ConnInUni  int `json:"conn_in_uni"`
+	ConnOut    int `json:"conn_out"`
+	ConnOutUni int `json:"conn_out_uni"`
 	// Missing 表示 DB 里有记录但容器已不存在（例如在面板外被 podman rm 掉）。
 	// 这类记录必须显示出来，否则用户既看不到也清不掉。
 	Missing bool `json:"missing,omitempty"`
 }
 
+// connCacheTTL 是实例连接快照的复用窗口。面板轮询间隔通常 3-5 秒，
+// 取 3 秒既能让同一轮的多处调用共用一次解析，又不会明显滞后。
+const connCacheTTL = 3 * time.Second
+
+// vmActiveConns 返回每个实例 IP 的活跃连接画像（入/出 × 单向/双向）。
+//
+// 读不到 conntrack（内核未加载 nf_conntrack、容器网络未起来）时返回上一次的
+// 结果而不是清零：连接数突然全变 0 比略微过期更容易被误读成故障。
+func (s *Server) vmActiveConns(vms []*agent.VMSummary) map[string]patrol.ActiveConns {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.connCache != nil && time.Since(s.connCacheAt) < connCacheTTL {
+		return s.connCache
+	}
+	var ips []string
+	for _, vm := range vms {
+		ips = append(ips, vm.Ips...)
+	}
+	res, err := patrol.SnapshotActiveConns(ips)
+	if err != nil {
+		if s.connCache == nil {
+			s.connCache = map[string]patrol.ActiveConns{}
+		}
+		s.connCacheAt = time.Now()
+		return s.connCache
+	}
+	s.connCache = res
+	s.connCacheAt = time.Now()
+	return res
+}
+
 func (s *Server) handleListVMs(w http.ResponseWriter, r *http.Request) {
 	vms, _ := s.mgr.ListVMs(r.Context())
+	// 一次解析服务所有实例；按 IP 汇总（v4 + v6 都算同一台实例）
+	conns := s.vmActiveConns(vms)
 
 	s.vmSnapshotMu.Lock()
 	defer s.vmSnapshotMu.Unlock()
@@ -2229,6 +2274,14 @@ func (s *Server) handleListVMs(w http.ResponseWriter, r *http.Request) {
 			RamUsedMb: vm.RamUsedMb,
 			Ips:       vm.Ips,
 			CreatedAt: s.vmCreatedAtUnix(vm.VmId),
+		}
+		for _, ip := range vm.Ips {
+			if c, ok := conns[ip]; ok {
+				item.ConnIn += c.InBidi
+				item.ConnInUni += c.InUni
+				item.ConnOut += c.OutBidi
+				item.ConnOutUni += c.OutUni
+			}
 		}
 
 		// 从 DB 读取累计流量和月度流量
@@ -2480,9 +2533,23 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
 		Password string `json:"password"`
+		// RootPassword 是创建/重装用的字段名，这里一并接受：
+		// 直连 API 的调用方很容易按创建请求的样子写 root_password，
+		// 只认 password 会静默变成空密码（chpasswd 报 "No password has been supplied."）。
+		RootPassword string `json:"root_password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, err, 400)
+		return
+	}
+	password := req.Password
+	if password == "" {
+		password = req.RootPassword
+	}
+	// 空密码必须在进驱动前拦下：chpasswd 会拿 "root:" 去改，报一句
+	// "No password has been supplied." 并以 500 返回，看不出是自己传漏了字段。
+	if strings.TrimSpace(password) == "" {
+		jsonErr(w, fmt.Errorf("password 不能为空"), http.StatusBadRequest)
 		return
 	}
 	v, err := s.db.GetVMConfig(id)
@@ -2492,7 +2559,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	if err := s.mgr.ResetPassword(ctx, id, req.Password); err != nil {
+	if err := s.mgr.ResetPassword(ctx, id, password); err != nil {
 		jsonErr(w, err, vmErrStatus(err))
 		return
 	}

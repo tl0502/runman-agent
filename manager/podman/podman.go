@@ -31,6 +31,7 @@ import (
 	"github.com/containers/podman/v5/pkg/bindings"
 	"github.com/containers/podman/v5/pkg/bindings/containers"
 	"github.com/containers/podman/v5/pkg/bindings/images"
+	"github.com/containers/podman/v5/pkg/bindings/system"
 	entTypes "github.com/containers/podman/v5/pkg/domain/entities/types"
 	"github.com/containers/podman/v5/pkg/specgen"
 	"github.com/containers/podman/v5/pkg/util"
@@ -229,6 +230,38 @@ func (m *Manager) createWithRetry(spec *specgen.SpecGenerator) (entTypes.Contain
 	return res, err
 }
 
+// checkDiskPlan 校验磁盘规格是否落在宿主容量之内。
+//
+// overlay 的 storage-opt size 在 xfs+prjquota 上是真配额，但配额只是上限：
+// 传 1000000G 也能建出来（实测），真正写满时先撑爆的是宿主盘。超出宿主容量的
+// 规格一定是调度或面板传错了，直接拒绝并说清原因；超过当前可用空间只告警——
+// 配额是上限不是预占，薄分配本身是合理的。
+func (m *Manager) checkDiskPlan(diskGB int64) error {
+	if diskGB <= 0 {
+		return nil
+	}
+	info, err := system.Info(m.timeoutCtx(), nil)
+	if err != nil || info == nil || info.Store == nil || info.Store.GraphRoot == "" {
+		log.Printf("[Podman] disk plan check skipped: read graph root failed: %v", err)
+		return nil
+	}
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(info.Store.GraphRoot, &st); err != nil {
+		log.Printf("[Podman] disk plan check skipped: statfs %s: %v", info.Store.GraphRoot, err)
+		return nil
+	}
+	totalGB := int64(st.Blocks) * int64(st.Bsize) / (1 << 30)
+	freeGB := int64(st.Bavail) * int64(st.Bsize) / (1 << 30)
+	if diskGB > totalGB {
+		return fmt.Errorf("磁盘规格 %dG 超出宿主机容量 %dG（存储目录 %s）", diskGB, totalGB, info.Store.GraphRoot)
+	}
+	if diskGB > freeGB {
+		log.Printf("[Podman] disk plan %dG exceeds free space %dG on %s (quota is a ceiling, not a reservation)",
+			diskGB, freeGB, info.Store.GraphRoot)
+	}
+	return nil
+}
+
 func (m *Manager) CreateVM(ctx context.Context, req *agent.CmdCreateVM) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -252,6 +285,9 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 	}
 	if req.DiskGb < 1 {
 		req.DiskGb = 1
+	}
+	if err := m.checkDiskPlan(req.DiskGb); err != nil {
+		return err
 	}
 
 	// 安全/隔离配置快照（cap、pids、no-new-privs）
@@ -458,6 +494,9 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 	bizConf.DiskGB = req.DiskGb
 	bizConf.BandwidthMbps = int(req.BandwidthMbps)
 	bizConf.Image = req.OsImage
+	// 创建/重装都是「跑起来了」：stop 现在会把 status 写成 stopped，
+	// 重装若不同步回 running，DB 就会停在 stopped，与面板显示不一致。
+	bizConf.Status = "running"
 	_ = m.db.SaveVMConfig(bizConf)
 
 	// Podman 驱动特定配置
@@ -619,7 +658,11 @@ func wrapNotFound(err error) error {
 func (m *Manager) StartVM(_ context.Context, vmID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return wrapNotFound(m.startVM(vmID))
+	if err := wrapNotFound(m.startVM(vmID)); err != nil {
+		return err
+	}
+	m.setVMStatus(vmID, "running")
+	return nil
 }
 
 func (m *Manager) startVM(vmID string) error {
@@ -629,20 +672,55 @@ func (m *Manager) startVM(vmID string) error {
 func (m *Manager) StopVM(_ context.Context, vmID string, force bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return wrapNotFound(m.stopVM(vmID, force))
+	if err := wrapNotFound(m.stopVM(vmID, force)); err != nil {
+		return err
+	}
+	m.setVMStatus(vmID, "stopped")
+	return nil
 }
+
+// stopGraceSec 是优雅停机的等待上限。
+//
+// 我们的镜像 PID1 多为 sshd/init，普遍不处理 SIGTERM，podman 默认要等满 10 秒
+// 才 SIGKILL——平台点「停止」得干等 10 秒，巡查升级停机同样。5 秒足够常规服务
+// 收尾，也不会把每次停机都拖成 10 秒。
+const stopGraceSec = 5
 
 func (m *Manager) stopVM(vmID string, force bool) error {
 	if force {
 		return containers.Kill(m.timeoutCtx(), vmID, &containers.KillOptions{Signal: ptr("SIGKILL")})
 	}
-	return containers.Stop(m.timeoutCtx(), vmID, nil)
+	timeout := uint(stopGraceSec)
+	return containers.Stop(m.timeoutCtx(), vmID, &containers.StopOptions{Timeout: &timeout})
+}
+
+// setVMStatus 把生命周期结果写回 DB。
+//
+// 之前只有创建/重装写 running，stop 之后 DB 一直留着 running。面板与平台读的是
+// 驱动状态所以显示没错，但任何按 DB 判断的地方都会被误导（排查孤儿实例时踩过）。
+// 失败只记日志：状态同步不该让一次成功的停机变成接口报错。
+func (m *Manager) setVMStatus(vmID, status string) {
+	if m.db == nil {
+		return
+	}
+	conf, err := m.db.GetVMConfig(vmID)
+	if err != nil || conf == nil || conf.Status == status {
+		return
+	}
+	conf.Status = status
+	if err := m.db.SaveVMConfig(conf); err != nil {
+		log.Printf("[Podman] save status %s for %s failed: %v", status, vmID, err)
+	}
 }
 
 func (m *Manager) RestartVM(_ context.Context, vmID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return wrapNotFound(containers.Restart(m.timeoutCtx(), vmID, nil))
+	if err := wrapNotFound(containers.Restart(m.timeoutCtx(), vmID, nil)); err != nil {
+		return err
+	}
+	m.setVMStatus(vmID, "running")
+	return nil
 }
 
 func (m *Manager) DeleteVM(ctx context.Context, vmID string) error {

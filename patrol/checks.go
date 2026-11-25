@@ -22,6 +22,10 @@ import (
 // 分配无用结构。
 type ipConnStats struct {
 	in, out int // 活跃连接：TCP ESTABLISHED / UDP ASSURED（与旧口径一致）
+	// inUni/outUni 是「只见到一个方向」的连接：TCP 握手中（SYN_SENT/SYN_RECV）、
+	// UDP 未应答（[UNREPLIED]）。面板上用它区分「双向已建立」与「单向尝试」，
+	// 例如 SYN 洪水会表现为单向数暴涨而双向数很小。
+	inUni, outUni int
 	// udpIn/udpOut 是 UDP 条目数（含 UNREPLIED，分方向）。单向海量 UDP 是
 	// 发包攻击的硬特征——现有活跃口径（ASSURED）对单向洪水不可见。
 	udpIn, udpOut int
@@ -79,6 +83,9 @@ func countConnections(data string, watch map[string]bool, scanCap int, smtpPorts
 		if isActiveConn(line, proto) {
 			c.out++
 			d.in++
+		} else if isUniConn(line, proto) {
+			c.outUni++
+			d.inUni++
 		}
 		if proto == "udp" {
 			c.udpOut++
@@ -116,6 +123,20 @@ func isActiveConn(line, proto string) bool {
 		return strings.Contains(line, "ESTABLISHED")
 	case "udp":
 		return strings.Contains(line, "[ASSURED]")
+	}
+	return false
+}
+
+// isUniConn 判断一条 conntrack 记录是否为「只有一个方向的连接」。
+// TCP 只认握手中（SYN_SENT 主动外连未应答 / SYN_RECV 被动接入未完成）；
+// UDP 认 [UNREPLIED]（只见到发送方向）。TIME_WAIT/CLOSE 这类收尾状态两边
+// 都见过，不归入单向。
+func isUniConn(line, proto string) bool {
+	switch proto {
+	case "tcp":
+		return strings.Contains(line, "SYN_SENT") || strings.Contains(line, "SYN_RECV")
+	case "udp":
+		return strings.Contains(line, "[UNREPLIED]")
 	}
 	return false
 }

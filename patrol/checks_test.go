@@ -529,3 +529,35 @@ ipv6     10 tcp      6 431996 ESTABLISHED src=fd91:cafe:cafe:0010:0000:0000:0000
 		t.Fatalf("聚合 in=%d want 0", agg.in)
 	}
 }
+
+// 单向/双向要分得开：SYN_SENT（主动外连未应答）、SYN_RECV（被动接入未完成）、
+// UDP [UNREPLIED] 计入单向，ESTABLISHED 计入双向。口径按 conntrack 原始方向：
+// VM 是 src = 出，VM 是 dst = 入。面板「活跃连接」列直接读这四个数。
+func TestCountConnectionsUniVsBidi(t *testing.T) {
+	data := `ipv4     2 tcp      6 60 SYN_SENT src=10.91.0.7 dst=198.51.100.9 sport=45001 dport=443 [UNREPLIED] mark=0 use=1
+ipv4     2 tcp      6 60 SYN_RECV src=198.51.100.10 dst=10.91.0.7 sport=50000 dport=22222 [UNREPLIED] mark=0 use=1
+ipv4     2 udp     17 30 src=10.91.0.7 dst=198.51.100.11 sport=5353 dport=53 [UNREPLIED] mark=0 use=1
+ipv4     2 tcp      6 431999 ESTABLISHED src=10.91.0.7 dst=198.51.100.12 sport=45002 dport=80 src=198.51.100.12 dst=10.91.0.7 sport=80 dport=45002 [ASSURED] mark=0 use=1
+ipv4     2 tcp      6 431999 ESTABLISHED src=198.51.100.13 dst=10.91.0.7 sport=51000 dport=22 src=10.91.0.7 dst=198.51.100.13 sport=22 dport=51000 [ASSURED] mark=0 use=1
+`
+	m := countConnections(data, nil, 0, nil)
+	c := m["10.91.0.7"]
+	if c.out != 1 || c.outUni != 2 {
+		t.Fatalf("出向 = 双向%d 单向%d, want 双向1 单向2（ESTABLISHED + SYN_SENT + UDP未应答）", c.out, c.outUni)
+	}
+	if c.in != 1 || c.inUni != 1 {
+		t.Fatalf("入向 = 双向%d 单向%d, want 双向1 单向1（外部连入已建立 + SYN_RECV）", c.in, c.inUni)
+	}
+	// 单向计数不能污染活跃口径：连接类巡查仍按 in/out 判定
+	if m["198.51.100.10"].in != 0 {
+		t.Fatalf("对端不应被算作已建立入向: %+v", m["198.51.100.10"])
+	}
+}
+
+func TestSnapshotActiveConnsEmptyWatch(t *testing.T) {
+	// 空集合不该去读 /proc（容器网络没起来时列表页仍要能出数）
+	got, err := SnapshotActiveConns(nil)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("SnapshotActiveConns(nil) = %v, %v", got, err)
+	}
+}

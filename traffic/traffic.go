@@ -108,7 +108,7 @@ func (s *Service) syncOnce(ctx context.Context) {
 		// rental 拿不到创建时间锚点时回落 monthly 周期，避免误用零值。
 		cycle, cycleStart := monthlyKey, monthlyStart
 		if mode == "rental" {
-			if created, err := s.mgr.GetVMCreatedAt(ctx, vm.VmId); err == nil && !created.IsZero() {
+			if created := s.cycleAnchor(ctx, vm.VmId); !created.IsZero() {
 				cycle, cycleStart = rentalCycleFrom(created, now)
 			}
 		}
@@ -181,6 +181,36 @@ func (s *Service) syncOnce(ctx context.Context) {
 			log.Printf("failed to save traffic for VM %s: %v", vm.VmId, err)
 		}
 	}
+}
+
+// cycleAnchor 返回 rental 周期的锚点（实例首次创建时间）。
+//
+// 必须优先用 DB 里的 vm_configs.created_at：重装是「删旧建新」，容器自身的
+// Created 每次都会变成重装那一刻，拿它当锚点会让周期键跳到今天、且新起点
+// 晚于 lastSync，被 shouldResetCycle 判定为「自然进入新周期」——于是每次重装
+// 都把本月流量清零（实测：11-01 起算的实例，当日重装后 month_in/out 归零，
+// 客户白拿一份配额）。DB 锚点由 CreateVM 写入且重装不会覆盖，正是为此保留的。
+//
+// DB 记录缺失，或早期版本创建的实例 CreatedAt 为零时，回落驱动时间，并把
+// 它回填进 DB：只锚定一次，之后重装不再影响周期。回填失败不影响本轮统计。
+func (s *Service) cycleAnchor(ctx context.Context, vmID string) time.Time {
+	conf, err := s.db.GetVMConfig(vmID)
+	if err == nil && conf != nil && !conf.CreatedAt.IsZero() {
+		return conf.CreatedAt
+	}
+	created, err := s.mgr.GetVMCreatedAt(ctx, vmID)
+	if err != nil || created.IsZero() {
+		return time.Time{}
+	}
+	if conf != nil {
+		conf.CreatedAt = created
+		if err := s.db.SaveVMConfig(conf); err != nil {
+			log.Printf("traffic: backfill created_at for VM %s failed: %v", vmID, err)
+		} else {
+			log.Printf("traffic: backfilled created_at for VM %s = %s", vmID, created.Format(time.RFC3339))
+		}
+	}
+	return created
 }
 
 // monthlyCycle 计算「每月 resetDay」的周期，返回周期键与周期起点。
