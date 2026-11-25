@@ -266,17 +266,10 @@ func main() {
 	go upd.Start(context.Background())
 
 	// 全局通知器：Agent 侧统一推送出口（当前通道 Telegram），巡查与登录安全事件共用。
-	// 身份回调与心跳 entry_host 同口径（host > public_ipv4 > 自动探测）：
+	// 身份回调与心跳 entry_host 同口径（config.EntryHost）：
 	// 多面板共用同一个 Bot Token/Chat ID 时，消息首行靠它区分来自哪台机器。
 	ntf := notify.New(cfg, func() string {
-		c := cfg.Get()
-		if c.Host != "" {
-			return c.Host
-		}
-		if c.PublicIPv4 != "" {
-			return c.PublicIPv4
-		}
-		return a.DetectedIPv4()
+		return cfg.Get().EntryHost(a.DetectedIPv4())
 	})
 
 	// 自动巡查：仅 Podman 后端生效（带宽 tc / 活跃连接 / 进程黑名单都依赖 podman 能力）。
@@ -810,20 +803,11 @@ func (a *Agent) sendHeartbeat(stream agent.AgentGateway_ConnectClient) {
 	virtType := a.config.VirtType
 	hb.VirtType = virtType
 	// 每次心跳读取最新配置，确保面板修改立即生效。
-	// entry_host 优先级：host（手动入口，支持 DDNS 域名）> public_ipv4（弹性 IP，对外入口地址）
-	// > 自动探测的公网 IPv4。弹性 IP 场景下平台展示的入口地址应与对外 IPv4 一致，
-	// 而不是 NAT 出口探测结果。
+	// entry_host 口径见 config.EntryHost：host（手动入口，支持 DDNS 域名）> 公网性质的
+	// public_ipv4 > 自动探测的公网 IPv4。云厂商 1:1 NAT 机器上 public_ipv4 是内网网卡
+	// 地址（只能用于监听），不能当入口地址上报，否则平台展示的会是 172.16/10.x。
 	live := a.cfg.Get()
-	liveHost := live.Host
-	livePublic := live.PublicIPv4
-	switch {
-	case liveHost != "":
-		hb.EntryHost = liveHost
-	case livePublic != "":
-		hb.EntryHost = livePublic
-	default:
-		hb.EntryHost = a.entryIPv4
-	}
+	hb.EntryHost = live.EntryHost(a.entryIPv4)
 	hb.EntryIpv6 = a.entryIPv6
 	if virtType == "podman" && live.SharedIPv6Enabled() {
 		hb.EntryIpv6 = live.EgressIPv6()

@@ -1545,6 +1545,10 @@ type configResponse struct {
 	// 前端「入口地址」在 host / public_ipv4 都为空时用它，避免回落到浏览器
 	// 地址栏（SSH 隧道访问时会显示成 127.0.0.1）。
 	DetectedIPv4 string `json:"detected_ipv4"`
+	// EntryAddr 是最终生效的入口地址（host > 公网性质的 public_ipv4 > 自动探测），
+	// 与心跳 entry_host 同口径。前端直接展示它，避免把 1:1 NAT 机器上的内网
+	// 监听地址当成用户可访问的入口。
+	EntryAddr string `json:"entry_addr"`
 
 	// 共享 IPv6（仅 snat 模式有意义）：PublicIPv6 是可配置的对外地址，
 	// IPv6Addr 是安装脚本探测写入的地址（只读），SharedIPv6 是最终生效值
@@ -1804,6 +1808,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		NetavarkBase:     conf.NetavarkBase,
 		PublicIPv4:       conf.PublicIPv4,
 		DetectedIPv4:     s.detectedIPv4(),
+		EntryAddr:        conf.EntryHost(s.detectedIPv4()),
 		PublicIPv6:       conf.PublicIPv6,
 		IPv6Mode:         conf.IPv6Mode,
 		IPv6Addr:         conf.IPv6Addr,

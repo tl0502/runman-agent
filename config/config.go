@@ -720,6 +720,42 @@ func (c Config) EgressIPv4() string {
 	return strings.TrimSpace(c.PublicIPv4)
 }
 
+// IsPrivateIPv4 判断一个 IPv4 字面量是否属于无法直接对外通告的地址段
+// （RFC1918 私网、CGNAT 100.64/10、回环、未指定、链路本地）。
+// 非 IPv4 字面量（含域名、IPv6、空串）一律返回 false，交由调用方按原值处理。
+func IsPrivateIPv4(raw string) bool {
+	ip := net.ParseIP(strings.TrimSpace(raw))
+	if ip == nil || ip.To4() == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsUnspecified() || ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() || cgnatBlock.Contains(ip)
+}
+
+// EntryHost 返回对外的入口地址，供心跳 entry_host、面板展示、通知身份行共用同一口径：
+// host（手动，支持 DDNS）> public_ipv4（仅当它是公网地址）> 自动探测的公网 IPv4。
+//
+// 为什么 public_ipv4 要判公网：云厂商 1:1 NAT（内网网卡 + 弹性公网 IP，如 AWS
+// Lightsail）场景下，这个字段只能填网卡上的内网地址用于端口监听，套在入口地址上
+// 上报会让平台和面板把 172.16/10/192.168 之类地址当成用户可访问地址。
+// detected 为空时保留 public_ipv4 原值：纯内网部署里它就是唯一入口，
+// 宁可上报内网地址，也不要留空让平台无从连接。
+func (c Config) EntryHost(detectedIPv4 string) string {
+	if h := strings.TrimSpace(c.Host); h != "" {
+		return h
+	}
+	pub := strings.TrimSpace(c.PublicIPv4)
+	if pub == "" {
+		return strings.TrimSpace(detectedIPv4)
+	}
+	if IsPrivateIPv4(pub) {
+		if detected := strings.TrimSpace(detectedIPv4); detected != "" {
+			return detected
+		}
+	}
+	return pub
+}
+
 // EgressIPv6 返回共享 IPv6 的对外地址：public_ipv6 优先，回落安装脚本
 // 探测写入的 ipv6_addr。仅在 snat 模式下有意义。
 func (c Config) EgressIPv6() string {

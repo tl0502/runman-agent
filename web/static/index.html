@@ -827,11 +827,11 @@
                 <input class="input mono" id="platformAddr" placeholder="hosting.example.com:443">
               </div>
               <div class="field">
-                <label for="entryHost">入口地址 <span class="hint">留空则用对外 IPv4，再留空自动探测</span></label>
+                <label for="entryHost">入口地址 <span class="hint">留空则用公网 IPv4，再留空自动探测</span></label>
                 <input class="input mono" id="entryHost" placeholder="myhost.ddns.net">
               </div>
               <div class="field">
-                <label for="publicIpv4">对外 IPv4 <span class="hint">端口监听与出站；入口地址留空时作为入口上报</span></label>
+                <label for="publicIpv4">对外 IPv4 <span class="hint">端口监听与出站；内网地址仅用于监听，不作为入口上报</span></label>
                 <select class="input" id="publicIpv4">
                   <option value="">未指定（默认）</option>
                 </select>

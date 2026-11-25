@@ -278,10 +278,10 @@ function renderHostKv() {
     ['端口转发上限', `${c.max_port_forward || 20} 条 / VM`],
   ];
   $('hostKv').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
-  // 入口地址展示与心跳上报同优先级：host > public_ipv4 > 后端自动探测。
-  // 没有 detected_ipv4 时只能回落到浏览器地址栏，走 SSH 隧道会显示 127.0.0.1。
+  // 入口地址由后端统一算好（entry_addr）：host > 公网性质的 public_ipv4 > 自动探测。
+  // 不再直接拼 public_ipv4——1:1 NAT 机器上它是内网监听地址，不能当入口展示。
   // location.host 仅作最后兜底（复制按钮不能拿到「自动探测」这种无效文本）。
-  const entryAddr = c.host || c.public_ipv4 || c.detected_ipv4 || location.host;
+  const entryAddr = c.entry_addr || c.host || c.detected_ipv4 || location.host;
   $('ovHostAddr').textContent = entryAddr;
   $('ovHost').textContent = entryAddr;
   $('ovOs').textContent = d.os || '—';
