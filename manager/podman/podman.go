@@ -205,8 +205,20 @@ func userNamespaceIDMapping(cfg config.Config) *stypes.IDMappingOptions {
 // createWithRetry 创建容器；若名字被残留容器占用（包括仅存在于 storage 层、
 // libpod DB 不认识的 "external" 容器，重装/创建中途失败后可能残留），
 // 强制清理同名容器后重试一次。
+//
+// userns ID 池耗尽也在这里自愈：扩池（写 /etc/subuid）不会自动生效到常驻的
+// podman API 服务，它把可用 subid 范围缓存在内存里，必须重启才重读。症状就是
+// 命令行 `podman run --userns=auto` 能成功、走 socket 的 agent 却一直失败。
 func (m *Manager) createWithRetry(spec *specgen.SpecGenerator) (entTypes.ContainerCreateResponse, error) {
 	res, err := containers.CreateWithSpec(m.timeoutCtx(), spec, nil)
+	if isUsernsPoolExhausted(err) {
+		log.Printf("[Podman] create %s: userns id pool exhausted in podman service, restarting it to reload subuid: %v", spec.Name, err)
+		if rerr := restartPodmanAPI(30 * time.Second); rerr != nil {
+			log.Printf("[Podman] create %s: podman service refresh failed: %v", spec.Name, rerr)
+		} else {
+			res, err = containers.CreateWithSpec(m.timeoutCtx(), spec, nil)
+		}
+	}
 	if err != nil && (strings.Contains(err.Error(), "already in use") || strings.Contains(err.Error(), "exists") || strings.Contains(err.Error(), "conflict")) {
 		log.Printf("[Podman] create %s: name in use by stale container, force removing and retrying: %v", spec.Name, err)
 		if rmErr := m.deleteByID(spec.Name); rmErr != nil {
@@ -429,9 +441,16 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 		}
 	}
 
-	// 成功后确保保存配置到数据库
-	bizConf, err := m.db.GetVMConfig(req.VmId)
-	if err != nil {
+	// 先设密码、再落库：设密码失败会触发上面的 defer 回滚删容器，若此时 DB 已经
+	// 写入记录，就会留下「记录在、容器没了」的孤儿实例——面板显示 running，
+	// 但 start/restart 永远 404 no such container。
+	if err = m.setRootPassword(res.ID, req.RootPassword); err != nil {
+		return err
+	}
+
+	// 成功后确保保存配置到数据库（落库失败只记日志，容器本身已可用）
+	bizConf, dbErr := m.db.GetVMConfig(req.VmId)
+	if dbErr != nil {
 		bizConf = &db.VMConfig{VMID: req.VmId}
 	}
 	bizConf.CPU = int(req.Cpu)
@@ -442,8 +461,8 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 	_ = m.db.SaveVMConfig(bizConf)
 
 	// Podman 驱动特定配置
-	pConf, err := m.db.GetPodmanConfig(req.VmId)
-	if err != nil {
+	pConf, dbErr := m.db.GetPodmanConfig(req.VmId)
+	if dbErr != nil {
 		pConf = &db.PodmanVMConfig{VMID: req.VmId}
 	}
 	pConf.Container = req.VmId
@@ -455,10 +474,7 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 	pConf.Cpuset = cpuSet
 	_ = m.db.SavePodmanConfig(pConf)
 
-	// 设置 root 密码。必须赋给 err 再返回：上面的 defer 靠 err 判断是否回滚删容器，
-	// 而 err 此前已被「新实例查不到配置」的 record not found 赋过值。
-	err = m.setRootPassword(res.ID, req.RootPassword)
-	return err
+	return nil
 }
 
 // setRootPassword 设置容器 root 密码。
@@ -661,24 +677,24 @@ func (m *Manager) ReinstallVM(ctx context.Context, req *agent.CmdReinstallVM) er
 	// 重装请求可以只带 image+password（面板「换镜像重装」就是这种），
 	// 缺失的规格必须沿用原实例：否则 createVM 会把内存兜底成最小值（64M）、
 	// 带宽为 0 时干脆不装 tbf，用户套餐被静默改小、限速凭空消失。
-	if old, err := m.db.GetVMConfig(req.VmId); err == nil && old != nil {
-		if req.Cpu <= 0 {
-			req.Cpu = int32(old.CPU)
-		}
-		if req.RamMb <= 0 {
-			req.RamMb = old.MemoryMB
-		}
-		if req.DiskGb <= 0 {
-			req.DiskGb = old.DiskGB
-		}
-		if req.BandwidthMbps <= 0 {
-			req.BandwidthMbps = int32(old.BandwidthMbps)
-		}
-		log.Printf("[Podman][Reinstall] %s: using plan cpu=%d ram=%d disk=%d bw=%d",
-			req.VmId, req.Cpu, req.RamMb, req.DiskGb, req.BandwidthMbps)
-	} else if err != nil {
+	oldCfg, err := m.db.GetVMConfig(req.VmId)
+	if err != nil || oldCfg == nil {
 		return fmt.Errorf("%w: %s", manager.ErrVMNotFound, req.VmId)
 	}
+	if req.Cpu <= 0 {
+		req.Cpu = int32(oldCfg.CPU)
+	}
+	if req.RamMb <= 0 {
+		req.RamMb = oldCfg.MemoryMB
+	}
+	if req.DiskGb <= 0 {
+		req.DiskGb = oldCfg.DiskGB
+	}
+	if req.BandwidthMbps <= 0 {
+		req.BandwidthMbps = int32(oldCfg.BandwidthMbps)
+	}
+	log.Printf("[Podman][Reinstall] %s: using plan cpu=%d ram=%d disk=%d bw=%d",
+		req.VmId, req.Cpu, req.RamMb, req.DiskGb, req.BandwidthMbps)
 
 	// 1. 强制停止旧容器
 	// 先拉镜像再动旧实例：镜像不存在或下载失败时旧系统必须原样保留。
@@ -706,7 +722,7 @@ func (m *Manager) ReinstallVM(ctx context.Context, req *agent.CmdReinstallVM) er
 	}
 
 	// 5. 调用 createVM 创建全新的容器实例
-	return m.createVM(ctx, &agent.CmdCreateVM{
+	createErr := m.createVM(ctx, &agent.CmdCreateVM{
 		VmId:          req.VmId,
 		OsImage:       req.OsImage,
 		RootPassword:  req.RootPassword,
@@ -715,6 +731,35 @@ func (m *Manager) ReinstallVM(ctx context.Context, req *agent.CmdReinstallVM) er
 		DiskGb:        req.DiskGb,
 		BandwidthMbps: req.BandwidthMbps,
 	})
+	if createErr == nil {
+		return nil
+	}
+	log.Printf("[Podman][Reinstall] %s: create with new image %s failed: %v", req.VmId, req.OsImage, createErr)
+
+	// 6. 失败回滚：旧容器这时候已经被删掉了，不回滚就会留下一个只剩 DB 记录的
+	// 孤儿实例——面板显示 running，但 start/restart 永远报 no such container。
+	// 数据盘已随旧容器销毁（重装本来就是这样），这里按原镜像与原规格重建，
+	// 至少让实例还能启动、还能再次重装。
+	rollbackImage := oldCfg.Image
+	if rollbackImage == "" {
+		rollbackImage = req.OsImage
+	}
+	rollbackErr := m.createVM(ctx, &agent.CmdCreateVM{
+		VmId:          req.VmId,
+		OsImage:       rollbackImage,
+		RootPassword:  req.RootPassword,
+		Cpu:           int32(oldCfg.CPU),
+		RamMb:         oldCfg.MemoryMB,
+		DiskGb:        oldCfg.DiskGB,
+		BandwidthMbps: int32(oldCfg.BandwidthMbps),
+	})
+	if rollbackErr != nil {
+		log.Printf("[Podman][Reinstall] %s: rollback to %s failed: %v", req.VmId, rollbackImage, rollbackErr)
+		return fmt.Errorf("重装失败（%v），按原镜像 %s 回滚也失败（%v）：实例当前没有容器，需要再次重装",
+			createErr, rollbackImage, rollbackErr)
+	}
+	log.Printf("[Podman][Reinstall] %s: rolled back to previous image %s", req.VmId, rollbackImage)
+	return fmt.Errorf("重装失败（%v）：已按原镜像 %s 回滚，实例仍可正常启动", createErr, rollbackImage)
 }
 
 func (m *Manager) ResetPassword(_ context.Context, vmID, password string) error {
