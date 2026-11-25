@@ -58,6 +58,34 @@ func TestHeartbeatUsesSharedIPv6Entry(t *testing.T) {
 	}
 }
 
+func TestHeartbeatManualEntryIPv6(t *testing.T) {
+	// 面板「入口 IPv6」手填的值只影响上报，不改变共享出口/监听的绑定地址。
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	raw := `{"virt_type":"podman","ipv6_mode":"snat","public_ipv6":"2001:db8:1::10","host_ipv6":"2001:db8:9::77"}`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Init(filepath.Join(dir, "agent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{cfg: cfg, db: database, mgr: reviewHeartbeatVM{}, hostMon: monitor.NewHostMonitor(), config: cfg.Get(), entryIPv6: "2001:db8:1::20",
+		hostHasIPv6: func(string) bool { return true }}
+	s := &reviewHeartbeatStream{}
+	a.sendHeartbeat(s)
+	if s.captured == nil || s.captured.GetHeartbeat() == nil {
+		t.Fatal("heartbeat was not emitted")
+	}
+	if got := s.captured.GetHeartbeat().EntryIpv6; got != "2001:db8:9::77" {
+		t.Errorf("entry_ipv6 = %s, want manual 2001:db8:9::77 (binding stays %s)", got, cfg.Get().EgressIPv6())
+	}
+}
+
 func TestLegacyPortForwardMigration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	d, e := sql.Open("sqlite", path)

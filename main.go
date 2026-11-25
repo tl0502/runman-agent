@@ -827,6 +827,9 @@ func (a *Agent) sendHeartbeat(stream agent.AgentGateway_ConnectClient) {
 			onHost = config.HostHasIPv6
 		}
 		hb.EntryIpv6, _ = live.EntryIPv6(a.entryIPv6, onHost)
+	} else if h := strings.TrimSpace(live.HostIPv6); h != "" {
+		// 非 podman 驱动没有共享 IPv6 的语义，只接受手动指定的入口。
+		hb.EntryIpv6 = h
 	}
 	a.mu.RUnlock()
 

@@ -1501,6 +1501,10 @@ type configRequest struct {
 	// 容器对外 IPv4：端口映射监听该地址，出站 SNAT 也用它。空串表示恢复默认。
 	PublicIPv4 *string `json:"public_ipv4"`
 
+	// 上报给平台的入口 IPv6：纯对外宣称，不参与监听/SNAT，改了零中断。
+	// 空串 = 跟随自动取值（共享 IPv6 出口地址或探测值）；指针用于区分"未提交"。
+	HostIPv6 *string `json:"host_ipv6"`
+
 	// 共享 IPv6 的对外地址（snat 模式）：端口映射监听它、出站 SNAT 也用它。
 	// 空串 = 回落安装脚本探测的 ipv6_addr；指针用于区分"未提交"。
 	PublicIPv6 *string `json:"public_ipv6"`
@@ -1545,6 +1549,11 @@ type configResponse struct {
 	// 前端「入口地址」在 host / public_ipv4 都为空时用它，避免回落到浏览器
 	// 地址栏（SSH 隧道访问时会显示成 127.0.0.1）。
 	DetectedIPv4 string `json:"detected_ipv4"`
+	// HostIPv6 是用户手填的入口 IPv6（空 = 跟随自动取值），用于回填输入框。
+	// 与下面 entry_ipv6（最终生效值）不同，二者都要回传：
+	// 前者是配置，后者是算出来的结果，混用会让「自动」被固化成「手动」。
+	// DetectedIPv6 在下方「共享 IPv6」段声明。
+	HostIPv6 string `json:"host_ipv6"`
 	// EntryAddr 是最终生效的入口地址（host > 公网性质的 public_ipv4 > 自动探测），
 	// 与心跳 entry_host 同口径。前端直接展示它，避免把 1:1 NAT 机器上的内网
 	// 监听地址当成用户可访问的入口。
@@ -1645,6 +1654,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			// Host 允许清空（空字符串 = 恢复自动检测公网 IP），因此无论是否为空都写入。
 			cfg.Host = req.Host
+			// 入口 IPv6 同样是「空 = 跟随自动取值」，纯上报字段，不做网卡校验。
+			if req.HostIPv6 != nil {
+				cfg.HostIPv6 = strings.TrimSpace(*req.HostIPv6)
+			}
 			if req.MaxPortForward > 0 {
 				cfg.MaxPortForward = req.MaxPortForward
 			}
@@ -1799,14 +1812,18 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	conf := s.cfg.Get()
 	_, iconMtime := s.brandIconFile()
-	// 入口 IPv6 与心跳同口径：共享 IPv6 配置地址已不在网卡上时回落探测值。
-	// 只有 podman 后端才有共享 IPv6，其它驱动一律用探测值。
-	entryV6, entryV6Source := s.detectedIPv6(), "auto"
+	// 入口 IPv6 与心跳同口径：手动填写的入口优先，其次共享 IPv6 出口地址，
+	// 配置地址已不在网卡上时回落探测值。非 podman 驱动不支持共享 IPv6 语义，
+	// 只允许手动覆盖，其余保持原有「上报探测值」行为。
+	detected6 := s.detectedIPv6()
+	entryV6, entryV6Source := detected6, "auto"
 	if entryV6 == "" {
 		entryV6Source = ""
 	}
 	if conf.VirtType == "podman" {
-		entryV6, entryV6Source = conf.EntryIPv6(s.detectedIPv6(), config.HostHasIPv6)
+		entryV6, entryV6Source = conf.EntryIPv6(detected6, config.HostHasIPv6)
+	} else if h := strings.TrimSpace(conf.HostIPv6); h != "" {
+		entryV6, entryV6Source = h, "manual"
 	}
 	// BotToken 在副本上抹掉明文再回传：响应体、浏览器内存、抓包日志都不落明文。
 	tg := conf.Telegram
@@ -1833,6 +1850,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		NetavarkBase:     conf.NetavarkBase,
 		PublicIPv4:       conf.PublicIPv4,
 		DetectedIPv4:     s.detectedIPv4(),
+		HostIPv6:         conf.HostIPv6,
 		EntryAddr:        conf.EntryHost(s.detectedIPv4()),
 		EntrySource:      conf.EntryHostSource(s.detectedIPv4()),
 		EntryIPv6:        entryV6,

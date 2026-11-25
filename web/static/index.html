@@ -860,6 +860,12 @@
                 <datalist id="entryHostOptions"></datalist>
                 <span class="hint" id="entryHostEffective"></span>
               </div>
+              <div class="field">
+                <label for="hostIpv6">入口 IPv6 <span class="hint">留空跟随探测</span></label>
+                <input class="input mono" id="hostIpv6" list="hostIpv6Options" placeholder="留空自动">
+                <datalist id="hostIpv6Options"></datalist>
+                <span class="hint" id="hostIpv6Effective"></span>
+              </div>
               <label class="check"><input type="checkbox" id="platformInsecure"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 跳过平台 TLS 证书校验 <span class="warn" id="platformInsecureWarn" hidden>连接平台时不校验证书，仅用于自签证书场景</span></label>
             </div>
           </div>

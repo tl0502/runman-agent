@@ -113,6 +113,9 @@ func TestEntryIPv6(t *testing.T) {
 		{"启用但配置地址已失效", Config{IPv6Mode: "snat", IPv6Addr: "2406:da14::9"}, "2406:da14::1", "2406:da14::1", "stale"},
 		{"失效且无探测值时保留配置", Config{IPv6Mode: "snat", IPv6Addr: "2406:da14::9"}, "", "2406:da14::9", "config"},
 		{"全空", Config{}, "", "", ""},
+		// 手动入口：优先于共享出口地址，且不做网卡校验（允许填中转/代理地址）。
+		{"手动入口优先于共享出口", Config{IPv6Mode: "snat", IPv6Addr: "2406:da14::2", HostIPv6: "2001:db8::99"}, "2406:da14::1", "2001:db8::99", "manual"},
+		{"手动入口可填不在网卡上的地址", Config{HostIPv6: "2001:db8::100"}, "", "2001:db8::100", "manual"},
 	}
 	for _, c := range cases {
 		v, src := c.cfg.EntryIPv6(c.detected, onHost)

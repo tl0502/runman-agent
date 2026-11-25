@@ -150,6 +150,13 @@ type Config struct {
 	// 公网入口地址（空则由服务端自取）
 	Host string `json:"host"`
 
+	// HostIPv6 是上报给平台的入口 IPv6，与 Host 对称：纯对外宣称，
+	// 不参与端口监听、不影响 SNAT，改了零中断。
+	// 为空时由服务端自取（共享 IPv6 出口地址，或自动探测值）。
+	// 注意与 PublicIPv6/IPv6Addr 的区别：后两者是数据面绑定地址，
+	// 改它们要重建容器网络；本字段只改「对外显示/上报哪个地址」。
+	HostIPv6 string `json:"host_ipv6"`
+
 	// 每个 VM 最大端口转发数
 	MaxPortForward int32 `json:"max_port_forward"`
 
@@ -758,6 +765,7 @@ func (c Config) EntryHostSource(detectedIPv4 string) string {
 }
 
 // EntryIPv6 返回上报/展示用的入口 IPv6 与来源，与 EntryHost 同一思路：
+//   - 手动填写了 host_ipv6 → 该值，来源 manual（纯上报，不影响监听与 SNAT）；
 //   - 未启用共享 IPv6（非 snat 模式，或 snat 但没拿到地址）→ 自动探测值，来源 auto；
 //   - 已启用 → 配置地址，来源 config；
 //   - 配置地址已不在本机网卡上（实例重建、云厂商地址漂移）且探测到了新地址
@@ -765,6 +773,11 @@ func (c Config) EntryHostSource(detectedIPv4 string) string {
 //
 // onHost 可为 nil（不做网卡校验，直接信配置）。
 func (c Config) EntryIPv6(detectedIPv6 string, onHost func(string) bool) (string, string) {
+	// 手动入口优先于一切：它是「对外报哪个地址」的显式决定，
+	// 与数据面绑定无关，因此不做网卡校验（允许填代理/中转地址）。
+	if h := strings.TrimSpace(c.HostIPv6); h != "" {
+		return h, "manual"
+	}
 	detected := strings.TrimSpace(detectedIPv6)
 	if !c.SharedIPv6Enabled() {
 		if detected != "" {

@@ -1842,7 +1842,7 @@ $('patrolRefresh').addEventListener('click', (e) => withBusy(e.currentTarget, as
 
 /* ══════════════════════════════ 设置 ═══════════════════════════════════════ */
 const CONF_FIELDS = ['siteName', 'token', 'platformAddr', 'monitorNIC', 'monitorDisk', 'maxPortForward',
-  'maxForwardIPs', 'trafficResetDay', 'entryHost', 'updateRepo', 'updateBase', 'updateApi', 'netavarkBase',
+  'maxForwardIPs', 'trafficResetDay', 'entryHost', 'hostIpv6', 'updateRepo', 'updateBase', 'updateApi', 'netavarkBase',
   'publicIpv4', 'publicIpv6', 'webUser', 'webPass', 'containerAllowSubnets'];
 
 // 独立模式下「平台凭据」相关控件保留可见但不可编辑——用户能直接看到重新接入
@@ -1901,6 +1901,7 @@ function loadConfigIntoForm(c) {
   $('trafficResetMode').value = c.traffic_reset_mode === 'rental' ? 'rental' : 'monthly';
   syncTrafficResetUI();
   $('entryHost').value = c.host || '';
+  $('hostIpv6').value = c.host_ipv6 || '';
   $('webUser').value = c.web_user || '';
   $('webPass').value = '';
   $('platformAddr').value = c.platform_addr || '';
@@ -1930,8 +1931,15 @@ function loadConfigIntoForm(c) {
   renderEntryEffective(c);
 }
 
-// 入口地址来源标注（后端 entry_source）：把「优先级」变成一行事实，不再写解释文字。
-const ENTRY_SOURCE_LABEL = { manual: '手动填写', public_ipv4: '监听 IPv4', auto: '自动探测' };
+// 入口地址来源标注（后端 entry_source / entry_ipv6_source）：
+// 把「优先级」变成一行事实，不再写解释文字。
+const ENTRY_SOURCE_LABEL = {
+  manual: '手动填写',
+  public_ipv4: '监听 IPv4',
+  auto: '自动探测',
+  config: '共享 IPv6 出口',
+  stale: '自动探测 · 配置地址已失效',
+};
 
 function renderEntryEffective(c) {
   // 下拉候选：把「能当入口用的值」直接摆出来，省得用户去别处找 IP。
@@ -1947,13 +1955,24 @@ function renderEntryEffective(c) {
       .join('');
   }
   const el = $('entryHostEffective');
-  if (!el) return;
-  if (!c.entry_addr) {
-    el.textContent = '当前未取到入口地址';
-    return;
+  if (el) {
+    if (!c.entry_addr) {
+      el.textContent = '当前未取到入口地址';
+    } else {
+      const src = ENTRY_SOURCE_LABEL[c.entry_source];
+      el.textContent = `当前生效 ${c.entry_addr}${src ? ` · ${src}` : ''}`;
+    }
   }
-  const src = ENTRY_SOURCE_LABEL[c.entry_source];
-  el.textContent = `当前生效 ${c.entry_addr}${src ? ` · ${src}` : ''}`;
+  // 入口 IPv6：上报/展示用，和「监听 IPv6」的绑定地址是两回事，各显示各的。
+  const el6 = $('hostIpv6Effective');
+  if (el6) {
+    if (!c.entry_ipv6) {
+      el6.textContent = '当前未取到公网 IPv6';
+    } else {
+      const src = ENTRY_SOURCE_LABEL[c.entry_ipv6_source];
+      el6.textContent = `当前生效 ${c.entry_ipv6}${src ? ` · ${src}` : ''}`;
+    }
+  }
 }
 
 // renderIPv6Share 控制共享 IPv6 的两种形态：
@@ -1967,13 +1986,12 @@ function renderIPv6Share(c) {
   edit.hidden = !isSnat;
   enable.hidden = isSnat || c.ipv6_mode === 'subnet' || c.virt_type !== 'podman';
   if (!enable.hidden) void fillSharedV6Options();
-  // 生效值：共享 IPv6 配置地址已不在网卡上时，上报会回落探测值（source=stale）。
+  // 监听侧只显示「绑定地址」：入口上报值可能被手动覆盖（甚至填的是中转地址），
+  // 两者不是一回事，混在一行会让人以为改了上报就改了绑定。
   const eff = $('sharedV6Effective');
   if (eff) {
-    const labels = { config: '已配置', auto: '自动探测', stale: '自动探测 · 配置地址已失效' };
-    eff.textContent = c.entry_ipv6
-      ? `当前生效 ${c.entry_ipv6}${labels[c.entry_ipv6_source] ? ` · ${labels[c.entry_ipv6_source]}` : ''}`
-      : '当前未取到公网 IPv6';
+    const bound = c.public_ipv6 || c.ipv6_addr || '';
+    eff.textContent = bound ? `当前绑定 ${bound}` : '';
   }
 }
 
@@ -2013,6 +2031,7 @@ async function loadNetworkAddresses(c) {
   const selected = c.public_ipv4 || '';
   const selected6 = c.public_ipv6 || '';
   const detected = c.detected_ipv4 || '';
+  const detected6 = c.detected_ipv6 || '';
   let addrs = [];
   let addrs6 = [];
   let primary = '';
@@ -2061,6 +2080,23 @@ async function loadNetworkAddresses(c) {
       sel6.appendChild(opt);
     }
     sel6.value = selected6 || '';
+  }
+
+  // 入口 IPv6 的候选：本机全局地址 + 探测值 + 当前配置。它与监听 IPv6 不同，
+  // 只是「对外报哪个」，所以候选可以包含不在网卡上的探测值，也允许手填。
+  const list6 = $('hostIpv6Options');
+  if (list6) {
+    const seen = new Set();
+    const opts = [];
+    const push6 = (v, label) => {
+      if (v && !seen.has(v)) { seen.add(v); opts.push([v, label]); }
+    };
+    push6(detected6, '公网 IPv6（自动探测）');
+    addrs6.forEach((ip) => push6(ip, '本机地址'));
+    push6(c.host_ipv6 || '', '当前配置');
+    list6.innerHTML = opts
+      .map(([v, label]) => `<option value="${esc(v)}">${esc(label)}</option>`)
+      .join('');
   }
 
   state.snapshot = confSnapshot();
@@ -2246,6 +2282,7 @@ async function saveConfig(btn) {
       traffic_reset_day: Number($('trafficResetDay').value) || 1,
       traffic_reset_mode: $('trafficResetMode').value,
       host: $('entryHost').value.trim(),
+      host_ipv6: $('hostIpv6').value.trim(),
       web_user: $('webUser').value,
       web_pass: $('webPass').value,
       platform_addr: $('platformAddr').value.trim(),
