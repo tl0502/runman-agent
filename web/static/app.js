@@ -1934,6 +1934,18 @@ function loadConfigIntoForm(c) {
 const ENTRY_SOURCE_LABEL = { manual: '手动填写', public_ipv4: '监听 IPv4', auto: '自动探测' };
 
 function renderEntryEffective(c) {
+  // 下拉候选：把「能当入口用的值」直接摆出来，省得用户去别处找 IP。
+  // 只放公网性质的地址——监听地址里的内网 IP 选中也没有意义（会被后端跳过）。
+  const list = $('entryHostOptions');
+  if (list) {
+    const opts = [];
+    if (c.detected_ipv4) opts.push([c.detected_ipv4, '公网 IP（自动探测）']);
+    if (c.entry_source === 'public_ipv4' && c.public_ipv4) opts.push([c.public_ipv4, '监听 IPv4']);
+    if (c.host) opts.push([c.host, '当前配置']);
+    list.innerHTML = opts
+      .map(([v, label]) => `<option value="${esc(v)}">${esc(label)}</option>`)
+      .join('');
+  }
   const el = $('entryHostEffective');
   if (!el) return;
   if (!c.entry_addr) {
