@@ -112,6 +112,13 @@ type Config struct {
 	// 只能出公网。填入的网段会被放行。
 	ContainerAllowSubnets []string `json:"container_allow_subnets"`
 
+	// TrustProxy 为 true 时，面板从 X-Forwarded-For / X-Real-IP 取客户端真实 IP。
+	//
+	// 只在面板确实挂在反向代理（nginx / 1Panel 等）后面时才能打开：直连部署打开它，
+	// 任何人都能伪造来源 IP，从而绕过登录封禁。默认 false，保持「只认 RemoteAddr」。
+	// 取值时只信 XFF 的最后一项（最近一跳代理追加），前面的项可被客户端伪造。
+	TrustProxy bool `json:"trust_proxy"`
+
 	// ContainerNoNewPrivs 为 true 时给容器设置 no_new_privileges，阻断 setuid 提权。nil 视为 true。
 	ContainerNoNewPrivs *bool `json:"container_no_new_privs"`
 

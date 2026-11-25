@@ -44,6 +44,8 @@ type podmanLimitsRequest struct {
 	MemoryHigh string `json:"memory_high"`
 	SwapMax    string `json:"swap_max"`
 	CPUQuota   string `json:"cpu_quota"`
+	// Unlimited 为 true 时才允许提交「四项全空」，表示显式取消所有限制。
+	Unlimited bool `json:"unlimited"`
 }
 
 func (s *Server) handlePodmanLimits(w http.ResponseWriter, _ *http.Request) {
@@ -96,6 +98,13 @@ func (s *Server) handlePodmanLimitsSave(w http.ResponseWriter, r *http.Request) 
 			jsonErr(w, fmt.Errorf("CPU 配额需在 0.01–10000 核之间"), http.StatusBadRequest)
 			return
 		}
+	}
+	// 四项全空会直接删掉 drop-in、把 machine.slice 的全局上限清成「不限」。
+	// 这等同于一次没有任何确认的全集群放开，必须显式声明才允许：
+	// 之前任何字段名写错的请求都会静默命中这个分支。
+	if req.MemoryMax == "" && req.MemoryHigh == "" && req.SwapMax == "" && req.CPUQuota == "" && !req.Unlimited {
+		jsonErr(w, fmt.Errorf("四项均为空会清空全部资源上限；如确需取消限制，请提交 {\"unlimited\": true}"), http.StatusBadRequest)
+		return
 	}
 	if err := applyPodmanLimits(req.MemoryMax, req.MemoryHigh, req.SwapMax, req.CPUQuota); err != nil {
 		jsonErr(w, err, http.StatusInternalServerError)

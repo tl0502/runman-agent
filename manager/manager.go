@@ -2,9 +2,21 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"io"
 	"runman-agent/proto/agent"
 	"time"
+)
+
+// 哨兵错误：驱动层把「语义上可判定的失败」包装成这几个错误，
+// Web 层据此返回 4xx 而不是一律 500。第三方 gRPC 路径不受影响（错误文本不变）。
+var (
+	// ErrVMNotFound 目标实例/容器不存在。
+	ErrVMNotFound = errors.New("vm not found")
+	// ErrVMExists 同名实例已存在。
+	ErrVMExists = errors.New("vm already exists")
+	// ErrInvalidArgument 请求参数不合法（越界、格式错误、不被允许的取值）。
+	ErrInvalidArgument = errors.New("invalid argument")
 )
 
 // ResizeEvent 表示终端尺寸变更事件，由 Web 层通过 WebSocket 控制消息触发。
@@ -113,6 +125,7 @@ type VMNetStats struct {
 type Process struct {
 	PID     int    // 容器内 PID（命名空间视角）
 	HostPID int    // 宿主机 PID（查杀用）
+	PPid    int    // 容器内父进程 PID（0 表示由 exec 直接拉起，父进程在容器外）
 	Comm    string // 进程名（/proc/<pid>/comm）
 	Exe     string // 可执行文件路径（/proc/<pid>/exe，已去掉 " (deleted)"）
 	Args    string // 完整命令行（cmdline，NUL 已转空格）

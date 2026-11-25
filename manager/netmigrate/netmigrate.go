@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -189,6 +190,10 @@ func rebuild(ctx context.Context, want Options, b backend) (*Result, error) {
 	if err := reattachAll(opCtx, want.Network, s.Containers, want.IPv6 != "", b); err != nil {
 		return fail(err)
 	}
+	// 网络重建后 netavark 会重写容器内 /etc/resolv.conf；新网络是 --disable-dns
+	// （dns_enabled=false）时它直接把文件清空，容器进程没重启、不会自愈，
+	// 表现为容器内 v4/v6 DNS 一起失效。这里按容器的持久 DNS 配置写回。
+	restoreContainerDNS(opCtx, s.Containers)
 	// A crash between commit and journal deletion must not undo a finished switch.
 	s.Committed = true
 	if err := b.save(s); err != nil {
@@ -290,6 +295,52 @@ func reattachAll(ctx context.Context, network string, cs []Container, withV6 boo
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// restoreContainerDNS 把容器的 /etc/resolv.conf 按创建时的 DNS 配置写回。
+//
+// netavark 在容器加入新网络时会重写 resolv.conf；网络是 --disable-dns 时写出来
+// 是空的。容器进程不重启就不会自己恢复，容器内所有 DNS 查询随即失败。
+// 这里直接写 ResolvConfPath（podman inspect 暴露的宿主机侧文件路径），
+// 不重启容器、不影响已经建立的连接。
+//
+// 只处理显式配置过 DNS 的容器：没配的用宿主 resolv.conf，不该被我们覆盖。
+func restoreContainerDNS(ctx context.Context, cs []Container) {
+	for _, c := range cs {
+		if c.ID == "" {
+			continue
+		}
+		out, err := run(ctx, "podman", "inspect", c.ID, "--format", "{{json .HostConfig.Dns}}")
+		if err != nil {
+			continue
+		}
+		var dns []string
+		if json.Unmarshal([]byte(strings.TrimSpace(out)), &dns) != nil || len(dns) == 0 {
+			continue
+		}
+		pout, err := run(ctx, "podman", "inspect", c.ID, "--format", "{{.ResolvConfPath}}")
+		if err != nil {
+			continue
+		}
+		path := strings.TrimSpace(pout)
+		if path == "" {
+			continue
+		}
+		var b strings.Builder
+		for _, s := range dns {
+			if s = strings.TrimSpace(s); s != "" {
+				b.WriteString("nameserver " + s + "\n")
+			}
+		}
+		if b.Len() == 0 {
+			continue
+		}
+		if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+			log.Printf("[NetMigrate] 写回 %s 的 resolv.conf 失败: %v", c.Name, err)
+			continue
+		}
+		log.Printf("[NetMigrate] 已恢复 %s 的 DNS 配置（%d 个 nameserver）", c.Name, len(dns))
+	}
 }
 
 func createArgs(o Options) []string {

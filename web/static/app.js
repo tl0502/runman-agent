@@ -1863,6 +1863,7 @@ function confSnapshot() {
   o.platformEnabled = $('platformEnabled').checked;
   o.platformInsecure = $('platformInsecure').checked;
   o.containerIsolate = $('containerIsolate').checked;
+  o.trustProxy = $('trustProxy').checked;
   o.allowInsecureDownload = $('allowInsecureDownload').checked;
   o.allowInternalDownload = $('allowInternalDownload').checked;
   o.trafficResetMode = $('trafficResetMode').value;
@@ -1914,6 +1915,7 @@ function loadConfigIntoForm(c) {
   $('platformInsecure').checked = !!c.platform_insecure;
   $('platformInsecureWarn').hidden = !c.platform_insecure;
   $('containerIsolate').checked = c.container_isolate !== false;
+  $('trustProxy').checked = !!c.trust_proxy;
   state.allowPorts = (c.host_allow_ports || []).map(String);
   renderPortTags();
   $('containerAllowSubnets').value = (c.container_allow_subnets || []).join(', ');
@@ -2047,7 +2049,11 @@ async function savePodmanLimits(memoryMax, memoryHigh, swapMax, cpuCores) {
     if (!Number.isFinite(n) || n <= 0) throw new Error('CPU 核数无效');
     cpuQuota = String(Math.round(n * 100));
   }
-  await api('POST', '/api/podman/limits', { memory_max: memoryMax, memory_high: memoryHigh, swap_max: swapMax, cpu_quota: cpuQuota });
+  const body = { memory_max: memoryMax, memory_high: memoryHigh, swap_max: swapMax, cpu_quota: cpuQuota };
+  // 四项全空 = 显式取消全部上限，后端要求带 unlimited 才肯清空 drop-in
+  // （防止字段名写错时静默把整个集群的上限放开）。
+  if (!memoryMax && !memoryHigh && !swapMax && !cpuQuota) body.unlimited = true;
+  await api('POST', '/api/podman/limits', body);
 }
 
 $('plApply').addEventListener('click', (e) => withBusy(e.currentTarget, async () => {
@@ -2136,6 +2142,7 @@ $('btnEnableSharedV6')?.addEventListener('click', () => {
   });
 });
 $('containerIsolate').addEventListener('change', syncDirty);
+$('trustProxy').addEventListener('change', syncDirty);
 $('trafficResetMode').addEventListener('change', () => { syncTrafficResetUI(); syncDirty(); });
 $('portInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addPortTags(); }
@@ -2205,6 +2212,7 @@ async function saveConfig(btn) {
       public_ipv6: $('publicIpv6').value,
       platform_insecure: $('platformInsecure').checked,
       container_isolate: $('containerIsolate').checked,
+      trust_proxy: $('trustProxy').checked,
       host_allow_ports: state.allowPorts.join(','),
       container_allow_subnets: $('containerAllowSubnets').value.trim(),
     };

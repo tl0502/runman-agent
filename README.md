@@ -148,6 +148,8 @@ host（手动入口，支持 DDNS 域名） > public_ipv4 > 自动探测公网 I
 | `container_pids_limit` | 2048 | cgroup pids 上限 |
 | `container_drop_caps` / `container_add_caps` | 空 | 额外 drop/add 的 capabilities（systemd + sshd 镜像对默认 capability 集依赖较强，激进 drop 需先测试） |
 
+面板挂在 nginx / 1Panel 反代后面时必须打开 `trust_proxy`（默认 false）：否则 `RemoteAddr` 恒为 `127.0.0.1`，登录限速与封禁会把所有客户端当成同一个来源，连错 5 次即锁死全站登录，审计日志也全是 `127.0.0.1`。开启后只采信 `X-Forwarded-For` 的最后一项（最近一跳代理追加）与 `X-Real-IP`；直连部署保持 false，否则任何人都能伪造来源 IP 绕过封禁。
+
 ## IPv6
 
 | 模式 | 触发条件 | 行为 |

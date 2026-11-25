@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -305,7 +306,29 @@ func (s *sessionStore) recordBlocked(ip string) bool {
 }
 
 // clientIP 提取来源 IP（RemoteAddr 去端口）。
-func clientIP(r *http.Request) string {
+//
+// 直连部署取 RemoteAddr 就够了。但把面板挂在 nginx / 1Panel 反代后面时，
+// RemoteAddr 恒为 127.0.0.1：所有客户端被当成同一个来源，连错 5 次就把
+// 127.0.0.1 锁死，全站登录一起不可用；登录日志与封禁列表也全变成 127.0.0.1，
+// 封禁与审计彻底失真。
+//
+// trust_proxy 打开后优先取 X-Forwarded-For 的**最后一项**：只有最近一跳代理
+// 追加的那一项不可被客户端伪造（前面的项客户端可以随意预置）。同时兼容
+// 只写 X-Real-IP 的反代。
+func (s *Server) clientIP(r *http.Request) string {
+	if s.cfg.Get().TrustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); ip != nil {
+				return ip.String()
+			}
+		}
+		if rip := strings.TrimSpace(r.Header.Get("X-Real-IP")); rip != "" {
+			if ip := net.ParseIP(rip); ip != nil {
+				return ip.String()
+			}
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

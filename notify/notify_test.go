@@ -146,6 +146,44 @@ func TestSendTestSuccessAndHTTPError(t *testing.T) {
 	}
 }
 
+// TestSendTestSurfacesTelegramDescription 验证非 2xx 时把 Telegram 的 description
+// 带进错误（Q19），否则排障时无法区分 token 错、chat_id 错还是被限流。
+func TestSendTestSurfacesTelegramDescription(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"ok":false,"description":"Unauthorized"}`))
+	}))
+	defer srv.Close()
+
+	n, _ := newTestNotifier(t, nil)
+	n.apiBase = srv.URL
+	err := n.SendTest()
+	if err == nil {
+		t.Fatal("expected error on HTTP 401")
+	}
+	if !strings.Contains(err.Error(), "Unauthorized") {
+		t.Fatalf("error 缺少 Telegram description: %v", err)
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Fatalf("error 缺少状态码: %v", err)
+	}
+}
+
+// TestSendTestHandlesOKFalse 验证 200 + ok=false 也不会被当成发送成功。
+func TestSendTestHandlesOKFalse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":false,"description":"Bad Request: chat not found"}`))
+	}))
+	defer srv.Close()
+
+	n, _ := newTestNotifier(t, nil)
+	n.apiBase = srv.URL
+	err := n.SendTest()
+	if err == nil || !strings.Contains(err.Error(), "chat not found") {
+		t.Fatalf("expected description in error, got %v", err)
+	}
+}
+
 // TestIdentityPrefix 验证消息首行的身份前缀：站点名 (入口地址)。
 // 多面板共用同一个 Bot Token/Chat ID 的场景下，靠首行区分消息来自哪台机器。
 func TestIdentityPrefix(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -147,7 +148,40 @@ func (n *Notifier) postMessage(token, chatID, text string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("telegram 返回状态码 %d", resp.StatusCode)
+		// Telegram 在非 2xx 的响应体里给出 {"ok":false,"description":"..."}，
+		// 只回状态码无法区分 token 错、chat_id 错、被限流、Bot 被停用。
+		// 限长读取，避免异常响应体把内存/日志撑爆；token 仍保持脱敏。
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		var apiErr struct {
+			Description string `json:"description"`
+		}
+		desc := ""
+		if json.Unmarshal(data, &apiErr) == nil {
+			desc = strings.TrimSpace(apiErr.Description)
+		}
+		if desc == "" {
+			desc = strings.TrimSpace(string(data))
+		}
+		if desc == "" {
+			return fmt.Errorf("telegram 返回状态码 %d", resp.StatusCode)
+		}
+		return fmt.Errorf("telegram 返回状态码 %d: %s", resp.StatusCode,
+			strings.ReplaceAll(desc, token, "***"))
+	}
+	// 少数错误（如 chat not found）也可能以 200 + ok=false 返回。
+	var okResp struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if data, err := io.ReadAll(io.LimitReader(resp.Body, 4096)); err == nil {
+		if json.Unmarshal(data, &okResp) == nil && !okResp.OK {
+			desc := strings.TrimSpace(okResp.Description)
+			if desc == "" {
+				desc = "ok=false"
+			}
+			return fmt.Errorf("telegram 返回错误: %s",
+				strings.ReplaceAll(desc, token, "***"))
+		}
 	}
 	return nil
 }

@@ -148,6 +148,8 @@ Applied by default at container creation (all toggleable in `config.json`):
 | `container_pids_limit` | 2048 | cgroup pids ceiling |
 | `container_drop_caps` / `container_add_caps` | empty | Extra capabilities dropped/added at creation (systemd + sshd images depend heavily on the default set — test before aggressive drops) |
 
+When the panel runs behind nginx / 1Panel you must enable `trust_proxy` (default false). Otherwise `RemoteAddr` is always `127.0.0.1`: login throttling and banning treat every client as the same source, so five bad attempts lock the whole panel out, and the audit log shows only `127.0.0.1`. When enabled only the last `X-Forwarded-For` hop (appended by the nearest proxy) and `X-Real-IP` are trusted. Keep it false for direct exposure — otherwise anyone can forge a source IP and bypass bans.
+
 ## IPv6
 
 | Mode | Trigger | Behavior |

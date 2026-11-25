@@ -86,6 +86,10 @@ func (s *Service) LatestVersion() (string, error) {
 // current 不是 v 前缀（历史上的 continuous-<sha> 构建）时视为需要迁移，
 // 因为只要远端已有正式发布，它就应该换成发布版。
 // 远端不是正式 tag 时一律返回 false，避免把异常数据当成“有新版本”。
+//
+// 本地补丁构建（v0.11.0-usernsfix / -dirty / -<sha> 这类自定义 ldflags）
+// 不算「比同号正式版旧」：否则面板的「检查更新」会恒为 true，自动更新还会
+// 把本地补丁覆盖掉。官方预发布（rc/beta/alpha）仍保留原语义。
 func VersionNewer(latest, current string) bool {
 	lMajor, lMinor, lPatch, lPre, lOK := parseSemver(latest)
 	if !lOK {
@@ -104,6 +108,10 @@ func VersionNewer(latest, current string) bool {
 	case lPatch != cPatch:
 		return lPatch > cPatch
 	}
+	// 主版本号相同：本地补丁构建视为与该正式版等价，不提示更新、不触发覆盖。
+	if cPre != "" && isLocalBuildPre(cPre) {
+		return false
+	}
 	// 同号：正式版高于预发布，预发布之间按字典序（够用，不追求 SemVer 全序）。
 	if lPre == cPre {
 		return false
@@ -115,6 +123,25 @@ func VersionNewer(latest, current string) bool {
 		return false
 	}
 	return lPre > cPre
+}
+
+// isLocalBuildPre 判断预发布后缀是不是本地自建标记。
+//
+// 官方预发布只认 rc/beta/alpha/preview（后接数字或点分层级，如 rc1、beta.2）；
+// 其余（usernsfix、dirty、git sha、任意自定义词）都按「基于该正式版改出来的
+// 本地构建」处理。build metadata（+xxx）在 parseSemver 里已被剥离，天然等价。
+func isLocalBuildPre(pre string) bool {
+	p := strings.ToLower(pre)
+	for _, tag := range []string{"rc", "beta", "alpha", "preview"} {
+		if !strings.HasPrefix(p, tag) {
+			continue
+		}
+		rest := p[len(tag):]
+		if rest == "" || rest[0] == '.' || (rest[0] >= '0' && rest[0] <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // parseSemver 解析 vMAJOR.MINOR.PATCH[-pre][+build]。不允许缺段。

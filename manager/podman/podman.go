@@ -4,7 +4,10 @@ package podman
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -60,7 +63,26 @@ type Manager struct {
 	cfg   *config.Manager
 	alloc *cpualloc.Allocator
 	mu    sync.Mutex // 全局锁，序列化所有容器生命周期操作，防止 IP/Cpuset 分配冲突
+
+	// usage 缓存：getUsage 需要等一个 1 秒采样周期，直接放进列表接口会让
+	// /api/vms 每次都慢 1 秒。这里返回上一次快照并异步刷新，接口本身不阻塞。
+	usageMu    sync.Mutex
+	usageCache map[string]usageSnapshot
+	usageBusy  map[string]bool
 }
+
+// usageSnapshot 是一次采样结果，At 用于判断新鲜度。
+type usageSnapshot struct {
+	CPUPercent float32
+	MemUsed    int64
+	NetIn      int64
+	NetOut     int64
+	At         time.Time
+}
+
+// usageTTL 内直接复用快照。超过后返回旧值同时触发一次异步刷新，
+// 因此列表接口最坏情况是「数据滞后几秒」，而不是「请求卡一秒」。
+const usageTTL = 3 * time.Second
 
 func New(database *db.DB, cfg *config.Manager) (*Manager, error) {
 	alloc := cpualloc.New(runtime.NumCPU())
@@ -172,6 +194,11 @@ func userNamespaceIDMapping(cfg config.Config) *stypes.IDMappingOptions {
 		log.Printf("[Podman] parse userns=auto idmapping failed: %v", err)
 		return nil
 	}
+	// 必须显式指定映射大小：userns=auto 的默认启发式只给 1024 个 ID，
+	// 容器内 UID/GID >= 1024 全部无法切换。Debian 系镜像的 sshd 以
+	// uid=995 gid=65534(nogroup) 运行，65534 不在映射内会让 sshd-session
+	// 的 setgroups() 返回 EINVAL，SSH 直接被关闭（preauth 阶段）。
+	opts.AutoUserNsOpts.Size = usernsSize
 	return opts
 }
 
@@ -198,7 +225,7 @@ func (m *Manager) CreateVM(ctx context.Context, req *agent.CmdCreateVM) error {
 	if exists, err := containers.Exists(m.timeoutCtx(), req.VmId, nil); err != nil {
 		return fmt.Errorf("check existing container %s: %w", req.VmId, err)
 	} else if exists {
-		return fmt.Errorf("VM %s already exists", req.VmId)
+		return fmt.Errorf("%w: %s", manager.ErrVMExists, req.VmId)
 	}
 	return m.createVM(ctx, req)
 }
@@ -434,28 +461,69 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 	return err
 }
 
-// setRootPassword 设置容器 root 密码。密码按 shell 单引号规则转义后传入：
-// 直接拼接时，含单引号的合法密码会破坏命令语法。
+// setRootPassword 设置容器 root 密码。
+//
+// 密码经 stdin 喂给 chpasswd，绝不放进命令行：命令行会出现在 exec 失败信息、
+// podman inspect 与容器进程列表里；命令拼错时 sh 还会把整行（含密码）回显到
+// stderr，被错误透传机制原样带回面板。只接受不带换行的密码（chpasswd 按行读）。
 func (m *Manager) setRootPassword(id, password string) error {
 	if strings.ContainsAny(password, "\n\r\x00") {
 		return fmt.Errorf("password must not contain line breaks")
 	}
-	quoted := "'" + strings.ReplaceAll("root:"+password, "'", `'\''`) + "'"
-	return m.execInContainer(id, []string{"bash", "-c", "printf '%s\\n' " + quoted + " | chpasswd"})
+	stdin := strings.NewReader("root:" + password + "\n")
+	if err := m.execInContainer(id, []string{"chpasswd"}, stdin); err != nil {
+		return fmt.Errorf("设置 root 密码失败（镜像需包含 chpasswd，例如 narwhalcloud/*:podman）：%w", err)
+	}
+	return nil
 }
 
-func (m *Manager) execInContainer(id string, cmd []string) error {
-	execID, err := containers.ExecCreate(m.timeoutCtx(), id, &handlers.ExecCreateConfig{
+// execInContainer 在容器内执行一次性命令，并**等到进程结束、校验退出码**再返回。
+//
+// 之前用 bindings 的 ExecStart：它强制 Detach=true，HTTP 返回时进程还没跑完，
+// 实测 chpasswd 约 1.5s 后才写完 /etc/shadow——面板已经返回 204，用户立刻 SSH
+// 必然失败（Q4）。这里改用 ExecStartAndAttach 同步读到流 EOF，再 ExecInspect
+// 取退出码，顺带把 stdout/stderr 带进错误信息（无 chpasswd 的镜像不再只抛 crun 原文）。
+// cmd 会出现在错误信息里，不得包含敏感内容；机密一律走 stdin。
+func (m *Manager) execInContainer(id string, cmd []string, stdin io.Reader) error {
+	ctx := m.timeoutCtx()
+	execID, err := containers.ExecCreate(ctx, id, &handlers.ExecCreateConfig{
 		ExecOptions: dockerContainer.ExecOptions{
+			AttachStdin:  stdin != nil,
 			AttachStdout: true,
 			AttachStderr: true,
 			Cmd:          cmd,
 		},
 	})
 	if err != nil {
-		return err
+		return wrapNotFound(err)
 	}
-	return containers.ExecStart(m.timeoutCtx(), execID, nil)
+	var stdout, stderr bytes.Buffer
+	opts := new(containers.ExecStartAndAttachOptions).
+		WithAttachOutput(true).
+		WithAttachError(true).
+		WithOutputStream(&stdout).
+		WithErrorStream(&stderr)
+	if stdin != nil {
+		opts = opts.WithAttachInput(true).WithInputStream(*bufio.NewReader(stdin))
+	}
+	if err := containers.ExecStartAndAttach(ctx, execID, opts); err != nil {
+		return fmt.Errorf("exec %v: %w", cmd, err)
+	}
+	sess, err := containers.ExecInspect(ctx, execID, nil)
+	if err != nil {
+		return fmt.Errorf("inspect exec %v: %w", cmd, err)
+	}
+	if sess.ExitCode != 0 {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		if detail != "" {
+			return fmt.Errorf("exec %v 退出码 %d: %s", cmd, sess.ExitCode, detail)
+		}
+		return fmt.Errorf("exec %v 退出码 %d", cmd, sess.ExitCode)
+	}
+	return nil
 }
 
 func emptyDir(dir string) {
@@ -518,10 +586,24 @@ func (m *Manager) deleteByID(id string) error {
 	return nil
 }
 
+// wrapNotFound 把 podman 的「容器不存在」错误包装成哨兵错误，
+// 让 Web 层区分 404 与真正的 500。其他错误原样返回（错误文本不变）。
+func wrapNotFound(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "no such container") ||
+		strings.Contains(msg, "no container with name or ID") {
+		return fmt.Errorf("%w: %v", manager.ErrVMNotFound, err)
+	}
+	return err
+}
+
 func (m *Manager) StartVM(_ context.Context, vmID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.startVM(vmID)
+	return wrapNotFound(m.startVM(vmID))
 }
 
 func (m *Manager) startVM(vmID string) error {
@@ -531,7 +613,7 @@ func (m *Manager) startVM(vmID string) error {
 func (m *Manager) StopVM(_ context.Context, vmID string, force bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.stopVM(vmID, force)
+	return wrapNotFound(m.stopVM(vmID, force))
 }
 
 func (m *Manager) stopVM(vmID string, force bool) error {
@@ -544,13 +626,17 @@ func (m *Manager) stopVM(vmID string, force bool) error {
 func (m *Manager) RestartVM(_ context.Context, vmID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return containers.Restart(m.timeoutCtx(), vmID, nil)
+	return wrapNotFound(containers.Restart(m.timeoutCtx(), vmID, nil))
 }
 
 func (m *Manager) DeleteVM(ctx context.Context, vmID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.deleteVM(ctx, vmID)
+	err := wrapNotFound(m.deleteVM(ctx, vmID))
+	if err == nil {
+		m.dropUsageCache(vmID)
+	}
+	return err
 }
 
 func (m *Manager) deleteVM(ctx context.Context, vmID string) error {
@@ -571,6 +657,28 @@ func (m *Manager) ReinstallVM(ctx context.Context, req *agent.CmdReinstallVM) er
 	defer m.mu.Unlock()
 
 	log.Printf("[Podman][Reinstall] start: vmID=%s image=%s diskGb=%d", req.VmId, req.OsImage, req.DiskGb)
+
+	// 重装请求可以只带 image+password（面板「换镜像重装」就是这种），
+	// 缺失的规格必须沿用原实例：否则 createVM 会把内存兜底成最小值（64M）、
+	// 带宽为 0 时干脆不装 tbf，用户套餐被静默改小、限速凭空消失。
+	if old, err := m.db.GetVMConfig(req.VmId); err == nil && old != nil {
+		if req.Cpu <= 0 {
+			req.Cpu = int32(old.CPU)
+		}
+		if req.RamMb <= 0 {
+			req.RamMb = old.MemoryMB
+		}
+		if req.DiskGb <= 0 {
+			req.DiskGb = old.DiskGB
+		}
+		if req.BandwidthMbps <= 0 {
+			req.BandwidthMbps = int32(old.BandwidthMbps)
+		}
+		log.Printf("[Podman][Reinstall] %s: using plan cpu=%d ram=%d disk=%d bw=%d",
+			req.VmId, req.Cpu, req.RamMb, req.DiskGb, req.BandwidthMbps)
+	} else if err != nil {
+		return fmt.Errorf("%w: %s", manager.ErrVMNotFound, req.VmId)
+	}
 
 	// 1. 强制停止旧容器
 	// 先拉镜像再动旧实例：镜像不存在或下载失败时旧系统必须原样保留。
@@ -656,7 +764,7 @@ func (m *Manager) PullImage(_ context.Context, ref string) error {
 func (m *Manager) GetVMInfo(ctx context.Context, vmID string) (*agent.VMSummary, error) {
 	inspect, err := containers.Inspect(m.timeoutCtx(), vmID, nil)
 	if err != nil {
-		return nil, err
+		return nil, wrapNotFound(err)
 	}
 	var ips []string
 	ipv4, ipv6, _ := m.getIPsFromInspect(inspect)
@@ -666,7 +774,7 @@ func (m *Manager) GetVMInfo(ctx context.Context, vmID string) (*agent.VMSummary,
 	if ipv6 != nil {
 		ips = append(ips, ipv6.String())
 	}
-	cpuPct, memUsed, netIn, netOut, _ := m.getUsage(ctx, vmID)
+	cpuPct, memUsed, netIn, netOut := m.getUsageCached(ctx, vmID)
 	return &agent.VMSummary{
 		VmId:            vmID,
 		Status:          mapStatus(inspect.State.Status),
@@ -743,6 +851,53 @@ netdevFallback:
 	}
 
 	return
+}
+
+// getUsageCached 是 getUsage 的非阻塞封装：命中快照直接返回，
+// 过期或缺失时返回旧值（首次为 0）并触发一次后台刷新，去重避免堆积。
+// 列表/详情接口用它，避免每个请求都被 stats 采样的 1 秒周期拖住。
+func (m *Manager) getUsageCached(_ context.Context, vmID string) (cpuPct float32, memUsed, netIn, netOut int64) {
+	m.usageMu.Lock()
+	snap, ok := m.usageCache[vmID]
+	busy := m.usageBusy[vmID]
+	fresh := ok && time.Since(snap.At) < usageTTL
+	if !fresh && !busy {
+		if m.usageBusy == nil {
+			m.usageBusy = make(map[string]bool)
+		}
+		m.usageBusy[vmID] = true
+		busy = true
+		go func() {
+			defer func() {
+				m.usageMu.Lock()
+				delete(m.usageBusy, vmID)
+				m.usageMu.Unlock()
+			}()
+			c, mu, ni, no, err := m.getUsage(context.Background(), vmID)
+			if err != nil {
+				return
+			}
+			m.usageMu.Lock()
+			if m.usageCache == nil {
+				m.usageCache = make(map[string]usageSnapshot)
+			}
+			m.usageCache[vmID] = usageSnapshot{CPUPercent: c, MemUsed: mu, NetIn: ni, NetOut: no, At: time.Now()}
+			m.usageMu.Unlock()
+		}()
+	}
+	m.usageMu.Unlock()
+	if !ok {
+		return 0, 0, 0, 0
+	}
+	return snap.CPUPercent, snap.MemUsed, snap.NetIn, snap.NetOut
+}
+
+// dropUsageCache 在实例删除/重建后清掉快照，避免短时间展示上一个实例的数据。
+func (m *Manager) dropUsageCache(vmID string) {
+	m.usageMu.Lock()
+	delete(m.usageCache, vmID)
+	delete(m.usageBusy, vmID)
+	m.usageMu.Unlock()
 }
 
 // readProcNetDev 从指定 PID 的 /proc/<pid>/net/dev 汇总非 lo 接口的累计字节。
@@ -835,7 +990,8 @@ func (m *Manager) ListVMs(ctx context.Context) ([]*agent.VMSummary, error) {
 				Ips:    ips,
 			}
 			if inspect.State.Running {
-				cpuPct, memUsed, _, _, _ := m.getUsage(ctx, inspect.Name)
+				// 走缓存：列表接口不能为每个实例等 1 秒采样，过期时异步刷新。
+				cpuPct, memUsed, _, _ := m.getUsageCached(ctx, inspect.Name)
 				s.CpuPct = cpuPct
 				s.RamUsedMb = memUsed / 1024 / 1024
 				// 网络累计字节直接读 /proc/<pid>/net/dev，不重复 Inspect：
@@ -868,19 +1024,37 @@ func (m *Manager) ListVMs(ctx context.Context) ([]*agent.VMSummary, error) {
 	return result, nil
 }
 
+// ttySessionEnv 是注入到 Web 终端会话进程的环境变量名。
+// 断开连接后靠它精确定位「本会话拉起的顶层 shell」并清理——不靠进程名猜，
+// 也不会误杀用户在会话里 nohup 出去的子孙进程（它们不满足顶层条件）。
+const ttySessionEnv = "NARWHAL_TTY_SESSION"
+
 func (m *Manager) AttachTTY(ctx context.Context, vmID string, stdin io.Reader, stdout io.Writer, resize <-chan manager.ResizeEvent) error {
+	sessionID, err := randomSessionID()
+	if err != nil {
+		return err
+	}
 	execID, err := containers.ExecCreate(m.timeoutCtx(), vmID, &handlers.ExecCreateConfig{
 		ExecOptions: dockerContainer.ExecOptions{
 			AttachStdin:  true,
 			AttachStdout: true,
 			AttachStderr: true,
 			Tty:          true,
-			Cmd:          []string{"/bin/bash"},
+			// 不写死 /bin/bash：官方镜像只有 busybox sh。由 sh 探测并 exec 到
+			// bash（有则用，交互体验更好），否则留在 sh；这样 alpine 类镜像
+			// 也能开 Web 终端。
+			Cmd: []string{"/bin/sh", "-c",
+				"if [ -x /bin/bash ]; then exec /bin/bash; else exec /bin/sh; fi"},
+			Env: []string{ttySessionEnv + "=" + sessionID},
 		},
 	})
 	if err != nil {
-		return err
+		return wrapNotFound(err)
 	}
+	// 断开（正常关闭或浏览器直接关页）后清理容器内的会话 shell。
+	// libpod 在 attach 结束时不会杀 exec 进程，不清理的话每开一次终端就漏一个
+	// bash，1C/128M 的实例上很快就会吃掉可观的常驻内存。
+	defer m.cleanupTTYSession(vmID, sessionID)
 
 	// 合并 podman 连接 context 与请求取消信号：
 	// 请求关闭时取消 attach，但保持底层 podman 连接可用。
@@ -904,15 +1078,96 @@ func (m *Manager) AttachTTY(ctx context.Context, vmID string, stdin io.Reader, s
 		}
 	}()
 
-	return containers.ExecStartAndAttach(attachCtx, execID,
-		new(containers.ExecStartAndAttachOptions).
-			WithAttachInput(true).
-			WithAttachOutput(true).
-			WithAttachError(true).
-			WithInputStream(*bufio.NewReader(stdin)).
-			WithOutputStream(stdout).
-			WithErrorStream(stdout),
-	)
+	// hijack 建立后 bindings 的读循环不再看 ctx：只有 exec 进程退出、服务端
+	// 关流它才会返回。必须放 goroutine 里跑，取消路径才有机会插手。
+	attachDone := make(chan error, 1)
+	go func() {
+		attachDone <- containers.ExecStartAndAttach(attachCtx, execID,
+			new(containers.ExecStartAndAttachOptions).
+				WithAttachInput(true).
+				WithAttachOutput(true).
+				WithAttachError(true).
+				WithInputStream(*bufio.NewReader(stdin)).
+				WithOutputStream(stdout).
+				WithErrorStream(stdout),
+		)
+	}()
+
+	select {
+	case err := <-attachDone:
+		return err
+	case <-ctx.Done():
+		// 客户端断开（关页/断网）时 attach 可能永不返回：exec 里的 shell 还活着，
+		// 流不会 EOF，defer 清理永远不会执行（隔离测试已复现）。
+		// 先杀掉本次会话的顶层 shell——exec 进程随之退出，服务端关流，
+		// attach goroutine 便能落地；再给一个短暂窗口等它收尾。
+		m.cleanupTTYSession(vmID, sessionID)
+		select {
+		case err := <-attachDone:
+			return err
+		case <-time.After(2 * time.Second):
+			return fmt.Errorf("tty attach aborted: %w", ctx.Err())
+		}
+	}
+}
+
+func randomSessionID() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// procHasEnv 判断进程的环境变量里是否带指定 key=value。
+// 读 /proc/<pid>/environ 是宿主机视角，不依赖容器内工具。
+func procHasEnv(pid int, want string) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+	if err != nil {
+		return false
+	}
+	for _, kv := range strings.Split(string(data), "\x00") {
+		if kv == want {
+			return true
+		}
+	}
+	return false
+}
+
+// cleanupTTYSession 杀掉本次 Web 终端会话在容器内拉起的顶层 shell。
+//
+// 只清理满足全部条件的进程：comm 是 shell、容器内父进程为 0（说明父进程在容器外，
+// 即由 exec 直接拉起）、环境变量带本次会话标记。这样既不会误杀别的会话，
+// 也不会动用户在终端里 nohup 出去的子孙进程。
+func (m *Manager) cleanupTTYSession(vmID, sessionID string) {
+	want := ttySessionEnv + "=" + sessionID
+	// 正常 exit 时 bash 已经退出，稍等一下可以省掉一次无谓的枚举+kill。
+	deadline := time.Now().Add(600 * time.Millisecond)
+	for {
+		procs, err := m.ListProcesses(context.Background(), vmID)
+		if err != nil {
+			return
+		}
+		killed := 0
+		for _, p := range procs {
+			// 只认「exec 直接拉起的顶层进程」+ 本次会话的环境标记。
+			// 不按 comm 过滤：busybox 镜像里 shell 的 comm 可能是 ash/busybox，
+			// 白名单会漏掉残留；环境标记是随机串，比进程名精确得多。
+			if p.Init || p.PPid != 0 {
+				continue
+			}
+			if !procHasEnv(p.HostPID, want) {
+				continue
+			}
+			if err := m.KillProcess(context.Background(), p); err == nil {
+				killed++
+			}
+		}
+		if killed == 0 || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(120 * time.Millisecond)
+	}
 }
 
 // isPublicIPv6 判断地址是否可作为公网 IPv6 上报给平台。
@@ -1025,6 +1280,7 @@ func (m *Manager) ListProcesses(_ context.Context, vmID string) ([]manager.Proce
 		procs = append(procs, manager.Process{
 			PID:     nsPID,
 			HostPID: pid,
+			PPid:    containerPPid(readProcPPid(pid), ns),
 			Comm:    comm,
 			Exe:     readProcExe(pid),
 			Args:    readProcCmdline(pid),
@@ -1137,6 +1393,50 @@ func readProcExe(pid int) string {
 		return ""
 	}
 	return strings.TrimSuffix(exe, " (deleted)")
+}
+
+// readProcPPid 返回宿主机视角的父进程 PID（/proc/<pid>/status 的 PPid 行）。
+func readProcPPid(pid int) int {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "PPid:") {
+			if f := strings.Fields(line); len(f) >= 2 {
+				v, _ := strconv.Atoi(f[1])
+				return v
+			}
+			return 0
+		}
+	}
+	return 0
+}
+
+// containerPPid 把宿主视角的父进程 PID 换算成容器内 PID：
+// 父进程不在同一 PID 命名空间时返回 0（exec 直接拉起的顶层进程就属于这种）。
+func containerPPid(hostPPid int, containerNS string) int {
+	if hostPPid <= 0 {
+		return 0
+	}
+	link, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/pid", hostPPid))
+	if err != nil || link != containerNS {
+		return 0
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", hostPPid))
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "NSpid:") {
+			if fields := strings.Fields(strings.TrimPrefix(line, "NSpid:")); len(fields) >= 2 {
+				v, _ := strconv.Atoi(fields[1])
+				return v
+			}
+			return 0
+		}
+	}
+	return 0
 }
 
 // KillProcess 从宿主机直接对容器内进程发 SIGKILL，不走容器内 kill：

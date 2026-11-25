@@ -3,9 +3,13 @@
 agent.db
 runman-agent-linux-amd64
 runman-agent-linux-arm64
+# 带自定义后缀的本地补丁构建（-usernsfix / -qa 等）
+runman-agent-linux-*
 *.test
 __pycache__/
 dist/
+# 本地代码索引缓存
+.codegraph/
 
 # 设计期前端预览工具（mock API + CDP 截图），零依赖、不进二进制
 tools/

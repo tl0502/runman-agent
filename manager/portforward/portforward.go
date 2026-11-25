@@ -409,16 +409,17 @@ func (m *Manager) AddMapping(ctx context.Context, vmId string, protocol string, 
 
 func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, hostPort, guestPort int, description string, bindFamily int, checkLimit bool) error {
 	if protocol != "tcp" && protocol != "udp" {
-		return fmt.Errorf("invalid protocol %q", protocol)
+		return fmt.Errorf("%w: invalid protocol %q", manager.ErrInvalidArgument, protocol)
 	}
 	if guestPort < 1 || guestPort > MaxPort {
-		return fmt.Errorf("invalid guest port %d", guestPort)
+		return fmt.Errorf("%w: invalid guest port %d", manager.ErrInvalidArgument, guestPort)
 	}
 	if hostPort < MinPort || hostPort > MaxPort {
-		return fmt.Errorf("host port %d out of allowed range [%d, %d]", hostPort, MinPort, MaxPort)
+		return fmt.Errorf("%w: host port %d out of allowed range [%d, %d]",
+			manager.ErrInvalidArgument, hostPort, MinPort, MaxPort)
 	}
 	if !ValidBindFamily(bindFamily) {
-		return fmt.Errorf("invalid bind family %d", bindFamily)
+		return fmt.Errorf("%w: invalid bind family %d", manager.ErrInvalidArgument, bindFamily)
 	}
 
 	// 先解析目标地址和监听地址：这两步都可能失败（容器未就绪、共享 IPv6 未配置）。
@@ -428,7 +429,7 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 		return err
 	}
 	if ip == "" {
-		return fmt.Errorf("VM %s has no IP address (is it running?)", vmId)
+		return fmt.Errorf("%w: VM %s 没有内网地址（实例是否在运行？）", manager.ErrInvalidArgument, vmId)
 	}
 	targetAddr := formatTargetAddress(ip, guestPort)
 
@@ -456,7 +457,7 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 	if checkLimit && old == nil {
 		maxPF := int(m.cfg.Get().MaxPortForward)
 		if len(m.mappings[vmId]) >= maxPF {
-			return fmt.Errorf("port forward limit reached (%d/%d)", len(m.mappings[vmId]), maxPF)
+			return fmt.Errorf("%w: 端口转发数量已达上限（%d/%d）", manager.ErrInvalidArgument, len(m.mappings[vmId]), maxPF)
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -636,8 +637,106 @@ func (m *Manager) RemoveMapping(_ context.Context, vmId string, protocol string,
 	return nil
 }
 
-// SyncForVM 以 desired 为准全量对齐某个 VM 的端口转发规则
+// SyncForVM 以 desired 为准全量对齐某个 VM 的端口转发规则。
+//
+// 对齐必须「要么全成、要么保持原样」：面板一次提交多条规则时，任何一条不合法
+// （协议错、端口越界、端口已被别的实例占用）都必须在动手之前拒绝。
+// 旧实现是先删后加，一次失败的提交会把该实例的全部转发清空——用户会直接失联。
 func (m *Manager) SyncForVM(ctx context.Context, vmId string, desired []DesiredRule) error {
+	// ── 阶段 1：静态预检，不触碰任何运行状态 ──────────────────────────────
+	seen := make(map[string]bool, len(desired))
+	for _, d := range desired {
+		if d.Protocol != "tcp" && d.Protocol != "udp" {
+			return fmt.Errorf("%w: unsupported protocol %q", manager.ErrInvalidArgument, d.Protocol)
+		}
+		if d.HostPort < MinPort || d.HostPort > MaxPort {
+			return fmt.Errorf("%w: host port %d out of allowed range [%d, %d]",
+				manager.ErrInvalidArgument, d.HostPort, MinPort, MaxPort)
+		}
+		if d.GuestPort < 1 || d.GuestPort > MaxPort {
+			return fmt.Errorf("%w: invalid guest port %d", manager.ErrInvalidArgument, d.GuestPort)
+		}
+		if !ValidBindFamily(d.BindFamily) {
+			return fmt.Errorf("%w: invalid bind family %d", manager.ErrInvalidArgument, d.BindFamily)
+		}
+		key := ruleKey(d.Protocol, d.HostPort)
+		if seen[key] {
+			return fmt.Errorf("%w: duplicate rule %s", manager.ErrInvalidArgument, key)
+		}
+		seen[key] = true
+	}
+
+	m.mu.RLock()
+	for otherVM, entries := range m.mappings {
+		if otherVM == vmId {
+			continue
+		}
+		for _, e := range entries {
+			if seen[ruleKey(e.Protocol, e.HostPort)] {
+				m.mu.RUnlock()
+				return fmt.Errorf("%w: %s 已被实例 %s 占用",
+					manager.ErrInvalidArgument, ruleKey(e.Protocol, e.HostPort), otherVM)
+			}
+		}
+	}
+	current := make([]*Entry, len(m.mappings[vmId]))
+	copy(current, m.mappings[vmId])
+	// 上限预检：有**新增**规则时，应用后的总数不能超过 max_port_forward。
+	// 只比对存量做幂等更新（不新增）的提交必须放行——否则把上限调小后，
+	// 存量实例连一次不改端口的同步都会被卡死。
+	if len(desired) > int(m.cfg.Get().MaxPortForward) {
+		hasNew := false
+		for _, d := range desired {
+			known := false
+			for _, c := range current {
+				if c.Protocol == d.Protocol && c.HostPort == d.HostPort {
+					known = true
+					break
+				}
+			}
+			if !known {
+				hasNew = true
+				break
+			}
+		}
+		if hasNew {
+			m.mu.RUnlock()
+			return fmt.Errorf("%w: 提交 %d 条转发超过上限 %d", manager.ErrInvalidArgument, len(desired), m.cfg.Get().MaxPortForward)
+		}
+	}
+	m.mu.RUnlock()
+
+	// ── 阶段 2：应用；失败则按快照回滚，避免留下半成品 ────────────────────
+	if err := m.applyDesired(ctx, vmId, desired, true); err != nil {
+		rollback := make([]DesiredRule, 0, len(current))
+		for _, c := range current {
+			rollback = append(rollback, DesiredRule{
+				Protocol:    c.Protocol,
+				HostPort:    c.HostPort,
+				GuestPort:   c.GuestPort,
+				Description: c.Description,
+				BindFamily:  c.BindFamily,
+			})
+		}
+		// 回滚是"恢复原状"，不受当前 max_port_forward 约束：上限被调小后，
+		// 存量规则可能本来就多于上限，带 limit 检查会把回滚卡在半路，
+		// 导致原规则只恢复一部分（实测丢规则）。用不随请求取消的 context：
+		// 客户端断开也要把规则恢复回去。
+		if rbErr := m.applyDesired(context.WithoutCancel(ctx), vmId, rollback, false); rbErr != nil {
+			return errors.Join(err, fmt.Errorf("rollback failed: %w", rbErr))
+		}
+		return err
+	}
+	return nil
+}
+
+func ruleKey(protocol string, hostPort int) string {
+	return protocol + "/" + strconv.Itoa(hostPort)
+}
+
+// applyDesired 把实际状态对齐到 desired（删除多余 + 添加/更新缺失）。
+// checkLimit=false 用于回滚：恢复原状的添加不受上限约束。
+func (m *Manager) applyDesired(ctx context.Context, vmId string, desired []DesiredRule, checkLimit bool) error {
 	m.mu.RLock()
 	current := make([]*Entry, len(m.mappings[vmId]))
 	copy(current, m.mappings[vmId])
@@ -662,7 +761,7 @@ func (m *Manager) SyncForVM(ctx context.Context, vmId string, desired []DesiredR
 
 	// 添加或更新期望的规则
 	for _, d := range desired {
-		if err := m.AddMapping(ctx, vmId, d.Protocol, d.HostPort, d.GuestPort, d.Description, d.BindFamily); err != nil {
+		if err := m.addMapping(ctx, vmId, d.Protocol, d.HostPort, d.GuestPort, d.Description, d.BindFamily, checkLimit); err != nil {
 			errs = append(errs, fmt.Errorf("add %s/%d: %w", d.Protocol, d.HostPort, err))
 		}
 	}

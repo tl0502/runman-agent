@@ -211,22 +211,27 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("GET /api/security/bans", s.handleSecurityBans)
 	mux.HandleFunc("POST /api/security/ban", s.handleSecurityBanCreate)
 	mux.HandleFunc("DELETE /api/security/ban/{ip}", s.handleSecurityBanDelete)
-	mux.HandleFunc("/api/status", s.handleStatus)
-	mux.HandleFunc("/api/config", s.handleConfig)
+	mux.HandleFunc("GET /api/status", s.handleStatus)
+	// GET/POST 分开注册：不限定方法时 PUT /api/config 会落进 GET 分支返回 200，
+	// 调用方误以为写入生效（Q8）。Go 1.22 的 ServeMux 允许同路径多方法模式共存。
+	mux.HandleFunc("GET /api/config", s.handleConfig)
+	mux.HandleFunc("POST /api/config", s.handleConfig)
 	mux.HandleFunc("POST /api/ipv6/share", s.handleShareIPv6)
 	mux.HandleFunc("GET /api/network/addresses", s.handleNetworkAddresses)
-	mux.HandleFunc("/api/brand/icon", s.handleBrandIcon)
+	mux.HandleFunc("GET /api/brand/icon", s.handleBrandIcon)
+	mux.HandleFunc("POST /api/brand/icon", s.handleBrandIcon)
+	mux.HandleFunc("DELETE /api/brand/icon", s.handleBrandIcon)
 	// 自定义图标同时充当 tab 图标；没有配置时回落到内置 favicon。
-	mux.HandleFunc("/favicon.ico", s.handleFavicon)
-	mux.HandleFunc("/api/system/info", s.handleSystemInfo)
+	mux.HandleFunc("GET /favicon.ico", s.handleFavicon)
+	mux.HandleFunc("GET /api/system/info", s.handleSystemInfo)
 	mux.HandleFunc("GET /api/podman/limits", s.handlePodmanLimits)
 	mux.HandleFunc("POST /api/podman/limits", s.handlePodmanLimitsSave)
-	mux.HandleFunc("/api/connection", s.handleConnection)
-	mux.HandleFunc("/api/hostfw/status", s.handleHostFWStatus)
+	mux.HandleFunc("GET /api/connection", s.handleConnection)
+	mux.HandleFunc("GET /api/hostfw/status", s.handleHostFWStatus)
 	// 清除平台凭据（显式动作，等同退出平台接入）
 	mux.HandleFunc("DELETE /api/platform/token", s.handleClearPlatformToken)
-	mux.HandleFunc("/api/version", s.handleVersion)
-	mux.HandleFunc("/api/update-check", s.handleUpdateCheck)
+	mux.HandleFunc("GET /api/version", s.handleVersion)
+	mux.HandleFunc("GET /api/update-check", s.handleUpdateCheck)
 	mux.HandleFunc("POST /api/upgrade", s.handleUpgrade)
 
 	// 镜像列表
@@ -291,7 +296,9 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("GET /api/patrol/anomalies", s.handlePatrolAnomalies)
 	mux.HandleFunc("GET /api/patrol/throttles", s.handlePatrolThrottles)
 	mux.HandleFunc("POST /api/patrol/throttles/{vmID}/release", s.handlePatrolRelease)
-	mux.HandleFunc("/api/patrol/config", s.handlePatrolConfig)
+	mux.HandleFunc("GET /api/patrol/config", s.handlePatrolConfig)
+	mux.HandleFunc("PUT /api/patrol/config", s.handlePatrolConfig)
+	mux.HandleFunc("POST /api/patrol/config", s.handlePatrolConfig)
 
 	// 通知（Agent 侧全局能力，当前通道 Telegram）
 	mux.HandleFunc("POST /api/notify/test", s.handleNotifyTest)
@@ -353,9 +360,17 @@ func (s *Server) ListenAndServe(addr string) error {
 	if err != nil {
 		return err
 	}
-	// 只限制请求头读取：慢速连接不能无限占住 goroutine；不设读写总超时，
-	// 以免误杀 TTY 等长连接。
-	srv := &http.Server{Handler: s.authMiddleware(mux), ReadHeaderTimeout: 10 * time.Second}
+	// ReadHeaderTimeout 挡住「只发半个请求头然后挂住」的连接。
+	// ReadTimeout 继续兜住「头发完了但 body 不发」——只设头超时时，这种连接
+	// 可以一直占着 fd 与 goroutine（实测 20 条就能稳定占住 20 个 fd）。
+	// 不设 WriteTimeout：SSE 事件流与 Web 终端都是长连接，写超时会误杀。
+	// IdleTimeout 回收 keep-alive 空闲连接。
+	srv := &http.Server{
+		Handler:           s.authMiddleware(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	return srv.Serve(ln)
 }
 
@@ -382,7 +397,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 
 	// 手动封禁检查（先于限速）：被封 IP 的登录请求直接拒绝并记录事件——
 	// 这是"攻击者被封后仍在活动"的观测点。响应与密码错误一致，不泄漏封禁状态。
@@ -928,7 +943,7 @@ func (s *Server) handleSecurityBanCreate(w http.ResponseWriter, r *http.Request)
 	}
 	ip := p.String()
 	// 自锁保护：禁止封禁当前请求的来源 IP（防止把自己挡在面板外）
-	if ip == clientIP(r) {
+	if ip == s.clientIP(r) {
 		jsonErr(w, fmt.Errorf("不能封禁当前来源 IP"), http.StatusBadRequest)
 		return
 	}
@@ -1222,6 +1237,23 @@ func jsonErr(w http.ResponseWriter, err error, code int) {
 	http.Error(w, err.Error(), code)
 }
 
+// vmErrStatus 把驱动层哨兵错误映射成合适的 HTTP 状态码。
+// 之前所有失败一律 500，导致「实例不存在」「同名重复」「参数越界」都无法与真正的
+// 服务端故障区分；调用方无法据此决定重试还是改参数。
+func vmErrStatus(err error) int {
+	switch {
+	case err == nil:
+		return http.StatusOK
+	case errors.Is(err, manager.ErrVMNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, manager.ErrVMExists):
+		return http.StatusConflict
+	case errors.Is(err, manager.ErrInvalidArgument):
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
 // ─── 监控 TSDB ─────────────────────────────────────────────────────────────────
 
 // vmCreatedAtUnix 返回 VM 的真实创建时间（Unix 秒）；无法获取时返回 0，前端显示「—」。
@@ -1367,7 +1399,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := s.hostMon.GetStats(ctx)
 	if err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 
@@ -1475,6 +1507,7 @@ type configRequest struct {
 
 	// 容器网络隔离。指针用于区分"未提交"（保持原值）与"显式 false"。
 	ContainerIsolate      *bool   `json:"container_isolate"`
+	TrustProxy            *bool   `json:"trust_proxy"`
 	HostAllowPorts        *string `json:"host_allow_ports"`        // 逗号分隔端口，空串 = 清空
 	ContainerAllowSubnets *string `json:"container_allow_subnets"` // 逗号分隔 CIDR，空串 = 清空
 
@@ -1528,6 +1561,7 @@ type configResponse struct {
 	ContainerIsolate      bool     `json:"container_isolate"`
 	HostAllowPorts        []int    `json:"host_allow_ports"`
 	ContainerAllowSubnets []string `json:"container_allow_subnets"`
+	TrustProxy            bool     `json:"trust_proxy"`
 
 	// 巡查与通知渠道：并入主配置响应，前端单次提交即可保存全部。
 	// BotToken 不回传明文（与主 Token 的 has_token 基线一致）：Telegram 里
@@ -1542,6 +1576,22 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		var req configRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), 400)
+			return
+		}
+		// 负数没有「不限制」的语义（0 才是），静默忽略会让调用方以为保存成功。
+		if req.MaxForwardIPs != nil && *req.MaxForwardIPs < 0 {
+			jsonErr(w, fmt.Errorf("max_forward_ips 不能为负数（0 表示不限制）"), http.StatusBadRequest)
+			return
+		}
+		if req.MaxPortForward < 0 {
+			jsonErr(w, fmt.Errorf("max_port_forward 不能为负数"), http.StatusBadRequest)
+			return
+		}
+		// v0.4.1 用 Basic Auth，按首个冒号切分 "user:pass"：用户名里含冒号
+		// 会让降级后永远登录不上（Q5）。新版是 cookie 会话不受影响，但配置是
+		// 共用的，这里直接拒绝生成这种用户名，避免回滚时踩坑。
+		if req.WebUser != "" && strings.Contains(req.WebUser, ":") {
+			jsonErr(w, fmt.Errorf("web_user 不能包含冒号"), http.StatusBadRequest)
 			return
 		}
 		// 密码在改配置前预生成：bcrypt 对超 72 字节密码报错，若在 Update 回调里
@@ -1672,6 +1722,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if req.ContainerIsolate != nil {
 				cfg.ContainerIsolate = req.ContainerIsolate
 			}
+			if req.TrustProxy != nil {
+				cfg.TrustProxy = *req.TrustProxy
+			}
 			if req.HostAllowPorts != nil {
 				cfg.HostAllowPorts = config.ParsePortList(*req.HostAllowPorts)
 			}
@@ -1763,6 +1816,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		ContainerIsolate:      conf.IsolateEnabled(),
 		HostAllowPorts:        conf.AllowedHostPorts(),
 		ContainerAllowSubnets: conf.AllowedSubnets(),
+		TrustProxy:            conf.TrustProxy,
 
 		// 巡查与通知渠道并入主配置响应：前端单次提交 /api/config 即可保存全部。
 		// BotToken 脱敏回传（副本上抹掉明文），前端输入框恒为空、留空提交即不修改。
@@ -1931,7 +1985,7 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleImages(w http.ResponseWriter, r *http.Request) {
 	images, err := s.mgr.GetSupportedImages(r.Context())
 	if err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	// 上架且就绪的镜像（内置 + 自定义统一清单）
@@ -2004,7 +2058,7 @@ func (s *Server) handleAddCustomImage(w http.ResponseWriter, r *http.Request) {
 		Status:  db.CustomImagePulling,
 		AddedAt: time.Now().Unix(),
 	}); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 
@@ -2026,7 +2080,7 @@ func (s *Server) handleDeleteCustomImage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.db.DeleteCustomImage(id); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	// 同步清理镜像清单中的残留项（内置镜像不存在于自定义列表，不涉及）
@@ -2039,7 +2093,7 @@ func (s *Server) handleDeleteCustomImage(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleGetImagesConfig(w http.ResponseWriter, r *http.Request) {
 	builtin, err := s.mgr.GetSupportedImages(r.Context())
 	if err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	jsonOK(w, map[string]interface{}{
@@ -2080,7 +2134,7 @@ func (s *Server) handleSaveImagesConfig(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if err := manager.SaveImageConfigs(s.db, req.Items); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	jsonOK(w, map[string]any{"ok": true})
@@ -2100,6 +2154,9 @@ type vmListItem struct {
 	MonthlyTrafficOut int64    `json:"monthly_traffic_out"`
 	Ips               []string `json:"ips"`
 	CreatedAt         int64    `json:"created_at"`
+	// Missing 表示 DB 里有记录但容器已不存在（例如在面板外被 podman rm 掉）。
+	// 这类记录必须显示出来，否则用户既看不到也清不掉。
+	Missing bool `json:"missing,omitempty"`
 }
 
 func (s *Server) handleListVMs(w http.ResponseWriter, r *http.Request) {
@@ -2160,6 +2217,35 @@ func (s *Server) handleListVMs(w http.ResponseWriter, r *http.Request) {
 		}
 		items[i] = item
 	}
+
+	// 补上「DB 有记录、容器已不存在」的孤儿实例（例如被 podman rm -f 掉）。
+	// 驱动侧的列表以实际容器为基准，不补的话这类实例在面板上凭空消失，
+	// 用户既看不到状态也删不掉记录。
+	if confs, err := s.db.ListVMConfigs(); err == nil && len(confs) > 0 {
+		seen := make(map[string]bool, len(items))
+		for _, it := range items {
+			if it.VmId != "" {
+				seen[it.VmId] = true
+			}
+		}
+		for _, conf := range confs {
+			if seen[conf.VMID] {
+				continue
+			}
+			item := vmListItem{
+				VmId:       conf.VMID,
+				Status:     int32(agent.VMStatus_VM_STATUS_STOPPED),
+				RamTotalMb: conf.MemoryMB,
+				CreatedAt:  s.vmCreatedAtUnix(conf.VMID),
+				Missing:    true,
+			}
+			if traffic, _ := s.db.GetTraffic(conf.VMID); traffic != nil {
+				item.MonthlyTrafficIn = traffic.MonthIn
+				item.MonthlyTrafficOut = traffic.MonthOut
+			}
+			items = append(items, item)
+		}
+	}
 	jsonOK(w, items)
 }
 
@@ -2175,6 +2261,32 @@ type createVMRequest struct {
 	RootPassword  string `json:"root_password"`
 }
 
+// validateVMID 在进入驱动之前校验实例 ID。
+//
+// 驱动（podman 的容器名、KVM 的域名）本身就带字符集约束，不校验的话请求会一路
+// 走到 createVM 深处才被拒绝，返回 500 并把 crun 的原始报错抛给调用方。
+// 这里只做「不越界、不注入、不路径穿越」的宽松校验，不影响既有命名习惯。
+func validateVMID(id string) error {
+	if id == "" {
+		return fmt.Errorf("vm_id 不能为空")
+	}
+	if len(id) > 128 {
+		return fmt.Errorf("vm_id 最长 128 个字符")
+	}
+	if id[0] == '-' || id[0] == '.' {
+		return fmt.Errorf("vm_id 不能以 - 或 . 开头")
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '_' || r == '-' || r == '.':
+		default:
+			return fmt.Errorf("vm_id 只能包含字母、数字、下划线、短横线和点")
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 	var req createVMRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2187,6 +2299,10 @@ func (s *Server) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.VmId == "" {
 		req.VmId = uuid.NewString()
+	}
+	if err := validateVMID(req.VmId); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
 	}
 
 	cmd := &agent.CmdCreateVM{
@@ -2201,7 +2317,7 @@ func (s *Server) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	if err := s.mgr.CreateVM(ctx, cmd); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 
@@ -2216,7 +2332,7 @@ func (s *Server) handleGetVM(w http.ResponseWriter, r *http.Request) {
 	vmID := r.PathValue("id")
 	info, err := s.mgr.GetVMInfo(r.Context(), vmID)
 	if err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	jsonOK(w, info)
@@ -2224,7 +2340,7 @@ func (s *Server) handleGetVM(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStartVM(w http.ResponseWriter, r *http.Request) {
 	if err := s.mgr.StartVM(r.Context(), r.PathValue("id")); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -2236,7 +2352,7 @@ func (s *Server) handleStopVM(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if err := s.mgr.StopVM(r.Context(), r.PathValue("id"), req.Force); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -2245,7 +2361,7 @@ func (s *Server) handleStopVM(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRestartVM(w http.ResponseWriter, r *http.Request) {
 	vmID := r.PathValue("id")
 	if err := s.mgr.RestartVM(r.Context(), vmID); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	s.pf.RefreshVM(r.Context(), vmID)
@@ -2255,7 +2371,7 @@ func (s *Server) handleRestartVM(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteVM(w http.ResponseWriter, r *http.Request) {
 	vmID := r.PathValue("id")
 	if err := s.mgr.DeleteVM(r.Context(), vmID); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	// 与 gRPC 删除路径保持一致：清理该 VM 的端口转发规则及 IP 限制覆盖
@@ -2299,7 +2415,7 @@ func (s *Server) handleReinstallVM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.mgr.ReinstallVM(r.Context(), cmd); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 
@@ -2326,7 +2442,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if err := s.mgr.ResetPassword(ctx, id, req.Password); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	w.WriteHeader(204)
@@ -2340,7 +2456,7 @@ func (s *Server) handleResetTraffic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.db.ResetTrafficMonth(id); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	w.WriteHeader(204)
@@ -2415,8 +2531,12 @@ func (s *Server) handleAddPortFwd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "protocol must be tcp or udp", 400)
 		return
 	}
-	if req.HostPort <= 0 || req.GuestPort <= 0 {
-		http.Error(w, "host_port and guest_port must be positive", 400)
+	if req.HostPort <= 0 || req.HostPort > 65535 {
+		http.Error(w, "host_port must be within 1-65535", 400)
+		return
+	}
+	if req.GuestPort <= 0 || req.GuestPort > 65535 {
+		http.Error(w, "guest_port must be within 1-65535", 400)
 		return
 	}
 	if err := s.validatePortFwdBind(req.BindFamily); err != nil {
@@ -2425,7 +2545,7 @@ func (s *Server) handleAddPortFwd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.pf.AddMapping(r.Context(), vmID, req.Protocol, req.HostPort, req.GuestPort, req.Description, req.BindFamily); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -2447,7 +2567,7 @@ func (s *Server) handleDelPortFwd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.pf.RemoveMapping(r.Context(), vmID, proto, hostPort); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -2481,7 +2601,7 @@ func (s *Server) handleSyncPortFwds(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.pf.SyncForVM(r.Context(), vmID, desired); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -2540,7 +2660,7 @@ func (req *wgRequest) apply(b *db.WGBinding) {
 func (s *Server) handleListWG(w http.ResponseWriter, r *http.Request) {
 	list, err := s.wg.List(r.PathValue("id"))
 	if err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	jsonOK(w, list)
@@ -2615,7 +2735,7 @@ func (s *Server) handleDelWG(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.wg.Remove(bindID); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -2625,7 +2745,7 @@ func (s *Server) handleDelWG(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWGKeypair(w http.ResponseWriter, _ *http.Request) {
 	priv, pub, err := wgbind.GenerateKeyPair()
 	if err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	jsonOK(w, map[string]string{"private_key": priv, "public_key": pub})
@@ -2666,7 +2786,7 @@ func (s *Server) handleSetIPLimit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.pf.SetVMIPLimit(vmID, req.Limit); err != nil {
-		jsonErr(w, err, 500)
+		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -2787,6 +2907,14 @@ func rfwBinaryExists() bool {
 func (s *Server) handleVMTTY(w http.ResponseWriter, r *http.Request) {
 	vmID := r.PathValue("id")
 
+	// 只允许连本 Agent 登记过的实例。AttachTTY 直接拿 vmID 当容器名去 exec，
+	// 不校验的话可以把终端开进宿主机上任意容器（同机跑的别的业务容器也能进）。
+	// 顺带把「实例不存在」从「先 101 再推报错」改成干净的 404。
+	if v, err := s.db.GetVMConfig(vmID); err != nil || v == nil {
+		http.Error(w, "vm not found", http.StatusNotFound)
+		return
+	}
+
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -2799,7 +2927,9 @@ func (s *Server) handleVMTTY(w http.ResponseWriter, r *http.Request) {
 	stdinPR, stdinPW := io.Pipe()
 	resizeCh := make(chan manager.ResizeEvent, 4)
 
-	// 读取 WebSocket 消息：binary → 容器 stdin，text JSON → resize 事件
+	// 读取 WebSocket 消息：text JSON → resize 事件，其余一律当输入。
+	// 早先的实现在 text 帧解析 JSON 失败时直接丢弃，导致任何不发 binary 帧的
+	// 客户端（wscat、自研脚本）输入全部无效且没有任何提示。
 	go func() {
 		defer func() { _ = stdinPW.Close() }()
 		defer cancel()
@@ -2820,11 +2950,12 @@ func (s *Server) handleVMTTY(w http.ResponseWriter, r *http.Request) {
 					case resizeCh <- manager.ResizeEvent{Cols: ctrl.Cols, Rows: ctrl.Rows}:
 					default:
 					}
+					continue
 				}
-			} else {
-				if _, err := stdinPW.Write(msg); err != nil {
-					return
-				}
+				// 不是控制消息：按键盘输入处理
+			}
+			if _, err := stdinPW.Write(msg); err != nil {
+				return
 			}
 		}
 	}()
