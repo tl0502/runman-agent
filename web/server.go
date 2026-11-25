@@ -1549,6 +1549,9 @@ type configResponse struct {
 	// 与心跳 entry_host 同口径。前端直接展示它，避免把 1:1 NAT 机器上的内网
 	// 监听地址当成用户可访问的入口。
 	EntryAddr string `json:"entry_addr"`
+	// EntrySource 说明 EntryAddr 的来源：manual / public_ipv4 / auto / ""。
+	// 面板用它渲染「当前生效值 · 来源」，就不必再用文字解释优先级顺序。
+	EntrySource string `json:"entry_source"`
 
 	// 共享 IPv6（仅 snat 模式有意义）：PublicIPv6 是可配置的对外地址，
 	// IPv6Addr 是安装脚本探测写入的地址（只读），SharedIPv6 是最终生效值
@@ -1704,7 +1707,15 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 				cfg.NetavarkBase = v
 			}
 			if req.PublicIPv4 != nil {
-				cfg.PublicIPv4 = strings.TrimSpace(*req.PublicIPv4)
+				v := strings.TrimSpace(*req.PublicIPv4)
+				// 端口转发直接 bind 这个地址：不在本机网卡上时 bind 会 EADDRNOTAVAIL，
+				// 该机器的映射全部失败。云厂商 1:1 NAT 的弹性 IP 属于这种地址，
+				// 它只用于入口展示（由 entry_addr 自动得出），不该填在这里。
+				// 已存量的旧值放行，否则这类机器连其它字段都改不了，只能先清空。
+				if v != "" && v != strings.TrimSpace(cfg.PublicIPv4) && !hostHasIPv4(v) {
+					return fmt.Errorf("public_ipv4 %s 不在本机网卡上，无法用于端口监听；云厂商 1:1 NAT 的弹性 IP 请留空", v)
+				}
+				cfg.PublicIPv4 = v
 			}
 			if req.PublicIPv6 != nil {
 				v := strings.TrimSpace(*req.PublicIPv6)
@@ -1809,6 +1820,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		PublicIPv4:       conf.PublicIPv4,
 		DetectedIPv4:     s.detectedIPv4(),
 		EntryAddr:        conf.EntryHost(s.detectedIPv4()),
+		EntrySource:      conf.EntryHostSource(s.detectedIPv4()),
 		PublicIPv6:       conf.PublicIPv6,
 		IPv6Mode:         conf.IPv6Mode,
 		IPv6Addr:         conf.IPv6Addr,
@@ -3203,8 +3215,26 @@ func hostHasIPv6(addr string) bool {
 	return false
 }
 
-// listHostIPv6 枚举本机网卡上的全局 IPv6 地址。
-// 过滤回环、链路本地与 ULA 私网（fc00::/7），只留可对外使用的公网地址。
+// hostHasIPv4 判断地址是否已配置在本机网卡上。空值表示「不指定」，视为合法。
+// 端口转发直接 bind 这个地址，地址不存在时 bind 会 EADDRNOTAVAIL；典型误配是
+// 云厂商 1:1 NAT 机器（网卡只有内网地址）把弹性公网 IP 填进来——那个地址不能绑。
+func hostHasIPv4(addr string) bool {
+	if addr == "" {
+		return true
+	}
+	target := net.ParseIP(addr)
+	if target == nil || target.To4() == nil {
+		return false
+	}
+	for _, a := range listHostIPv4() {
+		if ip := net.ParseIP(a); ip != nil && ip.Equal(target) {
+			return true
+		}
+	}
+	return false
+}
+
+// listHostIPv6 枚举本机网卡上的全局 IPv6 地址。// 过滤回环、链路本地与 ULA 私网（fc00::/7），只留可对外使用的公网地址。
 func listHostIPv6() []string {
 	result := []string{}
 	ifaces, err := net.Interfaces()

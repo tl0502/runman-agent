@@ -76,3 +76,24 @@ func TestEntryHost(t *testing.T) {
 		}
 	}
 }
+
+func TestEntryHostSource(t *testing.T) {
+	cases := []struct {
+		name     string
+		cfg      Config
+		detected string
+		want     string
+	}{
+		{"手动 host", Config{Host: "my.ddns.net", PublicIPv4: "3.112.32.200"}, "1.1.1.1", "manual"},
+		{"公网 public_ipv4", Config{PublicIPv4: "3.112.32.200"}, "1.1.1.1", "public_ipv4"},
+		{"内网 public_ipv4 让位探测", Config{PublicIPv4: "172.26.1.219"}, "3.112.32.200", "auto"},
+		{"内网 public_ipv4 无探测值", Config{PublicIPv4: "172.26.1.219"}, "", "public_ipv4"},
+		{"仅探测值", Config{}, "3.112.32.200", "auto"},
+		{"全空", Config{}, "", ""},
+	}
+	for _, c := range cases {
+		if got := c.cfg.EntryHostSource(c.detected); got != c.want {
+			t.Errorf("%s: EntryHostSource() = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

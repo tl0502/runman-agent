@@ -741,19 +741,38 @@ func IsPrivateIPv4(raw string) bool {
 // detected 为空时保留 public_ipv4 原值：纯内网部署里它就是唯一入口，
 // 宁可上报内网地址，也不要留空让平台无从连接。
 func (c Config) EntryHost(detectedIPv4 string) string {
+	v, _ := c.entryHostResolve(detectedIPv4)
+	return v
+}
+
+// EntryHostSource 与 EntryHost 同口径，额外返回取值来源，供面板展示
+// 「当前生效值 · 来源」，避免再用文字解释一遍优先级：
+//
+//	"manual"      —— 手动填写的 host（含 DDNS 域名）
+//	"public_ipv4" —— 面板选定的对外 IPv4（本身是公网地址）
+//	"auto"        —— 自动探测到的公网 IPv4
+//	""            —— 三者都没有（尚未探测到，或探测被网络阻断）
+func (c Config) EntryHostSource(detectedIPv4 string) string {
+	_, src := c.entryHostResolve(detectedIPv4)
+	return src
+}
+
+func (c Config) entryHostResolve(detectedIPv4 string) (string, string) {
 	if h := strings.TrimSpace(c.Host); h != "" {
-		return h
+		return h, "manual"
 	}
 	pub := strings.TrimSpace(c.PublicIPv4)
+	detected := strings.TrimSpace(detectedIPv4)
 	if pub == "" {
-		return strings.TrimSpace(detectedIPv4)
-	}
-	if IsPrivateIPv4(pub) {
-		if detected := strings.TrimSpace(detectedIPv4); detected != "" {
-			return detected
+		if detected != "" {
+			return detected, "auto"
 		}
+		return "", ""
 	}
-	return pub
+	if IsPrivateIPv4(pub) && detected != "" {
+		return detected, "auto"
+	}
+	return pub, "public_ipv4"
 }
 
 // EgressIPv6 返回共享 IPv6 的对外地址：public_ipv6 优先，回落安装脚本

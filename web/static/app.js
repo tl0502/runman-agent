@@ -1924,9 +1924,24 @@ function loadConfigIntoForm(c) {
   loadPatrolConfig(c);
   state.snapshot = confSnapshot();
   syncDirty();
-  loadNetworkAddresses(c.public_ipv4 || '', c.public_ipv6 || '');
+  loadNetworkAddresses(c);
   // 共享 IPv6：snat 模式显示地址选择；未启用时给出启用入口。
   renderIPv6Share(c);
+  renderEntryEffective(c);
+}
+
+// 入口地址来源标注（后端 entry_source）：把「优先级」变成一行事实，不再写解释文字。
+const ENTRY_SOURCE_LABEL = { manual: '手动填写', public_ipv4: '监听 IPv4', auto: '自动探测' };
+
+function renderEntryEffective(c) {
+  const el = $('entryHostEffective');
+  if (!el) return;
+  if (!c.entry_addr) {
+    el.textContent = '当前未取到入口地址';
+    return;
+  }
+  const src = ENTRY_SOURCE_LABEL[c.entry_source];
+  el.textContent = `当前生效 ${c.entry_addr}${src ? ` · ${src}` : ''}`;
 }
 
 // renderIPv6Share 控制共享 IPv6 的两种形态：
@@ -1967,11 +1982,17 @@ function syncTrafficResetUI() {
   if (el) el.style.display = $('trafficResetMode').value === 'rental' ? 'none' : '';
 }
 
-// loadNetworkAddresses 拉取宿主机可用的 IPv4 填充下拉框。
-// 当前配置值若不在列表里（IP 尚未绑到网卡），补一项保留，避免保存时被清空。
-async function loadNetworkAddresses(selected, selected6) {
+// loadNetworkAddresses 填充监听地址下拉框——只列本机网卡上真实存在的地址，
+// 端口转发是直接 bind 它们的。当前配置值若不在列表里（IP 尚未绑到网卡），
+// 补一项保留，避免保存时被清空。
+// 云厂商 1:1 NAT 机器（网卡只有内网地址）下，探测到的公网 IPv4 不在网卡上，
+// 单独用一行提示说明它不参与监听绑定，避免被当成「漏了公网 IP」。
+async function loadNetworkAddresses(c) {
   const sel = $('publicIpv4');
   if (!sel) return;
+  const selected = c.public_ipv4 || '';
+  const selected6 = c.public_ipv6 || '';
+  const detected = c.detected_ipv4 || '';
   let addrs = [];
   let addrs6 = [];
   let primary = '';
@@ -1996,6 +2017,13 @@ async function loadNetworkAddresses(selected, selected6) {
     sel.appendChild(opt);
   }
   sel.value = selected || '';
+
+  const note = $('publicIpv4Note');
+  if (note) {
+    const show = !!detected && !addrs.includes(detected);
+    note.hidden = !show;
+    if (show) note.textContent = `公网 ${detected} 由云厂商 NAT 映射，不参与监听绑定`;
+  }
 
   const sel6 = $('publicIpv6');
   if (sel6) {

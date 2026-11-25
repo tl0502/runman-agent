@@ -783,6 +783,33 @@
                   <input class="input tnum" type="number" id="trafficResetDay" min="1" max="28">
                 </div>
               </div>
+              <div class="cfg-group">
+                <div class="cfg-group-head"><span>监听地址</span></div>
+                <div class="form-grid">
+                  <div class="field">
+                    <label for="publicIpv4">监听 IPv4 <span class="hint">留空 = 全部本机地址</span></label>
+                    <select class="input" id="publicIpv4">
+                      <option value="">未指定（默认）</option>
+                    </select>
+                    <span class="hint" id="publicIpv4Note" hidden></span>
+                  </div>
+                  <div class="field" id="publicIpv6Field" hidden>
+                    <label for="publicIpv6">监听 IPv6 <span class="hint">留空 = 用安装检测值</span></label>
+                    <select class="input" id="publicIpv6">
+                      <option value="">未指定（用检测值）</option>
+                    </select>
+                  </div>
+                  <div class="field" id="ipv6EnableField" hidden>
+                    <label for="sharedV6Addr">共享 IPv6 出口 <span class="hint">接管监听与出站；启用会重建容器网络</span></label>
+                    <div class="field-row">
+                      <select class="input" id="sharedV6Addr">
+                        <option value="">选择本机 IPv6 地址</option>
+                      </select>
+                      <button class="btn btn-primary" type="button" id="btnEnableSharedV6">启用</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </section>
@@ -827,29 +854,9 @@
                 <input class="input mono" id="platformAddr" placeholder="hosting.example.com:443">
               </div>
               <div class="field">
-                <label for="entryHost">入口地址 <span class="hint">留空则用公网 IPv4，再留空自动探测</span></label>
-                <input class="input mono" id="entryHost" placeholder="myhost.ddns.net">
-              </div>
-              <div class="field">
-                <label for="publicIpv4">对外 IPv4 <span class="hint">端口监听与出站；内网地址仅用于监听，不作为入口上报</span></label>
-                <select class="input" id="publicIpv4">
-                  <option value="">未指定（默认）</option>
-                </select>
-              </div>
-              <div class="field" id="publicIpv6Field" hidden>
-                <label for="publicIpv6">共享 IPv6 <span class="hint">端口监听与出站；留空用安装检测值</span></label>
-                <select class="input" id="publicIpv6">
-                  <option value="">未指定（用检测值）</option>
-                </select>
-              </div>
-              <div class="field" id="ipv6EnableField" hidden>
-                <label for="sharedV6Addr">共享 IPv6 <span class="hint">接管端口监听与出站；启用会重建容器网络</span></label>
-                <div class="field-row">
-                  <select class="input" id="sharedV6Addr">
-                    <option value="">选择本机 IPv6 地址</option>
-                  </select>
-                  <button class="btn btn-primary" type="button" id="btnEnableSharedV6">启用</button>
-                </div>
+                <label for="entryHost">入口地址 <span class="hint">支持 DDNS 域名</span></label>
+                <input class="input mono" id="entryHost" placeholder="留空自动">
+                <span class="hint" id="entryHostEffective"></span>
               </div>
               <label class="check"><input type="checkbox" id="platformInsecure"><svg class="check-box" viewBox="0 0 12 12" aria-hidden="true"><rect class="cb-bg" x="1" y="1" width="10" height="10" rx="2.5"/><path class="cb-mark" d="M2.8 6.4 L5 8.5 L9.4 3.7"/></svg> 跳过平台 TLS 证书校验 <span class="warn" id="platformInsecureWarn" hidden>连接平台时不校验证书，仅用于自签证书场景</span></label>
             </div>
