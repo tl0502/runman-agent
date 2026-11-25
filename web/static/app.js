@@ -1967,6 +1967,14 @@ function renderIPv6Share(c) {
   edit.hidden = !isSnat;
   enable.hidden = isSnat || c.ipv6_mode === 'subnet' || c.virt_type !== 'podman';
   if (!enable.hidden) void fillSharedV6Options();
+  // 生效值：共享 IPv6 配置地址已不在网卡上时，上报会回落探测值（source=stale）。
+  const eff = $('sharedV6Effective');
+  if (eff) {
+    const labels = { config: '已配置', auto: '自动探测', stale: '自动探测 · 配置地址已失效' };
+    eff.textContent = c.entry_ipv6
+      ? `当前生效 ${c.entry_ipv6}${labels[c.entry_ipv6_source] ? ` · ${labels[c.entry_ipv6_source]}` : ''}`
+      : '当前未取到公网 IPv6';
+  }
 }
 
 async function fillSharedV6Options() {

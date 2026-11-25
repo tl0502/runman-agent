@@ -757,6 +757,28 @@ func (c Config) EntryHostSource(detectedIPv4 string) string {
 	return src
 }
 
+// EntryIPv6 返回上报/展示用的入口 IPv6 与来源，与 EntryHost 同一思路：
+//   - 未启用共享 IPv6（非 snat 模式，或 snat 但没拿到地址）→ 自动探测值，来源 auto；
+//   - 已启用 → 配置地址，来源 config；
+//   - 配置地址已不在本机网卡上（实例重建、云厂商地址漂移）且探测到了新地址
+//     → 回落探测值，来源 stale（此时端口监听仍绑旧地址，需要人工修正配置）。
+//
+// onHost 可为 nil（不做网卡校验，直接信配置）。
+func (c Config) EntryIPv6(detectedIPv6 string, onHost func(string) bool) (string, string) {
+	detected := strings.TrimSpace(detectedIPv6)
+	if !c.SharedIPv6Enabled() {
+		if detected != "" {
+			return detected, "auto"
+		}
+		return "", ""
+	}
+	configured := c.EgressIPv6()
+	if detected != "" && onHost != nil && !onHost(configured) {
+		return detected, "stale"
+	}
+	return configured, "config"
+}
+
 func (c Config) entryHostResolve(detectedIPv4 string) (string, string) {
 	if h := strings.TrimSpace(c.Host); h != "" {
 		return h, "manual"

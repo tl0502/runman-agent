@@ -1552,6 +1552,11 @@ type configResponse struct {
 	// EntrySource 说明 EntryAddr 的来源：manual / public_ipv4 / auto / ""。
 	// 面板用它渲染「当前生效值 · 来源」，就不必再用文字解释优先级顺序。
 	EntrySource string `json:"entry_source"`
+	// EntryIPv6 是上报/展示用的入口 IPv6，EntryIPv6Source 说明来源：
+	// config（配置的共享 IPv6）/ auto（自动探测）/ stale（配置地址已不在网卡上，
+	// 改用探测值）/ ""。
+	EntryIPv6       string `json:"entry_ipv6"`
+	EntryIPv6Source string `json:"entry_ipv6_source"`
 
 	// 共享 IPv6（仅 snat 模式有意义）：PublicIPv6 是可配置的对外地址，
 	// IPv6Addr 是安装脚本探测写入的地址（只读），SharedIPv6 是最终生效值
@@ -1794,6 +1799,15 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	conf := s.cfg.Get()
 	_, iconMtime := s.brandIconFile()
+	// 入口 IPv6 与心跳同口径：共享 IPv6 配置地址已不在网卡上时回落探测值。
+	// 只有 podman 后端才有共享 IPv6，其它驱动一律用探测值。
+	entryV6, entryV6Source := s.detectedIPv6(), "auto"
+	if entryV6 == "" {
+		entryV6Source = ""
+	}
+	if conf.VirtType == "podman" {
+		entryV6, entryV6Source = conf.EntryIPv6(s.detectedIPv6(), config.HostHasIPv6)
+	}
 	// BotToken 在副本上抹掉明文再回传：响应体、浏览器内存、抓包日志都不落明文。
 	tg := conf.Telegram
 	tg.BotToken = ""
@@ -1821,6 +1835,8 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		DetectedIPv4:     s.detectedIPv4(),
 		EntryAddr:        conf.EntryHost(s.detectedIPv4()),
 		EntrySource:      conf.EntryHostSource(s.detectedIPv4()),
+		EntryIPv6:        entryV6,
+		EntryIPv6Source:  entryV6Source,
 		PublicIPv6:       conf.PublicIPv6,
 		IPv6Mode:         conf.IPv6Mode,
 		IPv6Addr:         conf.IPv6Addr,
@@ -3001,38 +3017,8 @@ func (s *Server) handleNetworkAddresses(w http.ResponseWriter, _ *http.Request) 
 	})
 }
 
-func listHostIPv4() []string {
-	result := []string{}
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return result
-	}
-	for _, ifi := range ifaces {
-		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		if isVirtualInterface(ifi.Name) {
-			continue
-		}
-		addrs, err := ifi.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
-			ipnet, ok := addr.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			ip4 := ipnet.IP.To4()
-			if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() {
-				continue
-			}
-			result = append(result, ip4.String())
-		}
-	}
-	sort.Strings(result)
-	return result
-}
+// listHostIPv4 枚举本机网卡上的 IPv4 地址（含内网地址：1:1 NAT 机器的监听地址就是它）。
+func listHostIPv4() []string { return config.ListHostIPv4() }
 
 const (
 	podmanNetName   = "narwhal-net"
@@ -3202,80 +3188,14 @@ func (s *Server) applySharedIPv6(ctx context.Context) error {
 
 // hostHasIPv6 判断地址是否已配置在本机的物理网卡上。
 // 共享 IPv6 的端口监听直接 bind 该地址，地址不存在时 bind 会失败。
-func hostHasIPv6(addr string) bool {
-	target := net.ParseIP(addr)
-	if target == nil {
-		return false
-	}
-	for _, a := range listHostIPv6() {
-		if ip := net.ParseIP(a); ip != nil && ip.Equal(target) {
-			return true
-		}
-	}
-	return false
-}
+func hostHasIPv6(addr string) bool { return config.HostHasIPv6(addr) }
 
-// hostHasIPv4 判断地址是否已配置在本机网卡上。空值表示「不指定」，视为合法。
-// 端口转发直接 bind 这个地址，地址不存在时 bind 会 EADDRNOTAVAIL；典型误配是
-// 云厂商 1:1 NAT 机器（网卡只有内网地址）把弹性公网 IP 填进来——那个地址不能绑。
-func hostHasIPv4(addr string) bool {
-	if addr == "" {
-		return true
-	}
-	target := net.ParseIP(addr)
-	if target == nil || target.To4() == nil {
-		return false
-	}
-	for _, a := range listHostIPv4() {
-		if ip := net.ParseIP(a); ip != nil && ip.Equal(target) {
-			return true
-		}
-	}
-	return false
-}
+// hostHasIPv4 判断地址是否已配置在本机网卡上（空值视为合法，表示不指定）。
+// 端口转发直接 bind 这个地址，地址不存在时 bind 会 EADDRNOTAVAIL。
+func hostHasIPv4(addr string) bool { return config.HostHasIPv4(addr) }
 
-// listHostIPv6 枚举本机网卡上的全局 IPv6 地址。// 过滤回环、链路本地与 ULA 私网（fc00::/7），只留可对外使用的公网地址。
-func listHostIPv6() []string {
-	result := []string{}
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return result
-	}
-	for _, ifi := range ifaces {
-		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		if isVirtualInterface(ifi.Name) {
-			continue
-		}
-		addrs, err := ifi.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
-			ipnet, ok := addr.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			ip := ipnet.IP
-			if ip.To4() != nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsPrivate() {
-				continue
-			}
-			result = append(result, ip.String())
-		}
-	}
-	sort.Strings(result)
-	return result
-}
-
-func isVirtualInterface(name string) bool {
-	for _, prefix := range []string{"podman", "docker", "br-", "veth", "cni", "virbr", "vnet", "tun", "tap"} {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return false
-}
+// listHostIPv6 枚举本机网卡上的全局 IPv6 地址（过滤回环/链路本地/ULA/虚拟接口）。
+func listHostIPv6() []string { return config.ListHostIPv6() }
 
 // primaryIPv4 返回默认路由会选中的源地址。UDP 的 Dial 只做路由查找，不发包。
 func primaryIPv4() string {

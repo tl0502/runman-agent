@@ -44,7 +44,8 @@ func TestHeartbeatUsesSharedIPv6Entry(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	a := &Agent{cfg: cfg, db: database, mgr: reviewHeartbeatVM{}, hostMon: monitor.NewHostMonitor(), config: cfg.Get(), entryIPv6: "2001:db8:1::20"}
+	a := &Agent{cfg: cfg, db: database, mgr: reviewHeartbeatVM{}, hostMon: monitor.NewHostMonitor(), config: cfg.Get(), entryIPv6: "2001:db8:1::20",
+		hostHasIPv6: func(string) bool { return true }}
 	s := &reviewHeartbeatStream{}
 	a.sendHeartbeat(s)
 	if s.captured == nil || s.captured.GetHeartbeat() == nil {
@@ -91,11 +92,16 @@ func TestLegacyPortForwardMigration(t *testing.T) {
 }
 
 func TestHeartbeatPreservesOtherIPv6Modes(t *testing.T) {
-	for _, tc := range []struct{ name, virt, mode, public, addr, want string }{
-		{"shared fallback", "podman", "snat", "", "2001:db8:1::11", "2001:db8:1::11"},
-		{"subnet", "podman", "subnet", "2001:db8:1::10", "", "2001:db8:1::20"},
-		{"disabled", "podman", "none", "2001:db8:1::10", "", "2001:db8:1::20"},
-		{"other backend", "incus", "snat", "2001:db8:1::10", "", "2001:db8:1::20"},
+	for _, tc := range []struct {
+		name, virt, mode, public, addr, want string
+		// hostUp=false 模拟配置的共享 IPv6 已不在网卡上（实例重建/地址漂移）。
+		hostUp bool
+	}{
+		{"shared fallback", "podman", "snat", "", "2001:db8:1::11", "2001:db8:1::11", true},
+		{"shared stale", "podman", "snat", "", "2001:db8:1::11", "2001:db8:1::20", false},
+		{"subnet", "podman", "subnet", "2001:db8:1::10", "", "2001:db8:1::20", true},
+		{"disabled", "podman", "none", "2001:db8:1::10", "", "2001:db8:1::20", true},
+		{"other backend", "incus", "snat", "2001:db8:1::10", "", "2001:db8:1::20", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -119,7 +125,8 @@ func TestHeartbeatPreservesOtherIPv6Modes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			a := &Agent{cfg: cfg, db: database, mgr: reviewHeartbeatVM{}, hostMon: monitor.NewHostMonitor(), config: cfg.Get(), entryIPv6: "2001:db8:1::20"}
+			a := &Agent{cfg: cfg, db: database, mgr: reviewHeartbeatVM{}, hostMon: monitor.NewHostMonitor(), config: cfg.Get(), entryIPv6: "2001:db8:1::20",
+				hostHasIPv6: func(string) bool { return tc.hostUp }}
 			s := &reviewHeartbeatStream{}
 			a.sendHeartbeat(s)
 			if s.captured == nil || s.captured.GetHeartbeat() == nil || s.captured.GetHeartbeat().EntryIpv6 != tc.want {

@@ -80,6 +80,9 @@ type Agent struct {
 	lastConnected time.Time
 	entryIPv4     string // 公网 IPv4，启动时自动检测
 	entryIPv6     string // 公网 IPv6，启动时自动检测
+	// hostHasIPv6 判断某个 IPv6 是否在本机网卡上。nil 时用 config.HostHasIPv6；
+	// 抽成字段是为了单测能模拟「地址仍可用 / 已漂移」两种环境。
+	hostHasIPv6 func(string) bool
 
 	// ping 健康检测（用于检测僵尸连接）
 	lastPingTime time.Time // 最后收到 Ping 的时间
@@ -152,6 +155,13 @@ func main() {
 	}
 	conf := cfg.Get()
 	log.Printf("Config loaded from %s (virt_type=%s, web=%s)", *configPath, conf.VirtType, conf.Web)
+
+	// 共享 IPv6 的配置地址必须在本机网卡上：它既是端口监听的 bind 地址，也是出口
+	// SNAT 的源地址。实例重建或云厂商地址漂移后配置会变旧，此时心跳回落探测值上报，
+	// 但端口监听仍会失败，需要人工修正。
+	if conf.VirtType == "podman" && conf.SharedIPv6Enabled() && !config.HostHasIPv6(conf.EgressIPv6()) {
+		log.Printf("[Main] shared IPv6 %s is not on any interface (entry_ipv6 will fall back to detected address)", conf.EgressIPv6())
+	}
 
 	// 初始化数据库（存 VM 数据、流量数据等，不再存配置）
 	database, dbErr := db.Init(conf.DB)
@@ -808,9 +818,15 @@ func (a *Agent) sendHeartbeat(stream agent.AgentGateway_ConnectClient) {
 	// 地址（只能用于监听），不能当入口地址上报，否则平台展示的会是 172.16/10.x。
 	live := a.cfg.Get()
 	hb.EntryHost = live.EntryHost(a.entryIPv4)
+	// IPv6 同口径：未启用共享 IPv6 用探测值；启用后若配置地址已不在网卡上
+	// （实例重建、云厂商地址漂移），回落探测值，避免平台展示一个不可达的地址。
 	hb.EntryIpv6 = a.entryIPv6
-	if virtType == "podman" && live.SharedIPv6Enabled() {
-		hb.EntryIpv6 = live.EgressIPv6()
+	if virtType == "podman" {
+		onHost := a.hostHasIPv6
+		if onHost == nil {
+			onHost = config.HostHasIPv6
+		}
+		hb.EntryIpv6, _ = live.EntryIPv6(a.entryIPv6, onHost)
 	}
 	a.mu.RUnlock()
 

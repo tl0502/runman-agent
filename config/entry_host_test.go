@@ -97,3 +97,27 @@ func TestEntryHostSource(t *testing.T) {
 		}
 	}
 }
+
+func TestEntryIPv6(t *testing.T) {
+	// 只有 2406:da14::2 在「网卡上」。
+	onHost := func(addr string) bool { return addr == "2406:da14::2" }
+	cases := []struct {
+		name      string
+		cfg       Config
+		detected  string
+		wantValue string
+		wantSrc   string
+	}{
+		{"未启用共享 IPv6 用探测值", Config{}, "2406:da14::1", "2406:da14::1", "auto"},
+		{"启用且配置地址在网卡上", Config{IPv6Mode: "snat", IPv6Addr: "2406:da14::2"}, "2406:da14::1", "2406:da14::2", "config"},
+		{"启用但配置地址已失效", Config{IPv6Mode: "snat", IPv6Addr: "2406:da14::9"}, "2406:da14::1", "2406:da14::1", "stale"},
+		{"失效且无探测值时保留配置", Config{IPv6Mode: "snat", IPv6Addr: "2406:da14::9"}, "", "2406:da14::9", "config"},
+		{"全空", Config{}, "", "", ""},
+	}
+	for _, c := range cases {
+		v, src := c.cfg.EntryIPv6(c.detected, onHost)
+		if v != c.wantValue || src != c.wantSrc {
+			t.Errorf("%s: EntryIPv6() = (%q,%q), want (%q,%q)", c.name, v, src, c.wantValue, c.wantSrc)
+		}
+	}
+}
