@@ -2,6 +2,7 @@ package db
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
@@ -94,6 +96,15 @@ type PortForward struct {
 	GuestPort   int
 	Description string
 	BindFamily  int `gorm:"default:0"`
+
+	// 连接统计。端口转发只在内存里计数，agent 升级/重启会重建所有规则，
+	// 不落库「累计」就只剩本次运行的量，面板上看起来像被清零了。
+	// TotalConns 是规则建立以来的累计连接数；ConnsByIP 是来源 IP 维度的累计
+	// 计数（JSON，形如 {"1.2.3.4":12}），两者由 portforward.Manager 周期回写。
+	// 活跃连接数不落库：重启后旧连接必然已断开，恢复它反而是假数据。
+	// default 不能省：AutoMigrate 给存量表加列时，NULL 扫进 int64/string 会报错。
+	TotalConns int64  `gorm:"default:0"`
+	ConnsByIP  string `gorm:"default:''"`
 }
 
 type Traffic struct {
@@ -571,8 +582,36 @@ func (d *DB) DeleteVMConfig(vmId string) error {
 
 // 端口转发
 
+// SavePortForward 写入/更新一条转发规则。
+//
+// 统计列（total_conns / conns_by_ip）不在覆盖列表里：规则改描述、改内网端口
+// 或容器换 IP 后重建时，这些列必须保留，否则累计连接数会被这次写入抹掉。
+// 统计只由 UpdatePortForwardStats 维护。
 func (d *DB) SavePortForward(pf *PortForward) error {
-	return d.orm.Save(pf).Error
+	return d.orm.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "protocol"}, {Name: "host_port"}},
+		DoUpdates: clause.AssignmentColumns([]string{"vm_id", "guest_port", "description", "bind_family"}),
+	}).Create(pf).Error
+}
+
+// GetPortForward 按联合主键取一条规则；不存在时返回 nil, nil。
+func (d *DB) GetPortForward(protocol string, hostPort int) (*PortForward, error) {
+	var pf PortForward
+	err := d.orm.Where("protocol = ? AND host_port = ?", protocol, hostPort).First(&pf).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &pf, nil
+}
+
+// UpdatePortForwardStats 回写某条规则的累计连接统计。
+func (d *DB) UpdatePortForwardStats(protocol string, hostPort int, total int64, byIP string) error {
+	return d.orm.Model(&PortForward{}).
+		Where("protocol = ? AND host_port = ?", protocol, hostPort).
+		Updates(map[string]any{"total_conns": total, "conns_by_ip": byIP}).Error
 }
 
 func (d *DB) DeletePortForward(protocol string, hostPort int) error {

@@ -2,6 +2,7 @@ package portforward
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -64,6 +65,8 @@ type Entry struct {
 	connIPMu      sync.Mutex
 	connIPs       map[string]int64 // total connections per IP
 	connActiveIPs map[string]int64 // active connections per IP
+	// lastFlushTotal 是上次回写到 DB 的 connTotal，flush 用它判断有没有变化。
+	lastFlushTotal int64 // atomic
 }
 
 func (e *Entry) trackConnect(ip string) {
@@ -104,6 +107,74 @@ func (e *Entry) getTopIPs() []IPCount {
 		return result[i].IP < result[j].IP
 	})
 	return result
+}
+
+// maxPersistedIPs 限制落库的来源 IP 条目数。规则不设 IP 上限时（limit=0）
+// 端口被全网扫描会让 connIPs 无界增长，落库前按计数保留前 N 个即可。
+const maxPersistedIPs = 1000
+
+// snapshotIPs 复制一份 per-IP 累计计数，用于规则重建时继承。
+func (e *Entry) snapshotIPs() map[string]int64 {
+	e.connIPMu.Lock()
+	defer e.connIPMu.Unlock()
+	if len(e.connIPs) == 0 {
+		return make(map[string]int64)
+	}
+	out := make(map[string]int64, len(e.connIPs))
+	for ip, c := range e.connIPs {
+		out[ip] = c
+	}
+	return out
+}
+
+// encodeIPs 把 per-IP 累计计数序列化成 JSON，供落库。
+func (e *Entry) encodeIPs() string {
+	e.connIPMu.Lock()
+	items := make(map[string]int64, len(e.connIPs))
+	for ip, c := range e.connIPs {
+		items[ip] = c
+	}
+	e.connIPMu.Unlock()
+	if len(items) == 0 {
+		return ""
+	}
+	if len(items) > maxPersistedIPs {
+		type kv struct {
+			ip string
+			n  int64
+		}
+		all := make([]kv, 0, len(items))
+		for ip, n := range items {
+			all = append(all, kv{ip, n})
+		}
+		sort.Slice(all, func(i, j int) bool {
+			if all[i].n != all[j].n {
+				return all[i].n > all[j].n
+			}
+			return all[i].ip < all[j].ip
+		})
+		items = make(map[string]int64, maxPersistedIPs)
+		for _, it := range all[:maxPersistedIPs] {
+			items[it.ip] = it.n
+		}
+	}
+	b, err := json.Marshal(items)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// decodeIPs 反序列化落库的 per-IP 计数；格式错误时返回空表，不影响转发本身。
+func decodeIPs(s string) map[string]int64 {
+	out := make(map[string]int64)
+	if s == "" {
+		return out
+	}
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return make(map[string]int64)
+	}
+	return out
 }
 
 // DesiredRule 用于 SyncForVM 全量同步时描述期望状态
@@ -249,6 +320,55 @@ func (m *Manager) Restore(ctx context.Context) {
 		}
 	}
 	go m.reconcileLoop(ctx)
+	go m.statFlushLoop(ctx)
+}
+
+// FlushStats 把内存里变化的累计连接数回写到 DB。
+//
+// 端口转发的计数只存在于内存，agent 升级 / 重启会重建所有规则。没有这一步，
+// 面板上的「累计」每次更新都从 0 开始，看起来就是统计被清零了。
+// 只写有变化的规则（connTotal != lastFlushTotal），空转时零 DB 写入。
+func (m *Manager) FlushStats() {
+	type snapshot struct {
+		entry *Entry
+		total int64
+		byIP  string
+	}
+	var snaps []snapshot
+	m.mu.RLock()
+	for _, entries := range m.mappings {
+		for _, e := range entries {
+			total := atomic.LoadInt64(&e.connTotal)
+			if total == atomic.LoadInt64(&e.lastFlushTotal) {
+				continue
+			}
+			snaps = append(snaps, snapshot{entry: e, total: total, byIP: e.encodeIPs()})
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, s := range snaps {
+		if err := m.db.UpdatePortForwardStats(s.entry.Protocol, s.entry.HostPort, s.total, s.byIP); err != nil {
+			log.Printf("[PortForward] flush stats %s :%d failed: %v", s.entry.Protocol, s.entry.HostPort, err)
+			continue
+		}
+		atomic.StoreInt64(&s.entry.lastFlushTotal, s.total)
+	}
+}
+
+// statFlushLoop 周期回写累计统计；退出前再补一次，尽量不丢最后一段时间。
+func (m *Manager) statFlushLoop(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			m.FlushStats()
+			return
+		case <-ticker.C:
+			m.FlushStats()
+		}
+	}
 }
 
 // reconcileLoop 周期性检查 DB 中登记但内存中缺失的规则并尝试重建。
@@ -438,6 +558,21 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 		return err
 	}
 
+	// 落库的累计统计先读出来（进程重启后内存是空的，只能从这里恢复）。
+	// 放在加锁之前：SQLite 只有一条连接，持锁等查询会连带阻塞其它转发操作。
+	prevPF, prevErr := m.db.GetPortForward(protocol, hostPort)
+	if prevErr != nil {
+		log.Printf("[PortForward] load stats %s :%d failed: %v", protocol, hostPort, prevErr)
+	}
+	// 端口换了归属（上一台 VM 的规则被删后给新 VM 用）时不继承旧统计：
+	// 「累计 500 次连接」挂在新实例上就是假数据。顺手把库里的一并清掉。
+	if prevPF != nil && prevPF.VMID != vmId {
+		if err := m.db.UpdatePortForwardStats(protocol, hostPort, 0, ""); err != nil {
+			log.Printf("[PortForward] reset stats %s :%d after owner change failed: %v", protocol, hostPort, err)
+		}
+		prevPF.TotalConns, prevPF.ConnsByIP = 0, ""
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -476,6 +611,18 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 		connIPs:       make(map[string]int64),
 		connActiveIPs: make(map[string]int64),
 	}
+	// 统计继承：同一条规则（protocol + hostPort）重建时不能把累计连接数清零，
+	// 否则改描述、改内网端口、容器换 IP（RefreshVM）都会让面板上的「累计」归零。
+	// 内存值比 DB 新，优先继承；进程重启后内存为空，再从 DB 恢复。
+	if old != nil {
+		entry.connTotal = atomic.LoadInt64(&old.connTotal)
+		entry.connIPs = old.snapshotIPs()
+		atomic.StoreInt64(&entry.lastFlushTotal, atomic.LoadInt64(&old.lastFlushTotal))
+	} else if prevPF != nil {
+		entry.connTotal = prevPF.TotalConns
+		entry.connIPs = decodeIPs(prevPF.ConnsByIP)
+		atomic.StoreInt64(&entry.lastFlushTotal, prevPF.TotalConns)
+	}
 
 	if old != nil {
 		old.cancel()
@@ -502,6 +649,8 @@ func (m *Manager) addMapping(ctx context.Context, vmId string, protocol string, 
 		GuestPort:   guestPort,
 		Description: description,
 		BindFamily:  bindFamily,
+		TotalConns:  atomic.LoadInt64(&entry.connTotal),
+		ConnsByIP:   entry.encodeIPs(),
 	}); err != nil {
 		entry.cancel()
 		closeAll(entry.lns)

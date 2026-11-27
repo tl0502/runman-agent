@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"os/signal"
 	"runman-agent/config"
 	"runman-agent/db"
 	"runman-agent/manager"
@@ -37,6 +38,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -239,6 +241,10 @@ func main() {
 	// 启动时从 DB 恢复已持久化的端口转发规则
 	pf.Restore(context.Background())
 
+	// 停止信号（systemd restart、升级替换二进制）时把累计连接统计刷一遍盘：
+	// 端口转发的计数只存在内存，不刷就等于每次更新清零。
+	go flushStatsOnSignal(pf)
+
 	// 纯用户态 WireGuard 绑定：恢复已启用的隧道，失败的由内部循环持续重试
 	wg := wgbind.New(context.Background(), svc, database)
 	wg.Restore()
@@ -367,6 +373,30 @@ func main() {
 	}
 
 	a.run()
+}
+
+// flushStatsOnSignal 在收到 SIGTERM / SIGINT 时把端口转发的累计连接数落盘再退出。
+//
+// 端口转发计数只存在进程内存里，而 systemd restart（含自动更新替换二进制）默认
+// 发 SIGTERM：没有这一步，「累计连接数」每次更新都会从 0 重新开始。
+// 只做统计落盘，所以给 3 秒上限——真卡在 DB 上也别拖住服务停止，超时由 systemd
+// 的 SIGKILL 兜底。
+func flushStatsOnSignal(pf *portforward.Manager) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
+	<-sig
+	log.Printf("[Main] stopping: flushing port-forward connection stats")
+	done := make(chan struct{})
+	go func() {
+		pf.FlushStats()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		log.Printf("[Main] flush port-forward stats timed out, exiting anyway")
+	}
+	os.Exit(0)
 }
 
 // run 是主循环：持续从配置管理器读取最新配置，等待 Token 就绪后建立 gRPC 连接，
