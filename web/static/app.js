@@ -814,13 +814,16 @@ async function loadIPLimit(fill) {
   } catch { /* 静默 */ }
 }
 $('ipLimitSet').addEventListener('click', async () => {
-  const v = Number($('ipLimitValue').value);
+  if (!state.activeVm) return;
   if ($('ipLimitValue').value === '') return toast('请填数字，或点「用全局」', 'bad');
-  try { await api('PUT', `/api/vms/${state.activeVm}/iplimit`, { max_ips: v, use_global: false }); toast('已设置'); loadIPLimit(false); }
+  const v = Number($('ipLimitValue').value);
+  if (!Number.isInteger(v) || v < 0 || v > 100000) return toast('请填 0 ~ 100000 的整数', 'bad');
+  try { await api('PUT', `/api/vms/${state.activeVm}/iplimit`, { limit: v }); toast(v > 0 ? `已设置：${v}` : '已设为不限制'); loadIPLimit(false); }
   catch (e) { toastErr(e); }
 });
 $('ipLimitGlobal').addEventListener('click', async () => {
-  try { await api('PUT', `/api/vms/${state.activeVm}/iplimit`, { use_global: true }); $('ipLimitValue').value = ''; toast('已恢复全局'); loadIPLimit(false); }
+  if (!state.activeVm) return;
+  try { await api('PUT', `/api/vms/${state.activeVm}/iplimit`, { limit: null }); $('ipLimitValue').value = ''; toast('已恢复全局'); loadIPLimit(false); }
   catch (e) { toastErr(e); }
 });
 

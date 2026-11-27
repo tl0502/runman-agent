@@ -2871,6 +2871,10 @@ func (s *Server) handleWGKeypair(w http.ResponseWriter, _ *http.Request) {
 
 // ─── 端口转发唯一来源 IP 数限制 ────────────────────────────────────────────────
 
+// maxVMLimitIPs 是单 VM 唯一来源 IP 数上限的取值上界，与面板输入框 max 一致。
+// 只做量纲保护：真按这个数用会先把 conntrack 撑爆，但拒绝明显错误的输入。
+const maxVMLimitIPs = 100000
+
 // ipLimitResponse 描述某 VM 的唯一来源 IP 数限制状态。
 // Override 为 nil 表示未按 VM 覆盖（使用全局值）；Effective 为实际生效值（0 = 不限制）。
 type ipLimitResponse struct {
@@ -2894,16 +2898,27 @@ func (s *Server) handleSetIPLimit(w http.ResponseWriter, r *http.Request) {
 	vmID := r.PathValue("id")
 	var req struct {
 		Limit *int `json:"limit"` // nil = 清除覆盖，0 = 不限制，>0 = 上限
+		// 旧版前端发的是 max_ips + use_global，浏览器缓存的 app.js 可能仍在用，
+		// 这里一并接受，避免老页面「设置」后静默变成清除覆盖。
+		MaxIPs    *int  `json:"max_ips"`
+		UseGlobal *bool `json:"use_global"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	if req.Limit != nil && *req.Limit < 0 {
-		http.Error(w, "limit must be >= 0", 400)
+	limit := req.Limit
+	if limit == nil {
+		limit = req.MaxIPs
+	}
+	if req.UseGlobal != nil && *req.UseGlobal {
+		limit = nil // 显式要求回退全局：清除覆盖
+	}
+	if limit != nil && (*limit < 0 || *limit > maxVMLimitIPs) {
+		http.Error(w, "limit must be between 0 and 100000", 400)
 		return
 	}
-	if err := s.pf.SetVMIPLimit(vmID, req.Limit); err != nil {
+	if err := s.pf.SetVMIPLimit(vmID, limit); err != nil {
 		jsonErr(w, err, vmErrStatus(err))
 		return
 	}
