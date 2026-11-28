@@ -55,6 +55,21 @@ jobs:
             exit 1
           fi
 
+      # 容器安全配置的「行为」验收：断言容器内 kill / systemctl 真能用，而不是断言字段值。
+      # 2026-11 的 no_new_privileges 回归就是在字段全绿、单测全绿的情况下把 VM 里的信号能力
+      # 弄没了的（kill 报 Permission denied，kill -0 却能过），只有真起容器才测得出来。
+      - name: Container security acceptance
+        run: |
+          sudo apt-get install -y -qq podman uidmap
+          # rootful userns=auto 从 containers 用户的 subuid/subgid 池分配 ID（与 install.sh 同款）
+          id containers >/dev/null 2>&1 || sudo useradd --comment "Podman userns id pool" \
+            --no-create-home --shell /usr/sbin/nologin containers
+          for f in /etc/subuid /etc/subgid; do
+            grep -q '^containers:' "$f" || echo 'containers:1000000:6553600' | sudo tee -a "$f" >/dev/null
+          done
+          # 用 ubuntu 镜像而不是私有镜像：这套问题就出在 Ubuntu 的 AppArmor 打包上
+          sudo IMAGE=docker.io/library/ubuntu:24.04 bash ./tests/acceptance/container-security.sh
+
   build-agent:
     runs-on: ubuntu-latest
     strategy:

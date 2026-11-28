@@ -203,6 +203,55 @@ func userNamespaceIDMapping(cfg config.Config) *stypes.IDMappingOptions {
 	return opts
 }
 
+// apparmorAvailable 报告宿主是否启用了 AppArmor。
+// 做成变量是为了单测能替换：真实判定依赖宿主 /sys，测试机不一定有。
+var apparmorAvailable = func() bool {
+	_, err := os.Stat("/sys/kernel/security/apparmor/profiles")
+	return err == nil
+}
+
+// containerApparmorProfile 返回创建容器时要显式指定的 AppArmor profile（空串 = 不指定，
+// 由运行时套用发行版默认 profile）。
+//
+// 为什么 no_new_privileges 开启时必须 unconfined（2026-11-28 实测）：
+// **OCI runtime 是 crun 时**（crun 自己也被 /etc/apparmor.d/crun 约束），NNP 会让
+// crun 的 profile 切换退化成「堆叠」，容器进程标签变成 "<profile>//&crun"，而
+// /etc/apparmor.d/base 只放行
+//
+//	signal peer=unconfined / signal peer=@{profile_name}
+//
+// （后者要求对端标签与自身完全相等），另有一条 signal set=("exists") 只放行信号 0。
+// 结果：容器内 root 之间所有真实信号被拒 —— kill 返回 EACCES、systemctl stop/restart
+// 卡住、exec 会话清理失效，只有 kill -0 能过，ps 还刷 ptrace DENIED。对外表现就是
+// 「VM 里连 kill 进程都做不到」。
+//
+// 同一台机器上实测（Debian 13）：runc + NNP 标签干净、kill 正常；crun + NNP 必坏。
+// 所以只看 runtime 是不是 crun，与发行版无关。这里不区分 runtime 一律给 unconfined：
+// runc 宿主上它等价于「不套 AppArmor profile」，行为不变。
+//
+// 关闭 NNP 时标签是干净的 "<profile>"，默认 profile 工作正常，保留即可。
+func containerApparmorProfile(noNewPrivs bool) string {
+	if !noNewPrivs || !apparmorAvailable() {
+		return ""
+	}
+	return "unconfined"
+}
+
+// containerSecurityConfig 组装容器的安全配置（cap / NNP / AppArmor / userns）。
+// 单独提出来是为了让单测能直接断言「最终交给运行时的字段」，而不是只测分支：
+// 历史教训是每个字段都设对了，字段之间的相互作用却把容器内发信号的能力弄没了。
+func containerSecurityConfig(sec config.Config) specgen.ContainerSecurityConfig {
+	noNewPrivs := sec.NoNewPrivsEnabled()
+	return specgen.ContainerSecurityConfig{
+		CapDrop:         sec.DropCaps(),
+		CapAdd:          sec.AddCaps(),
+		NoNewPrivileges: ptr(noNewPrivs),
+		ApparmorProfile: containerApparmorProfile(noNewPrivs),
+		UserNS:          userNamespace(sec),
+		IDMappings:      userNamespaceIDMapping(sec),
+	}
+}
+
 // createWithRetry 创建容器；若名字被残留容器占用（包括仅存在于 storage 层、
 // libpod DB 不认识的 "external" 容器，重装/创建中途失败后可能残留），
 // 强制清理同名容器后重试一次。
@@ -408,6 +457,8 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 		NetworkName: netOpt,
 	}
 
+	// 安全配置由 containerSecurityConfig 统一组装：NNP 与宿主 AppArmor 默认 profile
+	// 冲突，容器内会失去发信号能力（见该函数注释）。
 	res, err := m.createWithRetry(&specgen.SpecGenerator{
 		ContainerBasicConfig: specgen.ContainerBasicConfig{
 			Name:          req.VmId,
@@ -424,13 +475,7 @@ func (m *Manager) createVM(_ context.Context, req *agent.CmdCreateVM) error {
 			},
 			Mounts: lxcfsMounts(),
 		},
-		ContainerSecurityConfig: specgen.ContainerSecurityConfig{
-			CapDrop:         sec.DropCaps(),
-			CapAdd:          sec.AddCaps(),
-			NoNewPrivileges: ptr(sec.NoNewPrivsEnabled()),
-			UserNS:          userNamespace(sec),
-			IDMappings:      userNamespaceIDMapping(sec),
-		},
+		ContainerSecurityConfig: containerSecurityConfig(sec),
 		ContainerNetworkConfig: specgen.ContainerNetworkConfig{
 			Networks:   netOpts,
 			DNSServers: []net.IP{net.ParseIP("1.1.1.1"), net.ParseIP("2606:4700:4700::1111")},
